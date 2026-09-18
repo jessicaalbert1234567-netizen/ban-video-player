@@ -22,8 +22,12 @@ jobs:
         distribution: 'temurin'
         cache: gradle
 
-    - name: Setup Android SDK
-      uses: android-actions/setup-android@v3
+    - name: Set up Android SDK
+      run: |
+        yes | sdkmanager --licenses > /dev/null 2>&1 || true
+        sdkmanager --install "platform-tools" "platforms;android-36" "build-tools;36.0.0" > /dev/null || \
+        sdkmanager --install "platform-tools" "platforms;android-35" "build-tools;35.0.0" > /dev/null || true
+        yes | sdkmanager --licenses > /dev/null 2>&1 || true
 
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew || true
