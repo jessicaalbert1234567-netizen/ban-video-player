@@ -46,12 +46,14 @@ object ModelCatalog {
     // Model 2: English -> Bangla Translation (MarianMT Seq2Seq INT8 ONNX)
     // Production Distribution Package: translation_en_bn_v1.0.zip (~150.4 MB compressed, ~221.0 MB uncompressed)
     // Published via GitHub Actions workflow as a GitHub Release asset.
-    // Kept UNCONFIGURED ("") by default until a real GitHub Release exists (per strict user instructions).
+    const val DEFAULT_TRANSLATION_RELEASE_URL =
+        "https://github.com/jessicaalbert1234567-netizen/ban-video-player/releases/download/v1.0.0-translation-model/translation_en_bn_v1.0.zip"
+
     @Volatile
-    var translationReleaseUrl: String = ""
+    var translationReleaseUrl: String = DEFAULT_TRANSLATION_RELEASE_URL
 
     fun configureTranslationReleaseUrl(url: String) {
-        translationReleaseUrl = url.trim()
+        translationReleaseUrl = if (url.isBlank()) DEFAULT_TRANSLATION_RELEASE_URL else url.trim()
     }
 
     val ENGLISH_TO_BANGLA_TRANSLATION: ModelInfo
@@ -62,9 +64,9 @@ object ModelCatalog {
             sourceLanguage = "en",
             targetLanguage = "bn",
             type = ModelType.TRANSLATION,
-            downloadUrl = translationReleaseUrl, // Unconfigured ("") by default until real release asset exists
+            downloadUrl = translationReleaseUrl,
             sizeBytes = 231_754_408L, // Real verified uncompressed package size ~221.0 MB
-            archiveSizeBytes = 157_681_950L, // Real distribution zip archive size ~150.38 MB
+            archiveSizeBytes = 157_681_950L, // Real distribution zip archive size: 157,681,950 bytes
             sha256 = "ff8b97888c8413c4ba2509e39a50234d040c6b894ab0a005f39bbd47595c0e27", // SHA-256 of translation_en_bn_v1.0.zip
             format = ModelFormat.BINARY_ARCHIVE,
             archiveName = "translation_en_bn_v1.0.zip",
@@ -78,7 +80,7 @@ object ModelCatalog {
                 vocabFileName = "vocab.json",
                 decoderType = "SEQ2SEQ_MARIAN"
             ),
-            description = "Real offline English → Bangla neural translation model (shhossain/opus-mt-en-to-bn MarianMT Seq2Seq INT8 ONNX). Source unconfigured until published to GitHub Releases.",
+            description = "Real offline English → Bangla neural translation model (shhossain/opus-mt-en-to-bn MarianMT Seq2Seq INT8 ONNX). Official GitHub Release package.",
             licenseSource = "Helsinki-NLP / shhossain (Apache-2.0)",
             runtimeRequirements = "ONNX Runtime Mobile (Encoder + Decoder Seq2Seq INT8, SentencePiece tokenizer)",
             auxiliaryFiles = listOf(

@@ -47,9 +47,17 @@ object ModelInstaller {
             val encoder = File(dir, "encoder_model.onnx")
             val decoder = File(dir, "decoder_model.onnx")
             val decoderWithPast = File(dir, "decoder_with_past_model.onnx")
+            val vocab = File(dir, "vocab.json")
+            val sourcePieces = File(dir, "source_pieces.json")
+            val sourceSpm = File(dir, "source.spm")
+            val targetSpm = File(dir, "target.spm")
+            val manifest = File(dir, "model_manifest.json")
             return encoder.exists() && encoder.length() > 0 &&
                    decoder.exists() && decoder.length() > 0 &&
-                   decoderWithPast.exists() && decoderWithPast.length() > 0
+                   decoderWithPast.exists() && decoderWithPast.length() > 0 &&
+                   vocab.exists() && vocab.length() > 0 &&
+                   (sourcePieces.exists() || sourceSpm.exists()) &&
+                   manifest.exists() && manifest.length() > 0
         }
         val file = getInstalledModelFile(context, model)
         return file.exists() && file.length() > 0

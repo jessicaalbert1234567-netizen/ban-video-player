@@ -310,7 +310,7 @@ fun ModelCard(
                 )
             }
 
-            // Verification in progress
+            // Verification in progress: show active verification phase
             if (isVerifying) {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     LinearProgressIndicator(
@@ -321,16 +321,20 @@ fun ModelCard(
                         color = WarningAmber
                     )
                     Text(
-                        text = "Verifying package checksums, integrity, and test translation...",
+                        text = item.downloadProgress?.verificationStatus
+                            ?: "Verifying package checksums, integrity, and test translation...",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
 
-            // Progress bar if downloading: downloaded / total bytes, percentage, speed, ETA
+            // Progress bar if downloading: downloaded / total bytes, percentage, speed, ETA, verification status
             if (isDownloading && item.downloadProgress != null) {
                 val prog = item.downloadProgress
+                val downloadedMb = String.format(java.util.Locale.US, "%.1f", prog.downloadedBytes / (1024.0 * 1024.0))
+                val totalMb = String.format(java.util.Locale.US, "%.1f", prog.totalBytes / (1024.0 * 1024.0))
+
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     LinearProgressIndicator(
                         progress = { (prog.progressPercent / 100f).coerceIn(0f, 1f) },
@@ -344,14 +348,21 @@ fun ModelCard(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
-                            text = "${prog.downloadedBytes / (1024 * 1024)} MB / ${prog.totalBytes / (1024 * 1024)} MB (${prog.progressPercent}%)",
+                            text = "${prog.downloadedBytes} / ${prog.totalBytes} bytes ($downloadedMb / $totalMb MB) [${prog.progressPercent}%]",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Text(
-                            text = "Speed: ${prog.speedKbps} KB/s • ETA: ${prog.estimatedRemainingSeconds}s",
+                            text = "${prog.speedKbps} KB/s • ETA: ${prog.estimatedRemainingSeconds}s",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    if (!prog.verificationStatus.isNullOrBlank()) {
+                        Text(
+                            text = prog.verificationStatus,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary
                         )
                     }
                 }

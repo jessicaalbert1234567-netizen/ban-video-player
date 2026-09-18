@@ -83,16 +83,21 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `test translation model package size and unconfigured status`() {
+    fun `test translation model package size and configured release status`() {
         val model = com.example.models.ModelCatalog.ENGLISH_TO_BANGLA_TRANSLATION
         assertEquals("English → Bangla Translation", model.name)
-        // Step 8: Verify real package size is ~221 MB, not fake ~64 MB
+        // Verify real uncompressed package size is ~221 MB
         assertEquals(231_754_408L, model.sizeBytes)
         val sizeMb = model.sizeBytes / (1024 * 1024)
         assertEquals(221L, sizeMb)
-        // Step 9: Verify download source is unconfigured until uploaded to public CDN
-        org.junit.Assert.assertFalse(model.isSourceConfigured)
-        assertEquals("", model.downloadUrl)
+        // Verify download source is configured with the official GitHub Release asset
+        org.junit.Assert.assertTrue(model.isSourceConfigured)
+        assertEquals(
+            "https://github.com/jessicaalbert1234567-netizen/ban-video-player/releases/download/v1.0.0-translation-model/translation_en_bn_v1.0.zip",
+            model.downloadUrl
+        )
+        assertEquals(157_681_950L, model.archiveSizeBytes)
+        assertEquals("ff8b97888c8413c4ba2509e39a50234d040c6b894ab0a005f39bbd47595c0e27", model.sha256)
     }
 
     @Test
