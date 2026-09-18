@@ -3,8 +3,8 @@ name: Publish Translation Model Release
 on:
   workflow_dispatch:
     inputs:
-      tag_name:
-        description: 'Git Tag for the Release (e.g., v1.0.0-translation-model)'
+      release_tag:
+        description: 'Git Tag for the Release'
         required: true
         default: 'v1.0.0-translation-model'
       release_title:
@@ -13,53 +13,77 @@ on:
         default: 'Offline English-Bangla Translation Model v1.0.0'
   push:
     tags:
-      - 'v*'
+      - 'v1.0.0-translation-model'
 
 permissions:
   contents: write
 
 jobs:
-  build-and-release:
-    runs-on: ubuntu-latest
+  publish-release:
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
-      - name: Set up Python 3.10
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-          cache: 'pip'
-
-      - name: Install Dependencies
+      - name: Verify Prebuilt Model Package Exists
         run: |
-          python -m pip install --upgrade pip
-          pip install torch transformers onnx onnxruntime sentencepiece optimum
+          PACKAGE="dist/translation_en_bn_v1.0.zip"
+          if [ ! -f "$PACKAGE" ]; then
+            echo "::error::Prebuilt model package '$PACKAGE' does not exist on filesystem!"
+            exit 1
+          fi
+          echo "Verified: '$PACKAGE' exists on the filesystem."
 
-      - name: Export, Quantize and Package Model
+      - name: Verify Exact Package Size
         run: |
-          chmod +x scripts/package_translation_model.py scripts/export_and_package_model.py
-          python3 scripts/export_and_package_model.py
+          PACKAGE="dist/translation_en_bn_v1.0.zip"
+          EXPECTED_SIZE=157681950
+          ACTUAL_SIZE=$(stat -c %s "$PACKAGE")
+          echo "Verifying exact file size..."
+          echo "Expected size: $EXPECTED_SIZE bytes"
+          echo "Actual size:   $ACTUAL_SIZE bytes"
+          if [ "$ACTUAL_SIZE" -ne "$EXPECTED_SIZE" ]; then
+            echo "::error::File size mismatch! Expected: $EXPECTED_SIZE bytes, Got: $ACTUAL_SIZE bytes"
+            exit 1
+          fi
+          echo "Verification PASSED: File size is exactly $EXPECTED_SIZE bytes."
 
-      - name: Determine Release Tag
+      - name: Verify Exact SHA-256 Checksum
+        run: |
+          PACKAGE="dist/translation_en_bn_v1.0.zip"
+          EXPECTED_SHA="ff8b97888c8413c4ba2509e39a50234d040c6b894ab0a005f39bbd47595c0e27"
+          echo "Calculating SHA-256 checksum for $PACKAGE..."
+          ACTUAL_SHA=$(sha256sum "$PACKAGE" | awk '{print $1}')
+          echo "Expected SHA-256: $EXPECTED_SHA"
+          echo "Actual SHA-256:   $ACTUAL_SHA"
+          if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+            echo "::error::SHA-256 checksum mismatch! Expected: $EXPECTED_SHA, Got: $ACTUAL_SHA"
+            exit 1
+          fi
+          echo "Verification PASSED: SHA-256 is exactly $EXPECTED_SHA."
+
+      - name: Determine Release Tag and Title
         id: vars
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG="${{ github.event.inputs.tag_name }}"
+            TAG="${{ github.event.inputs.release_tag }}"
             TITLE="${{ github.event.inputs.release_title }}"
           else
             TAG="${GITHUB_REF#refs/tags/}"
-            TITLE="Release ${TAG}"
+            TITLE="Offline English-Bangla Translation Model ${TAG}"
           fi
           echo "tag=${TAG}" >> $GITHUB_OUTPUT
           echo "title=${TITLE}" >> $GITHUB_OUTPUT
 
-      - name: Upload Release Assets
+      - name: Create GitHub Release and Upload Asset
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.vars.outputs.tag }}
           name: ${{ steps.vars.outputs.title }}
+          draft: false
+          prerelease: false
+          files: dist/translation_en_bn_v1.0.zip
           body: |
             ## MarianMT English → Bangla Neural Translation Model (INT8 ONNX)
 
@@ -67,7 +91,7 @@ jobs:
             - **Model Source:** `shhossain/opus-mt-en-to-bn` (Apache-2.0)
             - **Quantization:** Dynamic QUInt8 (INT8)
             - **Uncompressed Package Size:** 231,754,408 bytes (~221.0 MB)
-            - **Compressed Archive Size:** ~150.4 MB
+            - **Compressed Archive Size:** 157,681,950 bytes (~150.4 MB)
             - **Archive Checksum (SHA-256):** `ff8b97888c8413c4ba2509e39a50234d040c6b894ab0a005f39bbd47595c0e27`
 
             ### Included Files:
@@ -80,18 +104,17 @@ jobs:
             - `source_pieces.json` (1,067,467 bytes)
             - `model_manifest.json` (3,114 bytes)
 
-            ### Direct Download URL for Android App:
+            ### Direct Download URL:
             `https://github.com/${{ github.repository }}/releases/download/${{ steps.vars.outputs.tag }}/translation_en_bn_v1.0.zip`
-          files: |
-            dist/translation_en_bn_v1.0.zip
-            dist/model_manifest.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Print Asset Download URL
+      - name: Print Final Direct Download URL
         run: |
+          DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/download/${{ steps.vars.outputs.tag }}/translation_en_bn_v1.0.zip"
           echo "=========================================================================="
-          echo "Model Release published successfully!"
-          echo "Download URL for Android App (configure in ModelCatalog.kt or UI):"
-          echo "https://github.com/${{ github.repository }}/releases/download/${{ steps.vars.outputs.tag }}/translation_en_bn_v1.0.zip"
+          echo "FINAL DIRECT DOWNLOAD URL:"
+          echo "$DOWNLOAD_URL"
           echo "=========================================================================="
+
+
