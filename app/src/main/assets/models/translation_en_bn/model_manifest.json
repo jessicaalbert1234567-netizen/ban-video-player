@@ -1,0 +1,81 @@
+{
+  "id": "translation_en_bn",
+  "languagePair": "en-bn",
+  "modelName": "shhossain/opus-mt-en-to-bn",
+  "architecture": "MarianMT (Seq2Seq Transformer Encoder-Decoder)",
+  "quantization": "INT8 (Dynamic QUInt8)",
+  "runtime": "onnxruntime",
+  "format": "onnx",
+  "totalSizeBytes": 231754408,
+  "totalSizeMb": 221.02,
+  "files": [
+    {
+      "name": "config.json",
+      "sizeBytes": 1311,
+      "sha256": "0ba3582247e8a092f41b2e2ed04496160e3a43ab8ed20858784e8e51593e3ec7"
+    },
+    {
+      "name": "decoder_model.onnx",
+      "sizeBytes": 89507041,
+      "sha256": "02c6143216641cbb1c7ac171931bb4ee65d2864b60049292aef044dfd773b0b9"
+    },
+    {
+      "name": "decoder_with_past_model.onnx",
+      "sizeBytes": 86295092,
+      "sha256": "f86fd21ae96746ce3cce2c72f0e3a3f81daf30902284164a806efd86e7ebf165"
+    },
+    {
+      "name": "encoder_model.onnx",
+      "sizeBytes": 51062030,
+      "sha256": "ddb11a17b599458d736b4f1f65b8c69ea778e32348316705193c1c9226e2f2a8"
+    },
+    {
+      "name": "generation_config.json",
+      "sizeBytes": 288,
+      "sha256": "d70086da7b4a5c423963297dbd43dbbbbd03e7c915fe8cfbeac86c3de85d3667"
+    },
+    {
+      "name": "source.spm",
+      "sizeBytes": 801944,
+      "sha256": "42579d7e10efa316d46046d93b32ec58575741d43e86cd54edd5382e7c0ebcfb"
+    },
+    {
+      "name": "source_pieces.json",
+      "sizeBytes": 1067467,
+      "sha256": "f2ee3f64dbacf9ef768388da197dcab26e35dde695277bb60c3eb0e5bee43cd4"
+    },
+    {
+      "name": "special_tokens_map.json",
+      "sizeBytes": 74,
+      "sha256": "5e4d1f5e759d74cb1c2fe1d165cfc62b5237aa904de759380cd6f43042eec723"
+    },
+    {
+      "name": "target.spm",
+      "sizeBytes": 969253,
+      "sha256": "e6c0bae089a84b8d524ba3fa274388c09aec3c492fd74cb13c12ae8dbd1379de"
+    },
+    {
+      "name": "tokenizer_config.json",
+      "sizeBytes": 848,
+      "sha256": "7516a3e0b141a004383ce6f618915a5a43f304e6ff123b32a4d59f3d2014735f"
+    },
+    {
+      "name": "vocab.json",
+      "sizeBytes": 2049060,
+      "sha256": "5419d2b1ce532f694971b3f1c651064b01f48c203a2e94a4fb3a468ad692d383"
+    }
+  ],
+  "sha256": {
+    "config.json": "0ba3582247e8a092f41b2e2ed04496160e3a43ab8ed20858784e8e51593e3ec7",
+    "decoder_model.onnx": "02c6143216641cbb1c7ac171931bb4ee65d2864b60049292aef044dfd773b0b9",
+    "decoder_with_past_model.onnx": "f86fd21ae96746ce3cce2c72f0e3a3f81daf30902284164a806efd86e7ebf165",
+    "encoder_model.onnx": "ddb11a17b599458d736b4f1f65b8c69ea778e32348316705193c1c9226e2f2a8",
+    "generation_config.json": "d70086da7b4a5c423963297dbd43dbbbbd03e7c915fe8cfbeac86c3de85d3667",
+    "source.spm": "42579d7e10efa316d46046d93b32ec58575741d43e86cd54edd5382e7c0ebcfb",
+    "source_pieces.json": "f2ee3f64dbacf9ef768388da197dcab26e35dde695277bb60c3eb0e5bee43cd4",
+    "special_tokens_map.json": "5e4d1f5e759d74cb1c2fe1d165cfc62b5237aa904de759380cd6f43042eec723",
+    "target.spm": "e6c0bae089a84b8d524ba3fa274388c09aec3c492fd74cb13c12ae8dbd1379de",
+    "tokenizer_config.json": "7516a3e0b141a004383ce6f618915a5a43f304e6ff123b32a4d59f3d2014735f",
+    "vocab.json": "5419d2b1ce532f694971b3f1c651064b01f48c203a2e94a4fb3a468ad692d383"
+  }
+}

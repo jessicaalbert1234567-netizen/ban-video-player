@@ -126,7 +126,14 @@ object ModelInstaller {
         val fileExists = file.exists()
         val fileSize = if (fileExists) file.length() else 0L
 
+        val expectedArchiveSize = if (model.archiveSizeBytes > 0L) model.archiveSizeBytes else model.sizeBytes
+
         if (!model.isSourceConfigured && !fileExists) {
+            val failureMsg = if (model.type == ModelType.TRANSLATION) {
+                "English → Bangla translation model is not installed. (Model source not configured)"
+            } else {
+                "Model source not configured: No verified download URL is available."
+            }
             return ModelVerificationResult(
                 modelId = model.id,
                 isFilePresent = false,
@@ -140,11 +147,16 @@ object ModelInstaller {
                 auxiliaryFilesPresent = false,
                 auxiliaryFilesDetails = "Model source not configured",
                 isReadyForOfflineUse = false,
-                failureReason = "Model source not configured: No verified download URL is available."
+                failureReason = failureMsg
             )
         }
 
         if (!fileExists) {
+            val failureMsg = if (model.type == ModelType.TRANSLATION) {
+                "English → Bangla translation model is not installed."
+            } else {
+                "Model file not found on disk."
+            }
             return ModelVerificationResult(
                 modelId = model.id,
                 isFilePresent = false,
@@ -158,11 +170,16 @@ object ModelInstaller {
                 auxiliaryFilesPresent = false,
                 auxiliaryFilesDetails = null,
                 isReadyForOfflineUse = false,
-                failureReason = "Model file not found on disk."
+                failureReason = failureMsg
             )
         }
 
         if (fileSize <= 0) {
+            val failureMsg = if (model.type == ModelType.TRANSLATION) {
+                "English → Bangla translation model is not installed."
+            } else {
+                "Model file is empty (0 bytes)."
+            }
             return ModelVerificationResult(
                 modelId = model.id,
                 isFilePresent = true,
@@ -176,11 +193,11 @@ object ModelInstaller {
                 auxiliaryFilesPresent = false,
                 auxiliaryFilesDetails = null,
                 isReadyForOfflineUse = false,
-                failureReason = "Model file is empty (0 bytes)."
+                failureReason = failureMsg
             )
         }
 
-        if (model.sizeBytes > 0 && fileSize < (model.sizeBytes * 0.9).toLong()) {
+        if (expectedArchiveSize > 0 && fileSize < (expectedArchiveSize * 0.9).toLong()) {
             return ModelVerificationResult(
                 modelId = model.id,
                 isFilePresent = true,
@@ -194,7 +211,7 @@ object ModelInstaller {
                 auxiliaryFilesPresent = false,
                 auxiliaryFilesDetails = null,
                 isReadyForOfflineUse = false,
-                failureReason = "Model file size ($fileSize bytes) is smaller than expected (${model.sizeBytes} bytes)."
+                failureReason = "Model file size ($fileSize bytes) is smaller than expected ($expectedArchiveSize bytes)."
             )
         }
 
@@ -227,7 +244,11 @@ object ModelInstaller {
         // ONNX load verification
         val onnxResult = testOnnxInitialization(file)
         if (onnxResult.isFailure) {
-            val ex = onnxResult.exceptionOrNull()
+            val failureMsg = if (model.type == ModelType.TRANSLATION) {
+                "Translation model failed to initialize."
+            } else {
+                "ONNX session initialization failed: ${onnxResult.exceptionOrNull()?.localizedMessage ?: "Unknown ONNX error"}"
+            }
             return ModelVerificationResult(
                 modelId = model.id,
                 isFilePresent = true,
@@ -241,7 +262,7 @@ object ModelInstaller {
                 auxiliaryFilesPresent = false,
                 auxiliaryFilesDetails = null,
                 isReadyForOfflineUse = false,
-                failureReason = "ONNX session initialization failed: ${ex?.localizedMessage ?: "Unknown ONNX error"}"
+                failureReason = failureMsg
             )
         }
 
@@ -255,10 +276,27 @@ object ModelInstaller {
             if (!auxFile.exists() || auxFile.length() == 0L) {
                 auxPresent = false
                 missingAux.add(aux.fileName)
+            } else if (aux.expectedSizeBytes > 0 && auxFile.length() < (aux.expectedSizeBytes * 0.9).toLong()) {
+                auxPresent = false
+                missingAux.add("${aux.fileName} (incomplete size)")
+            } else if (aux.sha256.isNotBlank() && !verifyChecksum(auxFile, aux.sha256)) {
+                auxPresent = false
+                missingAux.add("${aux.fileName} (SHA-256 mismatch)")
             }
         }
 
         if (!auxPresent) {
+            val failureMsg = if (model.type == ModelType.TRANSLATION) {
+                if (missingAux.any { it.contains("vocab") || it.contains("spm") || it.contains("pieces") || it.contains("tokenizer") }) {
+                    "Translation tokenizer files are missing."
+                } else if (missingAux.any { it.contains("decoder") }) {
+                    "English → Bangla translation model is not installed."
+                } else {
+                    "Translation tokenizer files are missing."
+                }
+            } else {
+                "Required companion file(s) missing: ${missingAux.joinToString()}"
+            }
             return ModelVerificationResult(
                 modelId = model.id,
                 isFilePresent = true,
@@ -272,8 +310,33 @@ object ModelInstaller {
                 auxiliaryFilesPresent = false,
                 auxiliaryFilesDetails = "Missing companion files: ${missingAux.joinToString()}",
                 isReadyForOfflineUse = false,
-                failureReason = "Required companion file(s) missing: ${missingAux.joinToString()}"
+                failureReason = failureMsg
             )
+        }
+
+        // For translation model: also verify decoder ONNX initialization
+        if (model.type == ModelType.TRANSLATION) {
+            val decoderFile = getAuxiliaryFile(context, model, "decoder_model.onnx")
+            if (decoderFile.exists()) {
+                val decResult = testOnnxInitialization(decoderFile)
+                if (decResult.isFailure) {
+                    return ModelVerificationResult(
+                        modelId = model.id,
+                        isFilePresent = true,
+                        fileSizeBytes = fileSize,
+                        expectedSizeBytes = model.sizeBytes,
+                        sha256Calculated = calculatedSha256,
+                        sha256Matches = true,
+                        onnxLoadSuccess = false,
+                        onnxInputInfo = inputs.joinToString(),
+                        onnxOutputInfo = outputs.joinToString(),
+                        auxiliaryFilesPresent = true,
+                        auxiliaryFilesDetails = "Decoder ONNX session failed",
+                        isReadyForOfflineUse = false,
+                        failureReason = "Translation model failed to initialize."
+                    )
+                }
+            }
         }
 
         return ModelVerificationResult(

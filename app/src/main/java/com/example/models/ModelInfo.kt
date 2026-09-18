@@ -67,6 +67,7 @@ data class ModelInfo(
     val type: ModelType,
     val downloadUrl: String,
     val sizeBytes: Long,
+    val archiveSizeBytes: Long = 0L,
     val sha256: String,
     val format: ModelFormat,
     val archiveName: String,
