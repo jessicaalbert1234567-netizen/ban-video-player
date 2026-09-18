@@ -30,7 +30,11 @@ jobs:
         yes | sdkmanager --licenses > /dev/null 2>&1 || true
 
     - name: Grant execute permission for gradlew
-      run: chmod +x gradlew || true
+      run: |
+        if [ ! -f "gradlew" ]; then
+          gradle wrapper
+        fi
+        chmod +x gradlew
 
     - name: Build Debug APK
       run: ./gradlew assembleDebug --no-daemon --stacktrace
