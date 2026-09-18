@@ -1,0 +1,97 @@
+name: Publish Translation Model Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Git Tag for the Release (e.g., v1.0.0-translation-model)'
+        required: true
+        default: 'v1.0.0-translation-model'
+      release_title:
+        description: 'Title of the GitHub Release'
+        required: true
+        default: 'Offline English-Bangla Translation Model v1.0.0'
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch transformers onnx onnxruntime sentencepiece optimum
+
+      - name: Export, Quantize and Package Model
+        run: |
+          chmod +x scripts/package_translation_model.py scripts/export_and_package_model.py
+          python3 scripts/export_and_package_model.py
+
+      - name: Determine Release Tag
+        id: vars
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.tag_name }}"
+            TITLE="${{ github.event.inputs.release_title }}"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+            TITLE="Release ${TAG}"
+          fi
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "title=${TITLE}" >> $GITHUB_OUTPUT
+
+      - name: Upload Release Assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.vars.outputs.tag }}
+          name: ${{ steps.vars.outputs.title }}
+          body: |
+            ## MarianMT English → Bangla Neural Translation Model (INT8 ONNX)
+
+            - **Architecture:** MarianMT Seq2Seq Transformer (Encoder + Autoregressive Decoder)
+            - **Model Source:** `shhossain/opus-mt-en-to-bn` (Apache-2.0)
+            - **Quantization:** Dynamic QUInt8 (INT8)
+            - **Uncompressed Package Size:** 231,754,408 bytes (~221.0 MB)
+            - **Compressed Archive Size:** ~150.4 MB
+            - **Archive Checksum (SHA-256):** `ff8b97888c8413c4ba2509e39a50234d040c6b894ab0a005f39bbd47595c0e27`
+
+            ### Included Files:
+            - `encoder_model.onnx` (51,062,030 bytes)
+            - `decoder_model.onnx` (89,507,041 bytes)
+            - `decoder_with_past_model.onnx` (86,295,092 bytes)
+            - `source.spm` (801,944 bytes)
+            - `target.spm` (969,253 bytes)
+            - `vocab.json` (2,049,060 bytes)
+            - `source_pieces.json` (1,067,467 bytes)
+            - `model_manifest.json` (3,114 bytes)
+
+            ### Direct Download URL for Android App:
+            `https://github.com/${{ github.repository }}/releases/download/${{ steps.vars.outputs.tag }}/translation_en_bn_v1.0.zip`
+          files: |
+            dist/translation_en_bn_v1.0.zip
+            dist/model_manifest.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Print Asset Download URL
+        run: |
+          echo "=========================================================================="
+          echo "Model Release published successfully!"
+          echo "Download URL for Android App (configure in ModelCatalog.kt or UI):"
+          echo "https://github.com/${{ github.repository }}/releases/download/${{ steps.vars.outputs.tag }}/translation_en_bn_v1.0.zip"
+          echo "=========================================================================="

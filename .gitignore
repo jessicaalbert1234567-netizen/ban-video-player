@@ -16,3 +16,13 @@
 local.properties
 .env
 debug.keystore
+
+# Large Model Binaries and Archives (do NOT commit to git)
+*.onnx
+*.zip
+*.tar.gz
+*.bin
+*.spm
+/models_export/
+/tmp/
+/dist/

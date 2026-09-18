@@ -38,6 +38,59 @@ fun ModelManagerScreen(
     val requiredMb = storageSummary.first / (1024 * 1024)
     val availableMb = storageSummary.second / (1024 * 1024)
 
+    var showConfigDialogForModel by remember { mutableStateOf<com.example.models.ModelInfo?>(null) }
+    var releaseUrlInput by remember { mutableStateOf("") }
+
+    if (showConfigDialogForModel != null) {
+        val model = showConfigDialogForModel!!
+        AlertDialog(
+            onDismissRequest = { showConfigDialogForModel = null },
+            title = { Text("Configure Release Asset URL") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "Enter the GitHub Release asset download URL for ${model.name}:",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    OutlinedTextField(
+                        value = releaseUrlInput,
+                        onValueChange = { releaseUrlInput = it },
+                        label = { Text("Asset URL") },
+                        placeholder = { Text("https://github.com/.../translation_en_bn_v1.0.zip") },
+                        singleLine = false,
+                        maxLines = 3,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Text(
+                        text = "The URL will be verified upon download (SHA-256 checksum & test translation).",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val trimmed = releaseUrlInput.trim()
+                        if (trimmed.isNotBlank()) {
+                            ModelCatalog.configureTranslationReleaseUrl(trimmed)
+                            viewModel.refreshModelStatuses()
+                        }
+                        showConfigDialogForModel = null
+                    },
+                    enabled = releaseUrlInput.isNotBlank()
+                ) {
+                    Text("Save & Update")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showConfigDialogForModel = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -156,7 +209,11 @@ fun ModelManagerScreen(
                 ModelCard(
                     item = item,
                     onDownload = { viewModel.downloadModel(item.info) },
-                    onDelete = { viewModel.deleteModel(item.info) }
+                    onDelete = { viewModel.deleteModel(item.info) },
+                    onConfigureUrl = {
+                        releaseUrlInput = item.info.downloadUrl
+                        showConfigDialogForModel = item.info
+                    }
                 )
             }
         }
@@ -167,7 +224,8 @@ fun ModelManagerScreen(
 fun ModelCard(
     item: ModelItemUiState,
     onDownload: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onConfigureUrl: () -> Unit = {}
 ) {
     val info = item.info
     val isDownloading = item.downloadProgress?.status == ModelStatus.DOWNLOADING
@@ -204,11 +262,11 @@ fun ModelCard(
                     )
                 }
 
-                // Status chip
+                // Status chip: strictly "Installed" only if isReadyForOfflineUse is true
                 val statusText = when {
                     !info.isSourceConfigured && !item.isReadyForOfflineUse -> "Not Configured"
-                    item.isReadyForOfflineUse -> "Verified & Ready"
-                    isDownloading -> "${item.downloadProgress?.progressPercent ?: 0}%"
+                    item.isReadyForOfflineUse -> "Installed"
+                    isDownloading -> "Downloading ${item.downloadProgress?.progressPercent ?: 0}%"
                     isVerifying -> "Verifying..."
                     item.status == ModelStatus.INCOMPATIBLE -> "Incompatible"
                     item.status == ModelStatus.ERROR -> "Error"
@@ -252,7 +310,25 @@ fun ModelCard(
                 )
             }
 
-            // Progress bar if downloading
+            // Verification in progress
+            if (isVerifying) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    LinearProgressIndicator(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(6.dp)
+                            .clip(RoundedCornerShape(3.dp)),
+                        color = WarningAmber
+                    )
+                    Text(
+                        text = "Verifying package checksums, integrity, and test translation...",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            // Progress bar if downloading: downloaded / total bytes, percentage, speed, ETA
             if (isDownloading && item.downloadProgress != null) {
                 val prog = item.downloadProgress
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -268,12 +344,12 @@ fun ModelCard(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
-                            text = "${prog.downloadedBytes / (1024 * 1024)} / ${prog.totalBytes / (1024 * 1024)} MB (${prog.speedKbps} KB/s)",
+                            text = "${prog.downloadedBytes / (1024 * 1024)} MB / ${prog.totalBytes / (1024 * 1024)} MB (${prog.progressPercent}%)",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Text(
-                            text = "${prog.estimatedRemainingSeconds}s remaining",
+                            text = "Speed: ${prog.speedKbps} KB/s • ETA: ${prog.estimatedRemainingSeconds}s",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -332,13 +408,14 @@ fun ModelCard(
                         Text("Delete Model")
                     }
                 } else if (!info.isSourceConfigured) {
-                    Button(
-                        onClick = {},
-                        enabled = false,
+                    OutlinedButton(
+                        onClick = onConfigureUrl,
                         shape = RoundedCornerShape(10.dp),
                         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
                     ) {
-                        Text("Source Not Configured")
+                        Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Set Release URL")
                     }
                 } else {
                     Button(

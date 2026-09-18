@@ -112,6 +112,138 @@ class ModelDownloader(private val context: Context) {
             return@withContext Result.failure(IllegalStateException(errorMsg))
         }
 
+        // Translation package archive handling
+        if (model.type == ModelType.TRANSLATION || model.archiveName.endsWith(".zip") || model.format == ModelFormat.BINARY_ARCHIVE) {
+            val archiveExpectedSize = if (model.archiveSizeBytes > 0L) model.archiveSizeBytes else model.sizeBytes
+            updateState(
+                DownloadProgress(
+                    modelId = model.id,
+                    totalBytes = archiveExpectedSize,
+                    status = ModelStatus.DOWNLOADING
+                ),
+                onProgressUpdate
+            )
+
+            try {
+                // Step 1: Download package archive with live progress
+                downloadFileWithProgress(
+                    url = model.downloadUrl,
+                    destinationTempFile = tempFile,
+                    expectedSizeBytes = archiveExpectedSize,
+                    modelId = model.id,
+                    onProgressUpdate = onProgressUpdate
+                )
+
+                // Step 2: Verification of archive
+                updateState(
+                    DownloadProgress(
+                        modelId = model.id,
+                        progressPercent = 95,
+                        status = ModelStatus.VERIFYING
+                    ),
+                    onProgressUpdate
+                )
+
+                if (tempFile.length() <= 0) {
+                    tempFile.delete()
+                    throw IllegalStateException("Downloaded translation archive is empty (0 bytes).")
+                }
+
+                // Check zip SHA-256 if configured
+                if (model.sha256.isNotBlank()) {
+                    val archiveSha = ModelInstaller.calculateSha256(tempFile)
+                    if (!archiveSha.equals(model.sha256, ignoreCase = true)) {
+                        tempFile.delete()
+                        throw IllegalStateException("Package SHA-256 checksum mismatch! Expected: ${model.sha256.take(8)}..., got: ${archiveSha.take(8)}...")
+                    }
+                }
+
+                // Step 3: Extract archive safely into staging folder
+                val stagingDir = File(destDir, "staging_${System.currentTimeMillis()}")
+                stagingDir.mkdirs()
+                try {
+                    ModelInstaller.extractZipSafely(tempFile, stagingDir)
+
+                    // Step 4: Verify all required files against manifest
+                    val requiredFiles = listOf(
+                        "encoder_model.onnx",
+                        "decoder_model.onnx",
+                        "decoder_with_past_model.onnx",
+                        "source.spm",
+                        "target.spm",
+                        "vocab.json",
+                        "source_pieces.json",
+                        "model_manifest.json"
+                    )
+
+                    for (rf in requiredFiles) {
+                        val f = File(stagingDir, rf)
+                        if (!f.exists() || f.length() == 0L) {
+                            throw IllegalStateException("Missing required model file after extraction: $rf")
+                        }
+                    }
+
+                    // Move extracted files into destDir
+                    stagingDir.listFiles()?.forEach { extractedFile ->
+                        val targetFile = File(destDir, extractedFile.name)
+                        extractedFile.copyTo(targetFile, overwrite = true)
+                    }
+                } finally {
+                    stagingDir.deleteRecursively()
+                    tempFile.delete()
+                }
+
+                // Step 5: Test complete ONNX models and translation pipeline
+                updateState(
+                    DownloadProgress(
+                        modelId = model.id,
+                        progressPercent = 98,
+                        status = ModelStatus.VERIFYING
+                    ),
+                    onProgressUpdate
+                )
+
+                val testPipeline = ModelInstaller.testTranslationPipeline(context)
+                if (testPipeline.isFailure) {
+                    finalFile.delete()
+                    val err = testPipeline.exceptionOrNull()?.message ?: "Translation inference test failed"
+                    throw IllegalStateException("Post-installation translation test failed: $err")
+                }
+
+                // Step 6: Final offline verification
+                val verification = ModelInstaller.verifyModelOffline(context, model)
+                if (!verification.isReadyForOfflineUse) {
+                    finalFile.delete()
+                    throw IllegalStateException("Model verification failed: ${verification.failureReason}")
+                }
+
+                updateState(
+                    DownloadProgress(
+                        modelId = model.id,
+                        downloadedBytes = model.sizeBytes,
+                        totalBytes = model.sizeBytes,
+                        progressPercent = 100,
+                        status = ModelStatus.READY
+                    ),
+                    onProgressUpdate
+                )
+
+                return@withContext Result.success(finalFile)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error downloading/installing translation package ${model.name}", e)
+                if (tempFile.exists()) tempFile.delete()
+                updateState(
+                    DownloadProgress(
+                        modelId = model.id,
+                        status = ModelStatus.ERROR,
+                        errorMessage = e.message ?: "Download failed"
+                    ),
+                    onProgressUpdate
+                )
+                return@withContext Result.failure(e)
+            }
+        }
+
         updateState(
             DownloadProgress(
                 modelId = model.id,

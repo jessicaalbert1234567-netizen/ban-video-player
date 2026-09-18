@@ -28,7 +28,12 @@ object ModelInstaller {
 
     fun getInstalledModelFile(context: Context, model: ModelInfo): File {
         val dir = getModelDirectory(context, model)
-        return File(dir, model.archiveName)
+        val fileName = if (model.type == ModelType.TRANSLATION && model.archiveName.endsWith(".zip")) {
+            "encoder_model.onnx"
+        } else {
+            model.archiveName
+        }
+        return File(dir, fileName)
     }
 
     fun getAuxiliaryFile(context: Context, model: ModelInfo, fileName: String): File {
@@ -37,6 +42,15 @@ object ModelInstaller {
     }
 
     fun isModelInstalled(context: Context, model: ModelInfo): Boolean {
+        if (model.type == ModelType.TRANSLATION) {
+            val dir = getModelDirectory(context, model)
+            val encoder = File(dir, "encoder_model.onnx")
+            val decoder = File(dir, "decoder_model.onnx")
+            val decoderWithPast = File(dir, "decoder_with_past_model.onnx")
+            return encoder.exists() && encoder.length() > 0 &&
+                   decoder.exists() && decoder.length() > 0 &&
+                   decoderWithPast.exists() && decoderWithPast.length() > 0
+        }
         val file = getInstalledModelFile(context, model)
         return file.exists() && file.length() > 0
     }
@@ -126,7 +140,19 @@ object ModelInstaller {
         val fileExists = file.exists()
         val fileSize = if (fileExists) file.length() else 0L
 
-        val expectedArchiveSize = if (model.archiveSizeBytes > 0L) model.archiveSizeBytes else model.sizeBytes
+        val expectedMainSize = if (model.type == ModelType.TRANSLATION) {
+            51_062_030L // encoder_model.onnx size
+        } else if (model.archiveSizeBytes > 0L) {
+            model.archiveSizeBytes
+        } else {
+            model.sizeBytes
+        }
+
+        val expectedMainSha256 = if (model.type == ModelType.TRANSLATION) {
+            "ddb11a17b599458d736b4f1f65b8c69ea778e32348316705193c1c9226e2f2a8" // encoder_model.onnx SHA-256
+        } else {
+            model.sha256
+        }
 
         if (!model.isSourceConfigured && !fileExists) {
             val failureMsg = if (model.type == ModelType.TRANSLATION) {
@@ -197,7 +223,7 @@ object ModelInstaller {
             )
         }
 
-        if (expectedArchiveSize > 0 && fileSize < (expectedArchiveSize * 0.9).toLong()) {
+        if (expectedMainSize > 0 && fileSize < (expectedMainSize * 0.9).toLong()) {
             return ModelVerificationResult(
                 modelId = model.id,
                 isFilePresent = true,
@@ -211,14 +237,14 @@ object ModelInstaller {
                 auxiliaryFilesPresent = false,
                 auxiliaryFilesDetails = null,
                 isReadyForOfflineUse = false,
-                failureReason = "Model file size ($fileSize bytes) is smaller than expected ($expectedArchiveSize bytes)."
+                failureReason = "Model file size ($fileSize bytes) is smaller than expected ($expectedMainSize bytes)."
             )
         }
 
         // SHA-256 calculation
         val calculatedSha256 = calculateSha256(file)
-        val sha256Matches = if (model.sha256.isNotBlank()) {
-            calculatedSha256.equals(model.sha256, ignoreCase = true)
+        val sha256Matches = if (expectedMainSha256.isNotBlank()) {
+            calculatedSha256.equals(expectedMainSha256, ignoreCase = true)
         } else {
             true
         }
@@ -237,7 +263,7 @@ object ModelInstaller {
                 auxiliaryFilesPresent = false,
                 auxiliaryFilesDetails = null,
                 isReadyForOfflineUse = false,
-                failureReason = "SHA-256 checksum mismatch (expected: ${model.sha256.take(8)}..., got: ${calculatedSha256.take(8)}...)."
+                failureReason = "SHA-256 checksum mismatch (expected: ${expectedMainSha256.take(8)}..., got: ${calculatedSha256.take(8)}...)."
             )
         }
 
@@ -314,7 +340,7 @@ object ModelInstaller {
             )
         }
 
-        // For translation model: also verify decoder ONNX initialization
+        // For translation model: also verify decoder and decoder_with_past ONNX initialization
         if (model.type == ModelType.TRANSLATION) {
             val decoderFile = getAuxiliaryFile(context, model, "decoder_model.onnx")
             if (decoderFile.exists()) {
@@ -333,7 +359,29 @@ object ModelInstaller {
                         auxiliaryFilesPresent = true,
                         auxiliaryFilesDetails = "Decoder ONNX session failed",
                         isReadyForOfflineUse = false,
-                        failureReason = "Translation model failed to initialize."
+                        failureReason = "Translation model decoder failed to initialize."
+                    )
+                }
+            }
+
+            val decoderPastFile = getAuxiliaryFile(context, model, "decoder_with_past_model.onnx")
+            if (decoderPastFile.exists()) {
+                val decPastResult = testOnnxInitialization(decoderPastFile)
+                if (decPastResult.isFailure) {
+                    return ModelVerificationResult(
+                        modelId = model.id,
+                        isFilePresent = true,
+                        fileSizeBytes = fileSize,
+                        expectedSizeBytes = model.sizeBytes,
+                        sha256Calculated = calculatedSha256,
+                        sha256Matches = true,
+                        onnxLoadSuccess = false,
+                        onnxInputInfo = inputs.joinToString(),
+                        onnxOutputInfo = outputs.joinToString(),
+                        auxiliaryFilesPresent = true,
+                        auxiliaryFilesDetails = "Decoder with past ONNX session failed",
+                        isReadyForOfflineUse = false,
+                        failureReason = "Translation model decoder with past failed to initialize."
                     )
                 }
             }
@@ -354,6 +402,55 @@ object ModelInstaller {
             isReadyForOfflineUse = true,
             failureReason = null
         )
+    }
+
+    /**
+     * Performs end-to-end post-installation verification of the translation model:
+     * 1. Verifies that encoder, decoder, and decoder_with_past ONNX sessions initialize.
+     * 2. Verifies that tokenizer files load correctly.
+     * 3. Executes a real test translation ("Hello, how are you today?") and ensures non-empty Bangla output.
+     */
+    suspend fun testTranslationPipeline(context: Context): Result<String> {
+        return try {
+            val modelDir = getModelDirectory(context, ModelCatalog.ENGLISH_TO_BANGLA_TRANSLATION)
+            val encoderFile = File(modelDir, "encoder_model.onnx")
+            val decoderFile = File(modelDir, "decoder_model.onnx")
+            val decoderWithPastFile = File(modelDir, "decoder_with_past_model.onnx")
+
+            if (!encoderFile.exists() || !decoderFile.exists() || !decoderWithPastFile.exists()) {
+                return Result.failure(IllegalStateException("One or more required ONNX model files are missing from $modelDir"))
+            }
+
+            // Test ONNX session creations
+            val encInit = testOnnxInitialization(encoderFile)
+            if (encInit.isFailure) {
+                return Result.failure(IllegalStateException("Encoder ONNX failed to initialize: ${encInit.exceptionOrNull()?.message}"))
+            }
+            val decInit = testOnnxInitialization(decoderFile)
+            if (decInit.isFailure) {
+                return Result.failure(IllegalStateException("Decoder ONNX failed to initialize: ${decInit.exceptionOrNull()?.message}"))
+            }
+            val decPastInit = testOnnxInitialization(decoderWithPastFile)
+            if (decPastInit.isFailure) {
+                return Result.failure(IllegalStateException("Decoder-with-past ONNX failed to initialize: ${decPastInit.exceptionOrNull()?.message}"))
+            }
+
+            // Instantiate translator and run actual inference
+            val translator = com.example.translation.EnglishToBanglaTranslator(context)
+            val testEnglish = "Hello, how are you today?"
+            val testBangla = translator.translate(testEnglish)
+            translator.close()
+
+            if (testBangla.isBlank()) {
+                return Result.failure(IllegalStateException("Translation test produced empty output for input: '$testEnglish'"))
+            }
+
+            Log.i(TAG, "Test translation passed: '$testEnglish' -> '$testBangla'")
+            Result.success(testBangla)
+        } catch (e: Throwable) {
+            Log.e(TAG, "Translation pipeline test failed: ${e.message}", e)
+            Result.failure(e)
+        }
     }
 
     /**

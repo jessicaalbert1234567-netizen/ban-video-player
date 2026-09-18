@@ -44,96 +44,94 @@ object ModelCatalog {
     )
 
     // Model 2: English -> Bangla Translation (MarianMT Seq2Seq INT8 ONNX)
-    // Package verified from shhossain/opus-mt-en-to-bn INT8 conversion (~221.0 MB total)
-    val ENGLISH_TO_BANGLA_TRANSLATION = ModelInfo(
-        id = "en_bn_translation_onnx",
-        name = "English → Bangla Translation",
-        version = "1.0.0",
-        sourceLanguage = "en",
-        targetLanguage = "bn",
-        type = ModelType.TRANSLATION,
-        downloadUrl = "", // Explicitly unconfigured per Step 9: "If the converted model has not yet been uploaded to a stable public location, keep the status: 'Model source not configured' instead of pretending it can be downloaded."
-        sizeBytes = 231_754_408L, // Real verified package size ~221.0 MB (NOT fake ~64 MB)
-        archiveSizeBytes = 51_062_030L, // encoder_model.onnx size
-        sha256 = "ddb11a17b599458d736b4f1f65b8c69ea778e32348316705193c1c9226e2f2a8", // encoder_model.onnx SHA-256
-        format = ModelFormat.ONNX,
-        archiveName = "encoder_model.onnx",
-        minimumRamMb = 512,
-        minimumStorageMb = 350,
-        onnxMetadata = OnnxMetadata(
-            inputTensorName = "input_ids",
-            outputTensorName = "last_hidden_state",
-            inputShape = listOf(1L, -1L),
-            dataType = "INT64",
-            vocabFileName = "vocab.json",
-            decoderType = "SEQ2SEQ_MARIAN"
-        ),
-        description = "Real offline English → Bangla neural translation model (shhossain/opus-mt-en-to-bn MarianMT Seq2Seq INT8 ONNX). Model source not configured on public CDN.",
-        licenseSource = "Helsinki-NLP / shhossain (Apache-2.0)",
-        runtimeRequirements = "ONNX Runtime Mobile (Encoder + Decoder Seq2Seq INT8, SentencePiece tokenizer)",
-        auxiliaryFiles = listOf(
-            ModelAuxiliaryFile(
-                fileName = "decoder_model.onnx",
-                downloadUrl = "",
-                expectedSizeBytes = 89_507_041L,
-                sha256 = "02c6143216641cbb1c7ac171931bb4ee65d2864b60049292aef044dfd773b0b9"
+    // Production Distribution Package: translation_en_bn_v1.0.zip (~150.4 MB compressed, ~221.0 MB uncompressed)
+    // Published via GitHub Actions workflow as a GitHub Release asset.
+    // Kept UNCONFIGURED ("") by default until a real GitHub Release exists (per strict user instructions).
+    @Volatile
+    var translationReleaseUrl: String = ""
+
+    fun configureTranslationReleaseUrl(url: String) {
+        translationReleaseUrl = url.trim()
+    }
+
+    val ENGLISH_TO_BANGLA_TRANSLATION: ModelInfo
+        get() = ModelInfo(
+            id = "en_bn_translation_onnx",
+            name = "English → Bangla Translation",
+            version = "1.0.0",
+            sourceLanguage = "en",
+            targetLanguage = "bn",
+            type = ModelType.TRANSLATION,
+            downloadUrl = translationReleaseUrl, // Unconfigured ("") by default until real release asset exists
+            sizeBytes = 231_754_408L, // Real verified uncompressed package size ~221.0 MB
+            archiveSizeBytes = 157_681_950L, // Real distribution zip archive size ~150.38 MB
+            sha256 = "ff8b97888c8413c4ba2509e39a50234d040c6b894ab0a005f39bbd47595c0e27", // SHA-256 of translation_en_bn_v1.0.zip
+            format = ModelFormat.BINARY_ARCHIVE,
+            archiveName = "translation_en_bn_v1.0.zip",
+            minimumRamMb = 512,
+            minimumStorageMb = 450,
+            onnxMetadata = OnnxMetadata(
+                inputTensorName = "input_ids",
+                outputTensorName = "last_hidden_state",
+                inputShape = listOf(1L, -1L),
+                dataType = "INT64",
+                vocabFileName = "vocab.json",
+                decoderType = "SEQ2SEQ_MARIAN"
             ),
-            ModelAuxiliaryFile(
-                fileName = "decoder_with_past_model.onnx",
-                downloadUrl = "",
-                expectedSizeBytes = 86_295_092L,
-                sha256 = "f86fd21ae96746ce3cce2c72f0e3a3f81daf30902284164a806efd86e7ebf165"
-            ),
-            ModelAuxiliaryFile(
-                fileName = "source.spm",
-                downloadUrl = "https://huggingface.co/shhossain/opus-mt-en-to-bn/resolve/main/source.spm",
-                expectedSizeBytes = 801_944L,
-                sha256 = "42579d7e10efa316d46046d93b32ec58575741d43e86cd54edd5382e7c0ebcfb"
-            ),
-            ModelAuxiliaryFile(
-                fileName = "target.spm",
-                downloadUrl = "https://huggingface.co/shhossain/opus-mt-en-to-bn/resolve/main/target.spm",
-                expectedSizeBytes = 969_253L,
-                sha256 = "e6c0bae089a84b8d524ba3fa274388c09aec3c492fd74cb13c12ae8dbd1379de"
-            ),
-            ModelAuxiliaryFile(
-                fileName = "vocab.json",
-                downloadUrl = "https://huggingface.co/shhossain/opus-mt-en-to-bn/resolve/main/vocab.json",
-                expectedSizeBytes = 2_049_060L,
-                sha256 = "5419d2b1ce532f694971b3f1c651064b01f48c203a2e94a4fb3a468ad692d383"
-            ),
-            ModelAuxiliaryFile(
-                fileName = "source_pieces.json",
-                downloadUrl = "",
-                expectedSizeBytes = 1_067_467L,
-                sha256 = "f2ee3f64dbacf9ef768388da197dcab26e35dde695277bb60c3eb0e5bee43cd4"
-            ),
-            ModelAuxiliaryFile(
-                fileName = "config.json",
-                downloadUrl = "https://huggingface.co/shhossain/opus-mt-en-to-bn/resolve/main/config.json",
-                expectedSizeBytes = 1_311L,
-                sha256 = "0ba3582247e8a092f41b2e2ed04496160e3a43ab8ed20858784e8e51593e3ec7"
-            ),
-            ModelAuxiliaryFile(
-                fileName = "generation_config.json",
-                downloadUrl = "https://huggingface.co/shhossain/opus-mt-en-to-bn/resolve/main/generation_config.json",
-                expectedSizeBytes = 288L,
-                sha256 = "d70086da7b4a5c423963297dbd43dbbbbd03e7c915fe8cfbeac86c3de85d3667"
-            ),
-            ModelAuxiliaryFile(
-                fileName = "tokenizer_config.json",
-                downloadUrl = "https://huggingface.co/shhossain/opus-mt-en-to-bn/resolve/main/tokenizer_config.json",
-                expectedSizeBytes = 848L,
-                sha256 = "7516a3e0b141a004383ce6f618915a5a43f304e6ff123b32a4d59f3d2014735f"
-            ),
-            ModelAuxiliaryFile(
-                fileName = "model_manifest.json",
-                downloadUrl = "",
-                expectedSizeBytes = 3_150L,
-                sha256 = ""
+            description = "Real offline English → Bangla neural translation model (shhossain/opus-mt-en-to-bn MarianMT Seq2Seq INT8 ONNX). Source unconfigured until published to GitHub Releases.",
+            licenseSource = "Helsinki-NLP / shhossain (Apache-2.0)",
+            runtimeRequirements = "ONNX Runtime Mobile (Encoder + Decoder Seq2Seq INT8, SentencePiece tokenizer)",
+            auxiliaryFiles = listOf(
+                ModelAuxiliaryFile(
+                    fileName = "encoder_model.onnx",
+                    downloadUrl = "",
+                    expectedSizeBytes = 51_062_030L,
+                    sha256 = "ddb11a17b599458d736b4f1f65b8c69ea778e32348316705193c1c9226e2f2a8"
+                ),
+                ModelAuxiliaryFile(
+                    fileName = "decoder_model.onnx",
+                    downloadUrl = "",
+                    expectedSizeBytes = 89_507_041L,
+                    sha256 = "02c6143216641cbb1c7ac171931bb4ee65d2864b60049292aef044dfd773b0b9"
+                ),
+                ModelAuxiliaryFile(
+                    fileName = "decoder_with_past_model.onnx",
+                    downloadUrl = "",
+                    expectedSizeBytes = 86_295_092L,
+                    sha256 = "f86fd21ae96746ce3cce2c72f0e3a3f81daf30902284164a806efd86e7ebf165"
+                ),
+                ModelAuxiliaryFile(
+                    fileName = "source.spm",
+                    downloadUrl = "",
+                    expectedSizeBytes = 801_944L,
+                    sha256 = "42579d7e10efa316d46046d93b32ec58575741d43e86cd54edd5382e7c0ebcfb"
+                ),
+                ModelAuxiliaryFile(
+                    fileName = "target.spm",
+                    downloadUrl = "",
+                    expectedSizeBytes = 969_253L,
+                    sha256 = "e6c0bae089a84b8d524ba3fa274388c09aec3c492fd74cb13c12ae8dbd1379de"
+                ),
+                ModelAuxiliaryFile(
+                    fileName = "vocab.json",
+                    downloadUrl = "",
+                    expectedSizeBytes = 2_049_060L,
+                    sha256 = "5419d2b1ce532f694971b3f1c651064b01f48c203a2e94a4fb3a468ad692d383"
+                ),
+                ModelAuxiliaryFile(
+                    fileName = "source_pieces.json",
+                    downloadUrl = "",
+                    expectedSizeBytes = 1_067_467L,
+                    sha256 = "f2ee3f64dbacf9ef768388da197dcab26e35dde695277bb60c3eb0e5bee43cd4"
+                ),
+                ModelAuxiliaryFile(
+                    fileName = "model_manifest.json",
+                    downloadUrl = "",
+                    expectedSizeBytes = 3_114L,
+                    sha256 = "06960a09ec46487e651e7f607c3365fa316d56314f5ec9832791550c606cb87b"
+                )
             )
         )
-    )
 
     // Model 3: Bangla Voice / Speech Synthesis (Piper VITS ONNX)
     val BANGLA_VOICE_TTS = ModelInfo(
@@ -174,9 +172,10 @@ object ModelCatalog {
     )
 
     // Required models for the current English -> Bangla Dubbing pipeline
-    val REQUIRED_MODELS = listOf(
-        ENGLISH_ASR,
-        ENGLISH_TO_BANGLA_TRANSLATION,
-        BANGLA_VOICE_TTS
-    )
+    val REQUIRED_MODELS: List<ModelInfo>
+        get() = listOf(
+            ENGLISH_ASR,
+            ENGLISH_TO_BANGLA_TRANSLATION,
+            BANGLA_VOICE_TTS
+        )
 }
