@@ -4,7 +4,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -17,7 +16,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.models.ModelCatalog
@@ -47,6 +45,14 @@ fun ModelManagerScreen(
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack, modifier = Modifier.testTag("model_mgr_back_button")) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                actions = {
+                    IconButton(
+                        onClick = { viewModel.refreshModelStatuses() },
+                        modifier = Modifier.testTag("refresh_models_button")
+                    ) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Verify Models")
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -80,7 +86,7 @@ fun ModelManagerScreen(
                     ) {
                         Column {
                             Text(
-                                text = "Device Storage",
+                                text = "Device Storage & Verification",
                                 style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
                             )
                             Spacer(modifier = Modifier.height(2.dp))
@@ -109,6 +115,7 @@ fun ModelManagerScreen(
 
             // Download All Button
             item {
+                val hasConfiguredPending = models.any { it.info.isSourceConfigured && !it.isReadyForOfflineUse }
                 Button(
                     onClick = { viewModel.downloadAllModels() },
                     shape = RoundedCornerShape(12.dp),
@@ -116,7 +123,7 @@ fun ModelManagerScreen(
                         .fillMaxWidth()
                         .height(50.dp)
                         .testTag("download_all_models_button"),
-                    enabled = !isAllReady,
+                    enabled = hasConfiguredPending,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = if (isAllReady) SuccessGreen else MaterialTheme.colorScheme.primary
                     )
@@ -127,7 +134,11 @@ fun ModelManagerScreen(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = if (isAllReady) "All Required Models Installed" else "Download All Required Models",
+                        text = when {
+                            isAllReady -> "All Required Models Verified & Ready"
+                            hasConfiguredPending -> "Download Configured Models"
+                            else -> "Some Models Unconfigured"
+                        },
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                     )
                 }
@@ -148,54 +159,6 @@ fun ModelManagerScreen(
                     onDelete = { viewModel.deleteModel(item.info) }
                 )
             }
-
-            // Section: Future Language Packs
-            item {
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = "Future Language Packs (Extensible)",
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
-                )
-            }
-
-            items(ModelCatalog.FUTURE_TARGET_LANGUAGE_PACKS) { (code, title) ->
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.6f)),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(14.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text(
-                                text = title,
-                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
-                            )
-                            Text(
-                                text = "Code: $code",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        Surface(
-                            shape = RoundedCornerShape(6.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant
-                        ) {
-                            Text(
-                                text = "Upcoming",
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                }
-            }
         }
     }
 }
@@ -209,7 +172,7 @@ fun ModelCard(
     val info = item.info
     val isDownloading = item.downloadProgress?.status == ModelStatus.DOWNLOADING
     val isVerifying = item.downloadProgress?.status == ModelStatus.VERIFYING
-    val sizeMb = info.sizeBytes / (1024 * 1024)
+    val sizeMb = if (info.sizeBytes > 0) info.sizeBytes / (1024 * 1024) else 0
 
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -235,37 +198,41 @@ fun ModelCard(
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                     )
                     Text(
-                        text = "${info.type.displayName} • v${info.version} • ~$sizeMb MB",
+                        text = "${info.type.displayName} • v${info.version}${if (sizeMb > 0) " • ~$sizeMb MB" else ""}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
 
                 // Status chip
+                val statusText = when {
+                    !info.isSourceConfigured && !item.isReadyForOfflineUse -> "Not Configured"
+                    item.isReadyForOfflineUse -> "Verified & Ready"
+                    isDownloading -> "${item.downloadProgress?.progressPercent ?: 0}%"
+                    isVerifying -> "Verifying..."
+                    item.status == ModelStatus.INCOMPATIBLE -> "Incompatible"
+                    item.status == ModelStatus.ERROR -> "Error"
+                    else -> "Not Installed"
+                }
+
+                val statusColor = when {
+                    !info.isSourceConfigured && !item.isReadyForOfflineUse -> WarningAmber
+                    item.isReadyForOfflineUse -> SuccessGreen
+                    isDownloading -> MaterialTheme.colorScheme.primary
+                    isVerifying -> WarningAmber
+                    item.status == ModelStatus.INCOMPATIBLE || item.status == ModelStatus.ERROR -> ErrorRed
+                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                }
+
                 Surface(
                     shape = RoundedCornerShape(8.dp),
-                    color = when {
-                        item.isInstalled -> SuccessGreen.copy(alpha = 0.15f)
-                        isDownloading -> MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
-                        isVerifying -> WarningAmber.copy(alpha = 0.15f)
-                        else -> MaterialTheme.colorScheme.surfaceVariant
-                    }
+                    color = statusColor.copy(alpha = 0.15f)
                 ) {
                     Text(
-                        text = when {
-                            item.isInstalled -> "Installed"
-                            isDownloading -> "${item.downloadProgress?.progressPercent ?: 0}%"
-                            isVerifying -> "Verifying..."
-                            else -> "Not Installed"
-                        },
+                        text = statusText,
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                         style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                        color = when {
-                            item.isInstalled -> SuccessGreen
-                            isDownloading -> MaterialTheme.colorScheme.primary
-                            isVerifying -> WarningAmber
-                            else -> MaterialTheme.colorScheme.onSurfaceVariant
-                        }
+                        color = statusColor
                     )
                 }
             }
@@ -275,6 +242,15 @@ fun ModelCard(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+
+            // License / Requirements info
+            if (info.licenseSource.isNotBlank()) {
+                Text(
+                    text = "Source: ${info.licenseSource}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+                )
+            }
 
             // Progress bar if downloading
             if (isDownloading && item.downloadProgress != null) {
@@ -305,12 +281,37 @@ fun ModelCard(
                 }
             }
 
-            // Checksum details
-            Text(
-                text = "SHA-256: ${info.sha256.take(12)}...${info.sha256.takeLast(6)}",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-            )
+            // Error or Incompatibility explanation
+            val failureReason = item.verification?.failureReason ?: item.downloadProgress?.errorMessage
+            if (failureReason != null && !item.isReadyForOfflineUse && (item.status == ModelStatus.ERROR || item.status == ModelStatus.INCOMPATIBLE)) {
+                Surface(
+                    color = ErrorRed.copy(alpha = 0.1f),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.Warning, contentDescription = null, tint = ErrorRed, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = failureReason,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = ErrorRed
+                        )
+                    }
+                }
+            }
+
+            // Checksum / Verification details
+            if (info.sha256.isNotBlank()) {
+                Text(
+                    text = "SHA-256: ${info.sha256.take(12)}...${info.sha256.takeLast(6)}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                )
+            }
 
             HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
 
@@ -320,7 +321,7 @@ fun ModelCard(
                 horizontalArrangement = Arrangement.End,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                if (item.isInstalled) {
+                if (item.isInstalled || item.verification?.isFilePresent == true) {
                     TextButton(
                         onClick = onDelete,
                         colors = ButtonDefaults.textButtonColors(contentColor = ErrorRed),
@@ -329,6 +330,15 @@ fun ModelCard(
                         Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(4.dp))
                         Text("Delete Model")
+                    }
+                } else if (!info.isSourceConfigured) {
+                    Button(
+                        onClick = {},
+                        enabled = false,
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+                    ) {
+                        Text("Source Not Configured")
                     }
                 } else {
                     Button(

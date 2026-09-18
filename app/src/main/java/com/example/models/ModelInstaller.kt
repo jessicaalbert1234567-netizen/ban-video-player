@@ -31,6 +31,11 @@ object ModelInstaller {
         return File(dir, model.archiveName)
     }
 
+    fun getAuxiliaryFile(context: Context, model: ModelInfo, fileName: String): File {
+        val dir = getModelDirectory(context, model)
+        return File(dir, fileName)
+    }
+
     fun isModelInstalled(context: Context, model: ModelInfo): Boolean {
         val file = getInstalledModelFile(context, model)
         return file.exists() && file.length() > 0
@@ -93,21 +98,199 @@ object ModelInstaller {
 
     /**
      * Verifies that the model can be loaded into ONNX Runtime Mobile.
+     * Throws an exception or returns failure if the session cannot be instantiated.
      */
-    fun testOnnxInitialization(modelFile: File): Boolean {
+    fun testOnnxInitialization(modelFile: File): Result<Pair<List<String>, List<String>>> {
         return try {
+            if (!modelFile.exists() || modelFile.length() <= 0) {
+                return Result.failure(IllegalStateException("Model file is missing or empty: ${modelFile.absolutePath}"))
+            }
             val env = OrtEnvironment.getEnvironment()
             val session = env.createSession(modelFile.absolutePath, OrtSession.SessionOptions())
-            val inputNames = session.inputNames
-            val outputNames = session.outputNames
-            Log.d(TAG, "ONNX model tested OK: inputs=$inputNames, outputs=$outputNames")
+            val inputNames = session.inputNames.toList()
+            val outputNames = session.outputNames.toList()
+            Log.d(TAG, "ONNX model tested successfully: inputs=$inputNames, outputs=$outputNames")
             session.close()
-            true
+            Result.success(Pair(inputNames, outputNames))
         } catch (e: Throwable) {
-            Log.w(TAG, "ONNX validation check notice (or model mock mode): ${e.message}")
-            // Return true if file exists and has non-zero size, logging warning
-            modelFile.exists() && modelFile.length() > 0
+            Log.e(TAG, "ONNX model session initialization failed: ${e.message}", e)
+            Result.failure(e)
         }
+    }
+
+    /**
+     * Performs strict, non-mocked verification of a model on disk.
+     */
+    fun verifyModelOffline(context: Context, model: ModelInfo): ModelVerificationResult {
+        val file = getInstalledModelFile(context, model)
+        val fileExists = file.exists()
+        val fileSize = if (fileExists) file.length() else 0L
+
+        if (!model.isSourceConfigured && !fileExists) {
+            return ModelVerificationResult(
+                modelId = model.id,
+                isFilePresent = false,
+                fileSizeBytes = 0L,
+                expectedSizeBytes = model.sizeBytes,
+                sha256Calculated = null,
+                sha256Matches = false,
+                onnxLoadSuccess = false,
+                onnxInputInfo = null,
+                onnxOutputInfo = null,
+                auxiliaryFilesPresent = false,
+                auxiliaryFilesDetails = "Model source not configured",
+                isReadyForOfflineUse = false,
+                failureReason = "Model source not configured: No verified download URL is available."
+            )
+        }
+
+        if (!fileExists) {
+            return ModelVerificationResult(
+                modelId = model.id,
+                isFilePresent = false,
+                fileSizeBytes = 0L,
+                expectedSizeBytes = model.sizeBytes,
+                sha256Calculated = null,
+                sha256Matches = false,
+                onnxLoadSuccess = false,
+                onnxInputInfo = null,
+                onnxOutputInfo = null,
+                auxiliaryFilesPresent = false,
+                auxiliaryFilesDetails = null,
+                isReadyForOfflineUse = false,
+                failureReason = "Model file not found on disk."
+            )
+        }
+
+        if (fileSize <= 0) {
+            return ModelVerificationResult(
+                modelId = model.id,
+                isFilePresent = true,
+                fileSizeBytes = 0L,
+                expectedSizeBytes = model.sizeBytes,
+                sha256Calculated = null,
+                sha256Matches = false,
+                onnxLoadSuccess = false,
+                onnxInputInfo = null,
+                onnxOutputInfo = null,
+                auxiliaryFilesPresent = false,
+                auxiliaryFilesDetails = null,
+                isReadyForOfflineUse = false,
+                failureReason = "Model file is empty (0 bytes)."
+            )
+        }
+
+        if (model.sizeBytes > 0 && fileSize < (model.sizeBytes * 0.9).toLong()) {
+            return ModelVerificationResult(
+                modelId = model.id,
+                isFilePresent = true,
+                fileSizeBytes = fileSize,
+                expectedSizeBytes = model.sizeBytes,
+                sha256Calculated = null,
+                sha256Matches = false,
+                onnxLoadSuccess = false,
+                onnxInputInfo = null,
+                onnxOutputInfo = null,
+                auxiliaryFilesPresent = false,
+                auxiliaryFilesDetails = null,
+                isReadyForOfflineUse = false,
+                failureReason = "Model file size ($fileSize bytes) is smaller than expected (${model.sizeBytes} bytes)."
+            )
+        }
+
+        // SHA-256 calculation
+        val calculatedSha256 = calculateSha256(file)
+        val sha256Matches = if (model.sha256.isNotBlank()) {
+            calculatedSha256.equals(model.sha256, ignoreCase = true)
+        } else {
+            true
+        }
+
+        if (!sha256Matches) {
+            return ModelVerificationResult(
+                modelId = model.id,
+                isFilePresent = true,
+                fileSizeBytes = fileSize,
+                expectedSizeBytes = model.sizeBytes,
+                sha256Calculated = calculatedSha256,
+                sha256Matches = false,
+                onnxLoadSuccess = false,
+                onnxInputInfo = null,
+                onnxOutputInfo = null,
+                auxiliaryFilesPresent = false,
+                auxiliaryFilesDetails = null,
+                isReadyForOfflineUse = false,
+                failureReason = "SHA-256 checksum mismatch (expected: ${model.sha256.take(8)}..., got: ${calculatedSha256.take(8)}...)."
+            )
+        }
+
+        // ONNX load verification
+        val onnxResult = testOnnxInitialization(file)
+        if (onnxResult.isFailure) {
+            val ex = onnxResult.exceptionOrNull()
+            return ModelVerificationResult(
+                modelId = model.id,
+                isFilePresent = true,
+                fileSizeBytes = fileSize,
+                expectedSizeBytes = model.sizeBytes,
+                sha256Calculated = calculatedSha256,
+                sha256Matches = true,
+                onnxLoadSuccess = false,
+                onnxInputInfo = null,
+                onnxOutputInfo = null,
+                auxiliaryFilesPresent = false,
+                auxiliaryFilesDetails = null,
+                isReadyForOfflineUse = false,
+                failureReason = "ONNX session initialization failed: ${ex?.localizedMessage ?: "Unknown ONNX error"}"
+            )
+        }
+
+        val (inputs, outputs) = onnxResult.getOrThrow()
+
+        // Auxiliary files check
+        var auxPresent = true
+        val missingAux = mutableListOf<String>()
+        for (aux in model.auxiliaryFiles) {
+            val auxFile = getAuxiliaryFile(context, model, aux.fileName)
+            if (!auxFile.exists() || auxFile.length() == 0L) {
+                auxPresent = false
+                missingAux.add(aux.fileName)
+            }
+        }
+
+        if (!auxPresent) {
+            return ModelVerificationResult(
+                modelId = model.id,
+                isFilePresent = true,
+                fileSizeBytes = fileSize,
+                expectedSizeBytes = model.sizeBytes,
+                sha256Calculated = calculatedSha256,
+                sha256Matches = true,
+                onnxLoadSuccess = true,
+                onnxInputInfo = inputs.joinToString(),
+                onnxOutputInfo = outputs.joinToString(),
+                auxiliaryFilesPresent = false,
+                auxiliaryFilesDetails = "Missing companion files: ${missingAux.joinToString()}",
+                isReadyForOfflineUse = false,
+                failureReason = "Required companion file(s) missing: ${missingAux.joinToString()}"
+            )
+        }
+
+        return ModelVerificationResult(
+            modelId = model.id,
+            isFilePresent = true,
+            fileSizeBytes = fileSize,
+            expectedSizeBytes = model.sizeBytes,
+            sha256Calculated = calculatedSha256,
+            sha256Matches = true,
+            onnxLoadSuccess = true,
+            onnxInputInfo = inputs.joinToString(),
+            onnxOutputInfo = outputs.joinToString(),
+            auxiliaryFilesPresent = true,
+            auxiliaryFilesDetails = if (model.auxiliaryFiles.isNotEmpty()) "All ${model.auxiliaryFiles.size} companion file(s) verified" else "None required",
+            isReadyForOfflineUse = true,
+            failureReason = null
+        )
     }
 
     /**
@@ -126,8 +309,9 @@ object ModelInstaller {
             // Fallback copy
             tempFile.copyTo(destinationFile, overwrite = true)
             tempFile.delete()
-            return destinationFile.exists()
+            return destinationFile.exists() && destinationFile.length() > 0
         }
-        return true
+        return destinationFile.exists() && destinationFile.length() > 0
     }
 }
+

@@ -1,6 +1,8 @@
 package com.example.models
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -46,6 +48,13 @@ class ModelDownloader(private val context: Context) {
         }
     }
 
+    private fun isNetworkAvailable(): Boolean {
+        val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return false
+        val network = connectivityManager.activeNetwork ?: return false
+        val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
+        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    }
+
     suspend fun downloadAndInstall(
         model: ModelInfo,
         onProgressUpdate: ((DownloadProgress) -> Unit)? = null
@@ -55,8 +64,53 @@ class ModelDownloader(private val context: Context) {
         }
 
         val destDir = ModelInstaller.getModelDirectory(context, model)
-        val tempFile = File(destDir, "${model.archiveName}.tmp")
+        if (!destDir.exists()) destDir.mkdirs()
+        val tempFile = File(destDir, "${model.archiveName}.download")
         val finalFile = ModelInstaller.getInstalledModelFile(context, model)
+
+        // 1. Check if model source is configured
+        if (!model.isSourceConfigured) {
+            val errorMsg = "Model source not configured: No verified download URL is available."
+            updateState(
+                DownloadProgress(
+                    modelId = model.id,
+                    status = ModelStatus.NOT_CONFIGURED,
+                    errorMessage = errorMsg
+                ),
+                onProgressUpdate
+            )
+            return@withContext Result.failure(IllegalStateException(errorMsg))
+        }
+
+        // 2. Check real internet connectivity
+        if (!isNetworkAvailable()) {
+            val errorMsg = "No internet connection. Connect to the internet to download this model."
+            updateState(
+                DownloadProgress(
+                    modelId = model.id,
+                    status = ModelStatus.ERROR,
+                    errorMessage = errorMsg
+                ),
+                onProgressUpdate
+            )
+            return@withContext Result.failure(IllegalStateException(errorMsg))
+        }
+
+        // 3. Storage check
+        val availableStorageBytes = destDir.usableSpace
+        val requiredBytes = (model.sizeBytes * 1.5).toLong()
+        if (availableStorageBytes < requiredBytes && model.sizeBytes > 0) {
+            val errorMsg = "Insufficient storage space. Available: ${availableStorageBytes / (1024 * 1024)} MB, Required: ${requiredBytes / (1024 * 1024)} MB"
+            updateState(
+                DownloadProgress(
+                    modelId = model.id,
+                    status = ModelStatus.ERROR,
+                    errorMessage = errorMsg
+                ),
+                onProgressUpdate
+            )
+            return@withContext Result.failure(IllegalStateException(errorMsg))
+        }
 
         updateState(
             DownloadProgress(
@@ -68,103 +122,14 @@ class ModelDownloader(private val context: Context) {
         )
 
         try {
-            // Check available storage
-            val availableStorageBytes = destDir.usableSpace
-            val requiredBytes = (model.sizeBytes * 1.5).toLong()
-            if (availableStorageBytes < requiredBytes) {
-                val errorMsg = "Not enough storage. Available: ${availableStorageBytes / (1024 * 1024)} MB, Required: ${requiredBytes / (1024 * 1024)} MB"
-                updateState(
-                    DownloadProgress(
-                        modelId = model.id,
-                        status = ModelStatus.ERROR,
-                        errorMessage = errorMsg
-                    ),
-                    onProgressUpdate
-                )
-                return@withContext Result.failure(IllegalStateException(errorMsg))
-            }
-
-            // If URL is not configured, generate a verified local prototype file so users can test immediately
-            if (model.downloadUrl == ModelCatalog.MODEL_URL_NOT_CONFIGURED || !model.downloadUrl.startsWith("https://")) {
-                Log.w(TAG, "Configured URL is placeholder. Initializing local runtime profile package for ${model.id}")
-                tempFile.writeText("MODEL_PROFILE:${model.id}:${model.version}:${System.currentTimeMillis()}")
-            } else {
-                val request = Request.Builder()
-                    .url(model.downloadUrl)
-                    .header("User-Agent", "OfflineAIDubbingPlayer/1.0")
-                    .build()
-
-                var downloadSucceeded = false
-                try {
-                    okHttpClient.newCall(request).execute().use { response ->
-                        if (!response.isSuccessful) {
-                            throw IllegalStateException("HTTP Error ${response.code}: ${response.message}")
-                        }
-                        val body = response.body ?: throw IllegalStateException("Empty response body")
-                        val contentLength = if (body.contentLength() > 0) body.contentLength() else model.sizeBytes
-
-                        body.byteStream().use { input ->
-                            FileOutputStream(tempFile).use { output ->
-                                val buffer = ByteArray(32768)
-                                var bytesRead: Int
-                                var totalDownloaded = 0L
-                                var lastTime = System.currentTimeMillis()
-                                var lastBytes = 0L
-
-                                while (input.read(buffer).also { bytesRead = it } != -1) {
-                                    if (isCancelled(model.id)) {
-                                        tempFile.delete()
-                                        updateState(
-                                            DownloadProgress(
-                                                modelId = model.id,
-                                                status = ModelStatus.NOT_INSTALLED,
-                                                errorMessage = "Download cancelled by user"
-                                            ),
-                                            onProgressUpdate
-                                        )
-                                        return@withContext Result.failure(IllegalStateException("Cancelled"))
-                                    }
-
-                                    output.write(buffer, 0, bytesRead)
-                                    totalDownloaded += bytesRead
-
-                                    val now = System.currentTimeMillis()
-                                    if (now - lastTime >= 500) {
-                                        val timeDiffSec = (now - lastTime) / 1000.0
-                                        val bytesDiff = totalDownloaded - lastBytes
-                                        val speedKbps = if (timeDiffSec > 0) ((bytesDiff / 1024) / timeDiffSec).toLong() else 0L
-                                        val percent = if (contentLength > 0) ((totalDownloaded * 100) / contentLength).toInt().coerceIn(0, 99) else 50
-                                        val remainingBytes = (contentLength - totalDownloaded).coerceAtLeast(0L)
-                                        val estRemainingSec = if (speedKbps > 0) remainingBytes / (speedKbps * 1024) else 0L
-
-                                        updateState(
-                                            DownloadProgress(
-                                                modelId = model.id,
-                                                downloadedBytes = totalDownloaded,
-                                                totalBytes = contentLength,
-                                                progressPercent = percent,
-                                                speedKbps = speedKbps,
-                                                estimatedRemainingSeconds = estRemainingSec,
-                                                status = ModelStatus.DOWNLOADING
-                                            ),
-                                            onProgressUpdate
-                                        )
-                                        lastTime = now
-                                        lastBytes = totalDownloaded
-                                    }
-                                }
-                                output.flush()
-                            }
-                        }
-                        downloadSucceeded = true
-                    }
-                } catch (netEx: Throwable) {
-                    Log.w(TAG, "Network download encountered error: ${netEx.message}. Initializing local offline bundle fallback.", netEx)
-                    // Write standard model package structure so app remains fully testable and operational offline
-                    tempFile.writeText("OFFLINE_PACKAGE:${model.id}:${model.version}\nMETADATA:${model.onnxMetadata}")
-                    downloadSucceeded = true
-                }
-            }
+            // Download main model binary
+            downloadFileWithProgress(
+                url = model.downloadUrl,
+                destinationTempFile = tempFile,
+                expectedSizeBytes = model.sizeBytes,
+                modelId = model.id,
+                onProgressUpdate = onProgressUpdate
+            )
 
             // Stage 2: Verifying
             updateState(
@@ -176,24 +141,55 @@ class ModelDownloader(private val context: Context) {
                 onProgressUpdate
             )
 
-            // Verify integrity
             if (tempFile.length() <= 0) {
                 tempFile.delete()
-                throw IllegalStateException("Model verification failed: downloaded file is empty.")
+                throw IllegalStateException("Downloaded model file is empty (0 bytes).")
             }
 
-            // Test model initialization
-            val initialized = ModelInstaller.testOnnxInitialization(tempFile)
-            if (!initialized && tempFile.length() < 10) {
+            // Test ONNX load directly on tempFile
+            val onnxInit = ModelInstaller.testOnnxInitialization(tempFile)
+            if (onnxInit.isFailure) {
+                val err = onnxInit.exceptionOrNull()?.localizedMessage ?: "Invalid ONNX model structure"
                 tempFile.delete()
-                throw IllegalStateException("Model verification failed: model structure invalid.")
+                throw IllegalStateException("Model verification failed: $err")
             }
 
-            // Stage 3: Atomic install
+            // Stage 3: Download auxiliary files (tokens, phoneme mappings, etc.)
+            for (aux in model.auxiliaryFiles) {
+                val auxDestFile = ModelInstaller.getAuxiliaryFile(context, model, aux.fileName)
+                val auxTemp = File(destDir, "${aux.fileName}.download")
+                try {
+                    downloadFileWithProgress(
+                        url = aux.downloadUrl,
+                        destinationTempFile = auxTemp,
+                        expectedSizeBytes = aux.expectedSizeBytes,
+                        modelId = model.id,
+                        onProgressUpdate = null
+                    )
+                    if (auxTemp.exists() && auxTemp.length() > 0) {
+                        auxTemp.copyTo(auxDestFile, overwrite = true)
+                        auxTemp.delete()
+                    } else {
+                        throw IllegalStateException("Failed to download companion file: ${aux.fileName}")
+                    }
+                } catch (e: Exception) {
+                    if (auxTemp.exists()) auxTemp.delete()
+                    throw IllegalStateException("Failed to download required companion file '${aux.fileName}': ${e.message}")
+                }
+            }
+
+            // Stage 4: Atomic install
             val installed = ModelInstaller.installModelAtomically(tempFile, finalFile)
             if (!installed) {
                 tempFile.delete()
-                throw IllegalStateException("Failed to atomically move model file into place.")
+                throw IllegalStateException("Failed to atomically install model file to destination.")
+            }
+
+            // Stage 5: Final offline verification
+            val verification = ModelInstaller.verifyModelOffline(context, model)
+            if (!verification.isReadyForOfflineUse) {
+                finalFile.delete()
+                throw IllegalStateException("Model verification failed: ${verification.failureReason}")
             }
 
             updateState(
@@ -202,7 +198,7 @@ class ModelDownloader(private val context: Context) {
                     downloadedBytes = finalFile.length(),
                     totalBytes = finalFile.length(),
                     progressPercent = 100,
-                    status = ModelStatus.INSTALLED
+                    status = ModelStatus.READY
                 ),
                 onProgressUpdate
             )
@@ -223,6 +219,72 @@ class ModelDownloader(private val context: Context) {
         }
     }
 
+    private fun downloadFileWithProgress(
+        url: String,
+        destinationTempFile: File,
+        expectedSizeBytes: Long,
+        modelId: String,
+        onProgressUpdate: ((DownloadProgress) -> Unit)?
+    ) {
+        val request = Request.Builder()
+            .url(url)
+            .header("User-Agent", "OfflineAIDubbingPlayer/1.0")
+            .build()
+
+        val response = okHttpClient.newCall(request).execute()
+        if (!response.isSuccessful) {
+            throw IllegalStateException("Server returned HTTP ${response.code}: ${response.message}")
+        }
+        val body = response.body ?: throw IllegalStateException("Received empty response body from server.")
+        val contentLength = if (body.contentLength() > 0) body.contentLength() else expectedSizeBytes
+
+        body.byteStream().use { input ->
+            FileOutputStream(destinationTempFile).use { output ->
+                val buffer = ByteArray(32768)
+                var bytesRead: Int
+                var totalDownloaded = 0L
+                var lastTime = System.currentTimeMillis()
+                var lastBytes = 0L
+
+                while (input.read(buffer).also { bytesRead = it } != -1) {
+                    if (isCancelled(modelId)) {
+                        destinationTempFile.delete()
+                        throw IllegalStateException("Download cancelled by user.")
+                    }
+
+                    output.write(buffer, 0, bytesRead)
+                    totalDownloaded += bytesRead
+
+                    val now = System.currentTimeMillis()
+                    if (now - lastTime >= 500) {
+                        val timeDiffSec = (now - lastTime) / 1000.0
+                        val bytesDiff = totalDownloaded - lastBytes
+                        val speedKbps = if (timeDiffSec > 0) ((bytesDiff / 1024) / timeDiffSec).toLong() else 0L
+                        val percent = if (contentLength > 0) ((totalDownloaded * 100) / contentLength).toInt().coerceIn(0, 99) else 50
+                        val remainingBytes = (contentLength - totalDownloaded).coerceAtLeast(0L)
+                        val estRemainingSec = if (speedKbps > 0) remainingBytes / (speedKbps * 1024) else 0L
+
+                        updateState(
+                            DownloadProgress(
+                                modelId = modelId,
+                                downloadedBytes = totalDownloaded,
+                                totalBytes = contentLength,
+                                progressPercent = percent,
+                                speedKbps = speedKbps,
+                                estimatedRemainingSeconds = estRemainingSec,
+                                status = ModelStatus.DOWNLOADING
+                            ),
+                            onProgressUpdate
+                        )
+                        lastTime = now
+                        lastBytes = totalDownloaded
+                    }
+                }
+                output.flush()
+            }
+        }
+    }
+
     private fun isCancelled(modelId: String): Boolean {
         synchronized(activeCancellations) {
             return activeCancellations.contains(modelId)
@@ -236,3 +298,4 @@ class ModelDownloader(private val context: Context) {
         callback?.invoke(progress)
     }
 }
+

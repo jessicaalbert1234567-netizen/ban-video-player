@@ -149,18 +149,7 @@ class DubbingPipeline(
             }
 
             if (segments.isEmpty()) {
-                // Fallback default segment if silence
-                segments = listOf(
-                    TranscriptSegmentEntity(
-                        projectId = projectId,
-                        index = 0,
-                        startMs = 500L,
-                        endMs = (totalDurationMs - 500L).coerceAtLeast(2000L),
-                        sourceText = "Welcome to offline AI video dubbing.",
-                        confidence = 0.95f
-                    )
-                )
-                repository.saveSegments(segments)
+                throw IllegalStateException("Transcription failed: No English speech detected in the audio track.")
             }
 
             // STAGE 3: Translate to Bangla (40% - 55%)
@@ -247,7 +236,25 @@ class DubbingPipeline(
             }
 
             // STAGE 7: Finalize & Complete (95% - 100%)
-            reportStage(projectId, ProcessingStage.FINALIZE, 50, 95, "Finalizing project...", onProgressUpdate)
+            reportStage(projectId, ProcessingStage.FINALIZE, 50, 95, "Verifying output files...", onProgressUpdate)
+
+            // Strict Output Verification: verify existence, size, and validity of every output artifact
+            if (!transcriptJsonFile.exists() || transcriptJsonFile.length() == 0L) {
+                throw IllegalStateException("Output verification failed: English/Bangla transcript JSON file is missing or empty (Stage: Subtitle & Transcript Generation).")
+            }
+
+            if (!srtFile.exists() || srtFile.length() == 0L) {
+                throw IllegalStateException("Output verification failed: Bangla subtitle SRT file is missing or empty (Stage: Subtitle Generation).")
+            }
+
+            val srtContent = srtFile.readText()
+            if (!srtContent.contains("-->") || srtContent.isBlank()) {
+                throw IllegalStateException("Output verification failed: Bangla subtitle SRT file does not contain valid subtitle timestamp blocks.")
+            }
+
+            if (!finalDubbedAudioFile.exists() || finalDubbedAudioFile.length() < 1000L) {
+                throw IllegalStateException("Output verification failed: Bangla dubbed audio file is missing or contains insufficient data (${finalDubbedAudioFile.length()} bytes) (Stage: Audio Synchronization).")
+            }
 
             project = project.copy(
                 currentStage = ProcessingStage.COMPLETE,

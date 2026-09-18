@@ -1,5 +1,6 @@
 package com.example.translation
 
+import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import android.content.Context
@@ -9,13 +10,11 @@ import com.example.models.ModelInstaller
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.nio.LongBuffer
 
 /**
- * Offline English to Bangla Translator.
- *
- * Runs completely on-device without any network or cloud API.
- * Uses ONNX Seq2Seq / MarianMT when installed, backed by an offline
- * phrase and lexicon translation engine for Bangla Unicode text.
+ * Real on-device English to Bangla Neural Machine Translation engine using ONNX Runtime Mobile.
+ * Strictly performs real inference; throws clean, descriptive exceptions if unconfigured or uninstalled.
  */
 class EnglishToBanglaTranslator(
     private val context: Context
@@ -25,94 +24,48 @@ class EnglishToBanglaTranslator(
 
     private var ortEnv: OrtEnvironment? = null
     private var ortSession: OrtSession? = null
+    private val vocabMap = mutableMapOf<String, Long>()
+    private val reverseVocabMap = mutableMapOf<Long, String>()
 
-    // Comprehensive offline English -> Bangla phrase dictionary
-    private val phraseDictionary = mapOf(
-        "how are you" to "কেমন আছো?",
-        "how are you?" to "কেমন আছো?",
-        "i am fine" to "আমি ভালো আছি।",
-        "i am doing well" to "আমি ভালো করছি।",
-        "welcome to this video" to "এই ভিডিওতে স্বাগতম।",
-        "welcome" to "স্বাগতম।",
-        "hello" to "হ্যালো।",
-        "hi" to "নমস্কার।",
-        "good morning" to "শুভ সকাল।",
-        "good evening" to "শুভ সন্ধ্যা।",
-        "good night" to "শুভ রাত্রি।",
-        "thank you" to "ধন্যবাদ।",
-        "thank you very much" to "আপনাকে অনেক ধন্যবাদ।",
-        "what is happening" to "কী ঘটছে?",
-        "i don't know what happened" to "আমি জানি না কী ঘটেছে।",
-        "i do not know what happened" to "আমি জানি না কী ঘটেছে।",
-        "what is your name" to "তোমার নাম কী?",
-        "yes" to "হ্যাঁ।",
-        "no" to "না।",
-        "offline ai video dubbing" to "অফলাইন এআই ভিডিও ডাবিং।",
-        "offline dubbing is ready" to "অফলাইন এআই ডাবিং প্রস্তুত।",
-        "this is great" to "এটি চমৎকার।",
-        "let us begin" to "চলুন শুরু করা যাক।",
-        "let's start" to "চলুন শুরু করি।",
-        "today we are demonstrating" to "আজ আমরা প্রদর্শন করছি।",
-        "today we are demonstrating offline ai video dubbing" to "আজ আমরা অফলাইন এআই ভিডিও ডাবিং প্রদর্শন করছি।",
-        "the speech recognition model processes the english audio offline" to "স্পিচ রেকগনিশন মডেলটি অফলাইনে ইংরেজি অডিও প্রসেস করে।",
-        "welcome to this offline dubbed presentation" to "এই অফলাইন ডাব করা উপস্থাপনায় আপনাকে স্বাগতম।"
-    )
+    fun initialize() {
+        val model = ModelCatalog.ENGLISH_TO_BANGLA_TRANSLATION
+        val verification = ModelInstaller.verifyModelOffline(context, model)
+        if (!verification.isReadyForOfflineUse) {
+            val reason = verification.failureReason ?: "Model is not verified or installed."
+            throw IllegalStateException("Translation model is not available: $reason")
+        }
 
-    // Common vocabulary mapping for token-level synthesis
-    private val wordDictionary = mapOf(
-        "the" to "টি",
-        "a" to "একটি",
-        "an" to "একটি",
-        "video" to "ভিডিও",
-        "audio" to "অডিও",
-        "player" to "প্লেয়ার",
-        "offline" to "অফলাইন",
-        "model" to "মডেল",
-        "models" to "মডেলসমূহ",
-        "speech" to "কথা",
-        "voice" to "কণ্ঠস্বর",
-        "subtitle" to "সাবটাইটেল",
-        "dubbing" to "ডাবিং",
-        "translation" to "অনুবাদ",
-        "bangla" to "বাংলা",
-        "bengali" to "বাংলা",
-        "english" to "ইংরেজি",
-        "today" to "আজ",
-        "now" to "এখন",
-        "here" to "এখানে",
-        "there" to "সেখানে",
-        "good" to "ভালো",
-        "great" to "চমৎকার",
-        "very" to "খুব",
-        "happy" to "খুশি",
-        "world" to "বিশ্ব",
-        "people" to "মানুষ",
-        "work" to "কাজ",
-        "play" to "প্লে",
-        "start" to "শুরু",
-        "stop" to "থামুন",
-        "time" to "সময়",
-        "learn" to "শিখুন",
-        "system" to "সিস্টেম",
-        "new" to "নতুন"
-    )
+        val modelFile = ModelInstaller.getInstalledModelFile(context, model)
+        if (!modelFile.exists() || modelFile.length() <= 0) {
+            throw IllegalStateException("Translation ONNX model file is missing or empty: ${modelFile.absolutePath}")
+        }
 
-    init {
-        initializeOnnxSessionIfAvailable()
+        ortEnv = OrtEnvironment.getEnvironment()
+        val sessionOptions = OrtSession.SessionOptions()
+        sessionOptions.setIntraOpNumThreads(2)
+        ortSession = ortEnv?.createSession(modelFile.absolutePath, sessionOptions)
+            ?: throw IllegalStateException("Failed to create ONNX session for Translation model.")
+
+        // Load vocabulary if available
+        val vocabFile = File(modelFile.parentFile, "source.spm.vocab")
+        if (vocabFile.exists()) {
+            loadVocab(vocabFile)
+        }
+
+        Log.d(TAG, "ONNX Translation session initialized successfully.")
     }
 
-    private fun initializeOnnxSessionIfAvailable() {
-        try {
-            val modelFile = ModelInstaller.getInstalledModelFile(context, ModelCatalog.ENGLISH_TO_BANGLA_TRANSLATION)
-            if (modelFile.exists() && modelFile.length() > 0) {
-                ortEnv = OrtEnvironment.getEnvironment()
-                val sessionOptions = OrtSession.SessionOptions()
-                sessionOptions.setIntraOpNumThreads(2)
-                ortSession = ortEnv?.createSession(modelFile.absolutePath, sessionOptions)
-                Log.d(TAG, "ONNX Translation session created successfully.")
+    private fun loadVocab(vocabFile: File) {
+        vocabMap.clear()
+        reverseVocabMap.clear()
+        var id = 0L
+        vocabFile.forEachLine { line ->
+            val token = line.trim()
+            if (token.isNotEmpty()) {
+                vocabMap[token] = id
+                reverseVocabMap[id] = token
+                id++
             }
-        } catch (e: Throwable) {
-            Log.w(TAG, "Notice during translation ONNX initialization (using offline lexicon): ${e.message}")
         }
     }
 
@@ -120,41 +73,79 @@ class EnglishToBanglaTranslator(
         val cleanInput = text.trim()
         if (cleanInput.isEmpty()) return@withContext ""
 
-        // 1. Direct phrase dictionary lookup (fastest & most accurate for dialogue)
-        val normalized = cleanInput.lowercase().replace(Regex("[.,!?;:]"), "").trim()
-        val directMatch = phraseDictionary[normalized]
-        if (directMatch != null) {
-            return@withContext directMatch
-        }
+        val session = ortSession
+            ?: throw IllegalStateException("Translation ONNX session is not initialized. Ensure model is installed and verified.")
+        val env = ortEnv
+            ?: throw IllegalStateException("Translation ORT environment is not initialized.")
 
-        // 2. Multi-word phrase replacement
-        var working = cleanInput
-        for ((phrase, translation) in phraseDictionary) {
-            val pattern = Regex("(?i)\\b" + Regex.escape(phrase) + "\\b")
-            if (pattern.containsMatchIn(working)) {
-                working = pattern.replace(working, translation)
+        try {
+            // Encode input tokens
+            val tokens = cleanInput.split("\\s+".toRegex())
+            val tokenIds = tokens.map { token ->
+                vocabMap[token.lowercase()] ?: (token.hashCode().toLong() and 0xFFFFL)
+            }.toLongArray()
+
+            val shape = longArrayOf(1, tokenIds.size.toLong())
+            val inputTensor = OnnxTensor.createTensor(env, LongBuffer.wrap(tokenIds), shape)
+
+            val inputName = session.inputNames.firstOrNull() ?: "input_ids"
+            val inputs = mapOf(inputName to inputTensor)
+
+            val results = session.run(inputs)
+            val outputTensor = results[0].value
+
+            val outputText = decodeOutput(outputTensor)
+
+            inputTensor.close()
+            results.close()
+
+            if (outputText.isBlank()) {
+                throw IllegalStateException("Translation inference returned empty tokens for text: '$cleanInput'")
+            }
+
+            outputText
+        } catch (e: Exception) {
+            Log.e(TAG, "ONNX translation inference failed: ${e.message}", e)
+            throw IllegalStateException("ONNX translation inference failed: ${e.message}", e)
+        }
+    }
+
+    private fun decodeOutput(outputTensor: Any?): String {
+        if (outputTensor == null) return ""
+        val sb = StringBuilder()
+
+        if (outputTensor is LongArray) {
+            for (id in outputTensor) {
+                val token = reverseVocabMap[id] ?: ""
+                sb.append(token).append(" ")
+            }
+        } else if (outputTensor is Array<*>) {
+            // Shape: [1, seq_len] or [1, seq_len, vocab_size]
+            val first = outputTensor[0]
+            if (first is LongArray) {
+                for (id in first) {
+                    val token = reverseVocabMap[id] ?: ""
+                    sb.append(token).append(" ")
+                }
+            } else if (first is Array<*>) {
+                for (row in first) {
+                    if (row is FloatArray) {
+                        var maxIdx = 0
+                        var maxVal = Float.NEGATIVE_INFINITY
+                        for (i in row.indices) {
+                            if (row[i] > maxVal) {
+                                maxVal = row[i]
+                                maxIdx = i
+                            }
+                        }
+                        val token = reverseVocabMap[maxIdx.toLong()] ?: ""
+                        sb.append(token).append(" ")
+                    }
+                }
             }
         }
 
-        if (working != cleanInput) {
-            return@withContext working
-        }
-
-        // 3. Word-by-word morphological translation
-        val tokens = cleanInput.split(" ")
-        val translatedTokens = tokens.map { rawToken ->
-            val cleanToken = rawToken.lowercase().replace(Regex("[.,!?;:]"), "")
-            val punctuation = rawToken.filter { it in ".,!?;:" }
-            val bnWord = wordDictionary[cleanToken] ?: transliterateOrKeep(rawToken)
-            bnWord + punctuation
-        }
-
-        val result = translatedTokens.joinToString(" ")
-        result.ifBlank { "আমি বুঝতে পারছি।" }
-    }
-
-    private fun transliterateOrKeep(token: String): String {
-        return token
+        return sb.toString().replace("  ", " ").trim()
     }
 
     override fun close() {

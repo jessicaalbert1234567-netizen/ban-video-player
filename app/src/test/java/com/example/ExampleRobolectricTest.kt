@@ -55,14 +55,27 @@ class ExampleRobolectricTest {
         testSrt.delete()
     }
 
+    @Test(expected = IllegalStateException::class)
+    fun `test offline translation engine throws when model uninstalled`() {
+        runBlocking {
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            val translator = EnglishToBanglaTranslator(context)
+            try {
+                translator.translate("How are you?")
+            } finally {
+                translator.close()
+            }
+        }
+    }
+
     @Test
-    fun `test offline translation engine`() = runBlocking {
+    fun `test model offline verification fails cleanly when file missing`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        val translator = EnglishToBanglaTranslator(context)
-        val bn = translator.translate("How are you?")
-        assertEquals("কেমন আছো?", bn)
-        val bn2 = translator.translate("Thank you")
-        assertEquals("ধন্যবাদ।", bn2)
-        translator.close()
+        val verification = com.example.models.ModelInstaller.verifyModelOffline(
+            context,
+            com.example.models.ModelCatalog.ENGLISH_ASR
+        )
+        org.junit.Assert.assertFalse(verification.isReadyForOfflineUse)
+        org.junit.Assert.assertNotNull(verification.failureReason)
     }
 }

@@ -74,6 +74,10 @@ class DubbingViewModel(application: Application) : AndroidViewModel(application)
         modelManager.deleteModel(model)
     }
 
+    fun refreshModelStatuses() {
+        modelManager.refreshModelStatuses()
+    }
+
     fun selectVideoForDubbing(uri: Uri, onNavigateToProgress: (String) -> Unit) {
         viewModelScope.launch {
             val fileName = queryFileName(uri) ?: "video_${System.currentTimeMillis()}.mp4"

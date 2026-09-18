@@ -1,5 +1,8 @@
 package com.example.tts
 
+import ai.onnxruntime.OnnxTensor
+import ai.onnxruntime.OrtEnvironment
+import ai.onnxruntime.OrtSession
 import android.content.Context
 import android.os.Bundle
 import android.speech.tts.TextToSpeech
@@ -11,30 +14,33 @@ import com.example.models.ModelInstaller
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.nio.FloatBuffer
+import java.nio.LongBuffer
 import java.util.Locale
 import java.util.UUID
 import kotlin.coroutines.resume
-import kotlin.math.PI
-import kotlin.math.sin
 
 /**
- * Offline Bangla Text-To-Speech Engine.
+ * Real Offline Bangla Text-To-Speech Engine.
  *
- * Accepts Bangla Unicode text and synthesizes speech into standard 16kHz 16-bit PCM WAV.
- * Supports:
- * 1. ONNX Piper/VITS neural voice model when installed
- * 2. Android offline system TextToSpeech for Bangla locale
- * 3. Offline acoustic harmonic formant voice generator fallback
+ * Uses Piper VITS neural voice ONNX model on-device.
+ * Strictly performs real inference and verification; throws explicit exceptions on failure.
  */
 class BanglaTtsEngine(
     private val context: Context
 ) : TextToSpeechEngine, AutoCloseable {
 
     private val TAG = "BanglaTtsEngine"
+
+    private var ortEnv: OrtEnvironment? = null
+    private var ortSession: OrtSession? = null
+    private val phonemeIdMap = mutableMapOf<String, Long>()
+    private var modelSampleRate = 22050
 
     private var androidTts: TextToSpeech? = null
     private var isTtsInitialized = false
@@ -44,6 +50,62 @@ class BanglaTtsEngine(
         initializeAndroidTts()
     }
 
+    fun initialize() {
+        val model = ModelCatalog.BANGLA_VOICE_TTS
+        val verification = ModelInstaller.verifyModelOffline(context, model)
+        if (!verification.isReadyForOfflineUse) {
+            val reason = verification.failureReason ?: "Model is not ready for offline use."
+            Log.w(TAG, "Bangla TTS model offline verification notice: $reason")
+            return
+        }
+
+        val modelFile = ModelInstaller.getInstalledModelFile(context, model)
+        if (!modelFile.exists() || modelFile.length() <= 0L) {
+            throw IllegalStateException("Bangla TTS model file is missing on disk: ${modelFile.absolutePath}")
+        }
+
+        ortEnv = OrtEnvironment.getEnvironment()
+        val sessionOptions = OrtSession.SessionOptions()
+        sessionOptions.setIntraOpNumThreads(2)
+        val session = ortEnv?.createSession(modelFile.absolutePath, sessionOptions)
+            ?: throw IllegalStateException("Failed to create ONNX session for Bangla TTS model.")
+        ortSession = session
+
+        // Load config JSON if available
+        val configFile = ModelInstaller.getAuxiliaryFile(context, model, "bn_BD-google-medium.onnx.json")
+        if (configFile.exists() && configFile.length() > 0) {
+            loadConfigJson(configFile)
+        }
+
+        Log.d(TAG, "Bangla TTS ONNX session initialized successfully. Inputs: ${session.inputNames}, Outputs: ${session.outputNames}")
+    }
+
+    private fun loadConfigJson(configFile: File) {
+        try {
+            val jsonStr = configFile.readText()
+            val root = JSONObject(jsonStr)
+            val audioObj = root.optJSONObject("audio")
+            if (audioObj != null) {
+                modelSampleRate = audioObj.optInt("sample_rate", 22050)
+            }
+            val idMapObj = root.optJSONObject("phoneme_id_map")
+            if (idMapObj != null) {
+                phonemeIdMap.clear()
+                val keys = idMapObj.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    val arr = idMapObj.optJSONArray(key)
+                    if (arr != null && arr.length() > 0) {
+                        phonemeIdMap[key] = arr.getLong(0)
+                    }
+                }
+            }
+            Log.d(TAG, "Loaded TTS config: sampleRate=$modelSampleRate, phoneme map size=${phonemeIdMap.size}")
+        } catch (e: Exception) {
+            Log.w(TAG, "Notice while parsing TTS config JSON: ${e.message}")
+        }
+    }
+
     private fun initializeAndroidTts() {
         try {
             androidTts = TextToSpeech(context) { status ->
@@ -51,7 +113,6 @@ class BanglaTtsEngine(
                     val localeBn = Locale("bn", "BD")
                     val res = androidTts?.setLanguage(localeBn)
                     if (res == TextToSpeech.LANG_MISSING_DATA || res == TextToSpeech.LANG_NOT_SUPPORTED) {
-                        // Try Indian Bangla locale
                         val resIn = androidTts?.setLanguage(Locale("bn", "IN"))
                         isBanglaSupportedInSystem = resIn != TextToSpeech.LANG_MISSING_DATA && resIn != TextToSpeech.LANG_NOT_SUPPORTED
                     } else {
@@ -73,16 +134,23 @@ class BanglaTtsEngine(
             return@withContext outputFile
         }
 
-        // 1. Try ONNX voice model if installed
-        val onnxModelFile = ModelInstaller.getInstalledModelFile(context, ModelCatalog.BANGLA_VOICE_TTS)
-        if (onnxModelFile.exists() && onnxModelFile.length() > 100_000) {
-            val onnxSynthesized = synthesizeWithOnnx(onnxModelFile, cleanText, outputFile)
-            if (onnxSynthesized && outputFile.exists() && outputFile.length() > 44) {
+        // 1. Check if ONNX session is ready or can be initialized
+        if (ortSession == null) {
+            try {
+                initialize()
+            } catch (e: Exception) {
+                Log.w(TAG, "ONNX TTS initialization deferred: ${e.message}")
+            }
+        }
+
+        if (ortSession != null) {
+            synthesizeWithOnnx(cleanText, outputFile)
+            if (outputFile.exists() && outputFile.length() > 44) {
                 return@withContext outputFile
             }
         }
 
-        // 2. Try Android system TTS synthesizeToFile if available
+        // 2. System TTS fallback if available on device
         if (isTtsInitialized && isBanglaSupportedInSystem && androidTts != null) {
             val systemSuccess = synthesizeWithSystemTts(cleanText, outputFile)
             if (systemSuccess && outputFile.exists() && outputFile.length() > 44) {
@@ -90,20 +158,111 @@ class BanglaTtsEngine(
             }
         }
 
-        // 3. Fallback: High-quality offline acoustic formant synthesis
-        // Generates natural speech syllables corresponding to Bangla Unicode graphemes
-        synthesizeAcousticFormantSpeech(cleanText, outputFile)
-        outputFile
+        val model = ModelCatalog.BANGLA_VOICE_TTS
+        val verification = ModelInstaller.verifyModelOffline(context, model)
+        throw IllegalStateException("Bangla TTS synthesis failed: Model not installed or verified (${verification.failureReason ?: "ONNX session uninitialized"}).")
     }
 
-    private fun synthesizeWithOnnx(modelFile: File, text: String, outputFile: File): Boolean {
-        return try {
-            // Piper / VITS onnx pipeline representation
-            synthesizeAcousticFormantSpeech(text, outputFile)
-            true
+    private fun synthesizeWithOnnx(text: String, outputFile: File) {
+        val session = ortSession ?: throw IllegalStateException("ONNX TTS session is not open.")
+        val env = ortEnv ?: throw IllegalStateException("ONNX environment is not open.")
+
+        val inputNames = session.inputNames.toList()
+        val inputsMap = mutableMapOf<String, OnnxTensor>()
+
+        try {
+            // Map text graphemes/phonemes to integer IDs
+            val phonemeIds = mutableListOf<Long>()
+            phonemeIds.add(phonemeIdMap["^"] ?: 1L) // start token
+            for (ch in text) {
+                val s = ch.toString()
+                val id = phonemeIdMap[s] ?: phonemeIdMap[" "] ?: 3L
+                phonemeIds.add(id)
+                phonemeIds.add(phonemeIdMap["_"] ?: 0L) // padding / separator token
+            }
+            phonemeIds.add(phonemeIdMap["$"] ?: 2L) // end token
+
+            val seqLen = phonemeIds.size.toLong()
+            val inputTensor = OnnxTensor.createTensor(env, LongBuffer.wrap(phonemeIds.toLongArray()), longArrayOf(1, seqLen))
+            inputsMap[inputNames[0]] = inputTensor
+
+            if (inputNames.size > 1 && inputNames.any { it.contains("length") }) {
+                val lenName = inputNames.first { it.contains("length") }
+                val lenTensor = OnnxTensor.createTensor(env, LongBuffer.wrap(longArrayOf(seqLen)), longArrayOf(1))
+                inputsMap[lenName] = lenTensor
+            }
+
+            if (inputNames.size > 2 && inputNames.any { it.contains("scale") }) {
+                val scaleName = inputNames.first { it.contains("scale") }
+                val scales = floatArrayOf(0.667f, 1.0f, 0.8f)
+                val scaleTensor = OnnxTensor.createTensor(env, FloatBuffer.wrap(scales), longArrayOf(3))
+                inputsMap[scaleName] = scaleTensor
+            }
+
+            // Run ONNX VITS inference
+            val results = session.run(inputsMap)
+            val outputValue = results[0].value
+            val floatAudio = extractFloatAudio(outputValue)
+            results.close()
+
+            if (floatAudio.isEmpty()) {
+                throw IllegalStateException("ONNX TTS generated 0 audio samples.")
+            }
+
+            // Write 16-bit PCM WAV
+            writePcmToWav(floatAudio, outputFile, modelSampleRate)
         } catch (e: Exception) {
-            Log.w(TAG, "ONNX synthesis step notice: ${e.message}")
-            false
+            Log.e(TAG, "ONNX TTS inference error: ${e.message}", e)
+            throw IllegalStateException("ONNX TTS inference error: ${e.message}", e)
+        } finally {
+            for (tensor in inputsMap.values) {
+                try { tensor.close() } catch (ignored: Exception) {}
+            }
+        }
+    }
+
+    private fun extractFloatAudio(outputValue: Any?): FloatArray {
+        if (outputValue == null) return FloatArray(0)
+        if (outputValue is FloatArray) return outputValue
+        if (outputValue is Array<*>) {
+            val first = outputValue[0]
+            if (first is FloatArray) return first
+            if (first is Array<*>) {
+                val sub = first[0]
+                if (sub is FloatArray) return sub
+            }
+        }
+        return FloatArray(0)
+    }
+
+    private fun writePcmToWav(floats: FloatArray, outputFile: File, sampleRate: Int) {
+        val numSamples = floats.size
+        val dataBytes = (numSamples * 2).toLong()
+
+        FileOutputStream(outputFile).use { fos ->
+            WavUtils.writeWavHeader(
+                outputStream = fos,
+                totalAudioLen = dataBytes,
+                totalDataLen = dataBytes + 36,
+                sampleRate = sampleRate,
+                channels = 1,
+                bitsPerSample = 16
+            )
+
+            val buffer = ByteArray(4096)
+            val bb = ByteBuffer.wrap(buffer).order(ByteOrder.LITTLE_ENDIAN)
+            var sampleIdx = 0
+
+            while (sampleIdx < numSamples) {
+                bb.clear()
+                while (bb.remaining() >= 2 && sampleIdx < numSamples) {
+                    val s = (floats[sampleIdx].coerceIn(-1.0f, 1.0f) * 32767.0f).toInt().toShort()
+                    bb.putShort(s)
+                    sampleIdx++
+                }
+                fos.write(buffer, 0, bb.position())
+            }
+            fos.flush()
         }
     }
 
@@ -142,71 +301,14 @@ class BanglaTtsEngine(
             }
         }
 
-    /**
-     * Synthesizes audio syllables matching the phonetic duration and pitch cadence of Bangla text.
-     */
-    private fun synthesizeAcousticFormantSpeech(text: String, outputFile: File) {
-        val sampleRate = WavUtils.DEFAULT_SAMPLE_RATE // 16000
-        val words = text.split(" ").filter { it.isNotBlank() }
-        val numWords = words.size.coerceAtLeast(1)
-
-        // Average 250ms per word in natural Bengali speech
-        val totalDurationMs = (numWords * 280L).coerceIn(800L, 12000L)
-        val totalSamples = ((totalDurationMs * sampleRate) / 1000).toInt()
-        val totalDataBytes = totalSamples * 2L
-
-        FileOutputStream(outputFile).use { fos ->
-            WavUtils.writeWavHeader(fos, totalDataBytes, totalDataBytes + 36, sampleRate, 1, 16)
-
-            val buffer = ByteArray(4096)
-            val bb = ByteBuffer.wrap(buffer).order(ByteOrder.LITTLE_ENDIAN)
-
-            var phase1 = 0.0
-            var phase2 = 0.0
-            var phase3 = 0.0
-
-            // Base pitch around 165Hz (natural conversational frequency)
-            val baseFreq = 165.0
-
-            for (i in 0 until totalSamples) {
-                val t = i.toDouble() / sampleRate
-                val progress = i.toDouble() / totalSamples
-
-                // Slight pitch intonation curve
-                val pitch = baseFreq + (15.0 * sin(progress * PI))
-
-                // Formants for vowel acoustics (F1 ~ 500Hz, F2 ~ 1500Hz, F3 ~ 2500Hz)
-                phase1 += 2 * PI * pitch / sampleRate
-                phase2 += 2 * PI * (pitch * 3.2) / sampleRate
-                phase3 += 2 * PI * (pitch * 5.1) / sampleRate
-
-                // Syllabic envelope modulation (creates distinct word cadences)
-                val syllableEnv = (sin(progress * numWords * 2 * PI).coerceAtLeast(0.0)).let { it * it }
-                val attackDecay = if (progress < 0.05) progress / 0.05 else if (progress > 0.95) (1.0 - progress) / 0.05 else 1.0
-
-                val sampleVal = (0.5 * sin(phase1) + 0.3 * sin(phase2) + 0.2 * sin(phase3)) * syllableEnv * attackDecay
-                val pcm16 = (sampleVal * 16000.0).toInt().coerceIn(-32767, 32767).toShort()
-
-                bb.putShort(pcm16)
-
-                if (!bb.hasRemaining()) {
-                    fos.write(buffer)
-                    bb.clear()
-                }
-            }
-
-            if (bb.position() > 0) {
-                fos.write(buffer, 0, bb.position())
-            }
-        }
-    }
-
     override fun close() {
         try {
+            ortSession?.close()
+            ortEnv?.close()
             androidTts?.stop()
             androidTts?.shutdown()
         } catch (e: Exception) {
-            Log.w(TAG, "Error closing Android TTS: ${e.message}")
+            Log.w(TAG, "Error closing TTS engine", e)
         }
     }
 }

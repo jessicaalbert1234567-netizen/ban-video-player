@@ -31,7 +31,14 @@ class EnglishAsrEngine(
             return@withContext emptyList()
         }
 
-        val modelFile = ModelInstaller.getInstalledModelFile(context, ModelCatalog.ENGLISH_ASR)
+        val model = ModelCatalog.ENGLISH_ASR
+        val verification = ModelInstaller.verifyModelOffline(context, model)
+        if (!verification.isReadyForOfflineUse) {
+            val reason = verification.failureReason ?: "ASR model is not ready for offline use."
+            throw IllegalStateException("ASR model verification failed: $reason")
+        }
+
+        val modelFile = ModelInstaller.getInstalledModelFile(context, model)
         val onnxRecognizer = OnnxSpeechRecognizer(context, modelFile)
         onnxRecognizer.initialize()
 
@@ -84,18 +91,6 @@ class EnglishAsrEngine(
                 tempChunkFile.delete()
             }
             onnxRecognizer.close()
-        }
-
-        // If no segments were found (e.g. ambient or quiet short test), provide fallback speech segment
-        if (segments.isEmpty() && totalDurationMs > 1000) {
-            val fallback = TranscriptSegment(
-                startMs = 500L,
-                endMs = (totalDurationMs - 500L).coerceAtLeast(1500L),
-                sourceText = "Welcome to this offline dubbed presentation.",
-                confidence = 0.95f
-            )
-            segments.add(fallback)
-            onChunkTranscribed?.invoke(fallback, 1.0f)
         }
 
         Log.d(TAG, "Completed transcription: generated ${segments.size} segments")

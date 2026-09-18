@@ -12,13 +12,40 @@ enum class ModelFormat {
     BINARY_ARCHIVE
 }
 
-enum class ModelStatus {
-    NOT_INSTALLED,
-    DOWNLOADING,
-    VERIFYING,
-    INSTALLED,
-    ERROR
+enum class ModelStatus(val label: String) {
+    NOT_CONFIGURED("Model source not configured"),
+    NOT_AVAILABLE("Not available"),
+    NOT_INSTALLED("Not Installed"),
+    DOWNLOADING("Downloading..."),
+    VERIFYING("Verifying..."),
+    INSTALLED("Installed"),
+    READY("Installed & Ready for Offline Use"),
+    ERROR("Error"),
+    INCOMPATIBLE("Incompatible")
 }
+
+data class ModelAuxiliaryFile(
+    val fileName: String,
+    val downloadUrl: String,
+    val expectedSizeBytes: Long = 0L,
+    val sha256: String = ""
+)
+
+data class ModelVerificationResult(
+    val modelId: String,
+    val isFilePresent: Boolean,
+    val fileSizeBytes: Long,
+    val expectedSizeBytes: Long,
+    val sha256Calculated: String?,
+    val sha256Matches: Boolean,
+    val onnxLoadSuccess: Boolean,
+    val onnxInputInfo: String?,
+    val onnxOutputInfo: String?,
+    val auxiliaryFilesPresent: Boolean,
+    val auxiliaryFilesDetails: String?,
+    val isReadyForOfflineUse: Boolean,
+    val failureReason: String?
+)
 
 data class OnnxMetadata(
     val inputTensorName: String,
@@ -36,7 +63,7 @@ data class ModelInfo(
     val name: String,
     val version: String,
     val sourceLanguage: String,
-    val targetLanguage: String?,
+    val targetLanguage: String? = null,
     val type: ModelType,
     val downloadUrl: String,
     val sizeBytes: Long,
@@ -46,5 +73,12 @@ data class ModelInfo(
     val minimumRamMb: Int,
     val minimumStorageMb: Int,
     val onnxMetadata: OnnxMetadata,
-    val description: String
-)
+    val description: String,
+    val licenseSource: String = "Open Source",
+    val runtimeRequirements: String = "ONNX Runtime Mobile >= 1.19",
+    val auxiliaryFiles: List<ModelAuxiliaryFile> = emptyList()
+) {
+    val isSourceConfigured: Boolean
+        get() = downloadUrl.isNotBlank() && downloadUrl.startsWith("https://")
+}
+

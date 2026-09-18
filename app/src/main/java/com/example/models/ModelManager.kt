@@ -13,8 +13,11 @@ import java.io.File
 data class ModelItemUiState(
     val info: ModelInfo,
     val isInstalled: Boolean,
+    val status: ModelStatus = ModelStatus.NOT_INSTALLED,
     val installedSizeBytes: Long = 0L,
-    val downloadProgress: DownloadProgress? = null
+    val downloadProgress: DownloadProgress? = null,
+    val verification: ModelVerificationResult? = null,
+    val isReadyForOfflineUse: Boolean = false
 )
 
 class ModelManager(private val context: Context) {
@@ -40,35 +43,56 @@ class ModelManager(private val context: Context) {
 
     fun refreshModelStatuses() {
         val updatedList = ModelCatalog.REQUIRED_MODELS.map { model ->
-            val file = ModelInstaller.getInstalledModelFile(context, model)
-            val installed = file.exists() && file.length() > 0
-            val size = if (installed) file.length() else 0L
+            val verification = ModelInstaller.verifyModelOffline(context, model)
             val progress = downloader.downloadProgressMap.value[model.id]
+            val status = when {
+                progress?.status == ModelStatus.DOWNLOADING -> ModelStatus.DOWNLOADING
+                progress?.status == ModelStatus.VERIFYING -> ModelStatus.VERIFYING
+                verification.isReadyForOfflineUse -> ModelStatus.READY
+                !model.isSourceConfigured && !verification.isFilePresent -> ModelStatus.NOT_CONFIGURED
+                !verification.isFilePresent -> ModelStatus.NOT_INSTALLED
+                verification.isFilePresent && !verification.onnxLoadSuccess -> ModelStatus.INCOMPATIBLE
+                else -> ModelStatus.ERROR
+            }
             ModelItemUiState(
                 info = model,
-                isInstalled = installed,
-                installedSizeBytes = size,
-                downloadProgress = progress
+                isInstalled = verification.isReadyForOfflineUse,
+                status = status,
+                installedSizeBytes = verification.fileSizeBytes,
+                downloadProgress = progress,
+                verification = verification,
+                isReadyForOfflineUse = verification.isReadyForOfflineUse
             )
         }
         _modelsState.value = updatedList
-        _isAllRequiredReady.value = updatedList.all { it.isInstalled }
+        _isAllRequiredReady.value = updatedList.all { it.isReadyForOfflineUse }
     }
 
     private fun updateWithProgress(progressMap: Map<String, DownloadProgress>) {
         val currentList = _modelsState.value
         val updated = currentList.map { item ->
             val progress = progressMap[item.info.id]
-            val isNowInstalled = progress?.status == ModelStatus.INSTALLED || ModelInstaller.isModelInstalled(context, item.info)
-            val file = ModelInstaller.getInstalledModelFile(context, item.info)
+            val verification = ModelInstaller.verifyModelOffline(context, item.info)
+            val status = when {
+                progress?.status == ModelStatus.DOWNLOADING -> ModelStatus.DOWNLOADING
+                progress?.status == ModelStatus.VERIFYING -> ModelStatus.VERIFYING
+                verification.isReadyForOfflineUse -> ModelStatus.READY
+                !item.info.isSourceConfigured && !verification.isFilePresent -> ModelStatus.NOT_CONFIGURED
+                !verification.isFilePresent -> ModelStatus.NOT_INSTALLED
+                verification.isFilePresent && !verification.onnxLoadSuccess -> ModelStatus.INCOMPATIBLE
+                else -> ModelStatus.ERROR
+            }
             item.copy(
-                isInstalled = isNowInstalled,
-                installedSizeBytes = if (isNowInstalled && file.exists()) file.length() else item.installedSizeBytes,
-                downloadProgress = progress
+                isInstalled = verification.isReadyForOfflineUse,
+                status = status,
+                installedSizeBytes = verification.fileSizeBytes,
+                downloadProgress = progress,
+                verification = verification,
+                isReadyForOfflineUse = verification.isReadyForOfflineUse
             )
         }
         _modelsState.value = updated
-        _isAllRequiredReady.value = updated.all { it.isInstalled }
+        _isAllRequiredReady.value = updated.all { it.isReadyForOfflineUse }
     }
 
     fun downloadModel(model: ModelInfo) {
@@ -81,8 +105,11 @@ class ModelManager(private val context: Context) {
     fun downloadAllRequiredModels() {
         scope.launch {
             for (model in ModelCatalog.REQUIRED_MODELS) {
-                if (!ModelInstaller.isModelInstalled(context, model)) {
-                    downloader.downloadAndInstall(model)
+                if (model.isSourceConfigured) {
+                    val verified = ModelInstaller.verifyModelOffline(context, model)
+                    if (!verified.isReadyForOfflineUse) {
+                        downloader.downloadAndInstall(model)
+                    }
                 }
             }
             refreshModelStatuses()
@@ -91,9 +118,24 @@ class ModelManager(private val context: Context) {
 
     fun deleteModel(model: ModelInfo): Boolean {
         val file = ModelInstaller.getInstalledModelFile(context, model)
-        val deleted = if (file.exists()) file.delete() else true
+        var deleted = if (file.exists()) file.delete() else true
+        for (aux in model.auxiliaryFiles) {
+            val auxFile = ModelInstaller.getAuxiliaryFile(context, model, aux.fileName)
+            if (auxFile.exists()) {
+                auxFile.delete()
+            }
+        }
         refreshModelStatuses()
         return deleted
+    }
+
+    fun verifyAllModelsOffline(): Map<String, ModelVerificationResult> {
+        val results = mutableMapOf<String, ModelVerificationResult>()
+        for (model in ModelCatalog.REQUIRED_MODELS) {
+            results[model.id] = ModelInstaller.verifyModelOffline(context, model)
+        }
+        refreshModelStatuses()
+        return results
     }
 
     fun getStorageSummary(): Pair<Long, Long> {
@@ -101,7 +143,10 @@ class ModelManager(private val context: Context) {
         if (!baseDir.exists()) baseDir.mkdirs()
         val availableBytes = baseDir.usableSpace
         val requiredBytes = ModelCatalog.REQUIRED_MODELS
-            .filter { !ModelInstaller.isModelInstalled(context, it) }
+            .filter { model ->
+                val v = ModelInstaller.verifyModelOffline(context, model)
+                !v.isReadyForOfflineUse
+            }
             .sumOf { it.sizeBytes }
         return Pair(requiredBytes, availableBytes)
     }
@@ -121,3 +166,4 @@ class ModelManager(private val context: Context) {
         return length
     }
 }
+
