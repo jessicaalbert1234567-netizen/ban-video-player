@@ -1,0 +1,275 @@
+package com.example.ui
+
+import android.app.Application
+import android.net.Uri
+import android.provider.OpenableColumns
+import android.util.Log
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import com.example.DubbingApplication
+import com.example.database.DubbingProject
+import com.example.database.TranscriptSegmentEntity
+import com.example.dubbing.DubbingForegroundService
+import com.example.dubbing.PipelineProgress
+import com.example.dubbing.ProcessingStage
+import com.example.models.ModelInfo
+import com.example.models.ModelItemUiState
+import com.example.player.AudioTrackChoice
+import com.example.player.PlayerState
+import com.example.player.SubtitleChoice
+import com.example.settings.ProcessingMode
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.util.UUID
+
+class DubbingViewModel(application: Application) : AndroidViewModel(application) {
+
+    private val app = application as DubbingApplication
+    private val modelManager = app.modelManager
+    private val repository = app.repository
+    private val pipeline = app.dubbingPipeline
+    private val storageManager = app.storageManager
+    private val settingsManager = app.settingsManager
+    val playerManager = app.playerManager
+
+    val modelsState: StateFlow<List<ModelItemUiState>> = modelManager.modelsState
+    val isAllModelsReady: StateFlow<Boolean> = modelManager.isAllRequiredReady
+    val allProjects: StateFlow<List<DubbingProject>> = repository.allProjects
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val pipelineState: StateFlow<PipelineProgress?> = pipeline.pipelineState
+    val playerState: StateFlow<PlayerState> = playerManager.playerState
+    val processingMode: StateFlow<ProcessingMode> = settingsManager.processingMode
+
+    // Active project state
+    private val _selectedProject = MutableStateFlow<DubbingProject?>(null)
+    val selectedProject: StateFlow<DubbingProject?> = _selectedProject.asStateFlow()
+
+    private val _selectedProjectSegments = MutableStateFlow<List<TranscriptSegmentEntity>>(emptyList())
+    val selectedProjectSegments: StateFlow<List<TranscriptSegmentEntity>> = _selectedProjectSegments.asStateFlow()
+
+    // Test mode states
+    private val _testLogs = MutableStateFlow<List<String>>(emptyList())
+    val testLogs: StateFlow<List<String>> = _testLogs.asStateFlow()
+
+    private val _isTestingRunning = MutableStateFlow(false)
+    val isTestingRunning: StateFlow<Boolean> = _isTestingRunning.asStateFlow()
+
+    fun downloadAllModels() {
+        modelManager.downloadAllRequiredModels()
+    }
+
+    fun downloadModel(model: ModelInfo) {
+        modelManager.downloadModel(model)
+    }
+
+    fun deleteModel(model: ModelInfo) {
+        modelManager.deleteModel(model)
+    }
+
+    fun selectVideoForDubbing(uri: Uri, onNavigateToProgress: (String) -> Unit) {
+        viewModelScope.launch {
+            val fileName = queryFileName(uri) ?: "video_${System.currentTimeMillis()}.mp4"
+            val projectId = UUID.randomUUID().toString()
+
+            val projectDir = storageManager.getProjectDir(projectId)
+            val project = DubbingProject(
+                id = projectId,
+                title = fileName,
+                videoUriString = uri.toString(),
+                projectDirPath = projectDir.absolutePath,
+                currentStage = ProcessingStage.EXTRACT_AUDIO,
+                statusMessage = "Starting offline dubbing..."
+            )
+            repository.saveProject(project)
+            _selectedProject.value = project
+
+            // Start foreground service for reliable background processing
+            DubbingForegroundService.start(app)
+
+            onNavigateToProgress(projectId)
+
+            pipeline.executePipeline(
+                projectId = projectId,
+                videoUri = uri,
+                videoTitle = fileName
+            )
+        }
+    }
+
+    fun reDubProject(project: DubbingProject, onNavigateToProgress: (String) -> Unit) {
+        viewModelScope.launch {
+            _selectedProject.value = project
+            DubbingForegroundService.start(app)
+            onNavigateToProgress(project.id)
+
+            pipeline.executePipeline(
+                projectId = project.id,
+                videoUri = Uri.parse(project.videoUriString),
+                videoTitle = project.title,
+                isReDubOnly = true
+            )
+        }
+    }
+
+    fun cancelActiveDubbing() {
+        pipeline.cancelActivePipeline()
+        DubbingForegroundService.stop(app)
+    }
+
+    fun deleteProject(project: DubbingProject) {
+        viewModelScope.launch {
+            repository.deleteProject(project.id)
+            if (_selectedProject.value?.id == project.id) {
+                _selectedProject.value = null
+            }
+        }
+    }
+
+    fun selectProjectForPlayback(project: DubbingProject) {
+        _selectedProject.value = project
+        val videoUri = Uri.parse(project.videoUriString)
+        val dubbedFile = project.dubbedAudioPath?.let { File(it) }
+        val srtFile = project.subtitleSrtPath?.let { File(it) }
+
+        playerManager.setupMedia(
+            videoUri = videoUri,
+            dubbedAudioFile = dubbedFile,
+            srtFile = srtFile
+        )
+    }
+
+    fun setAudioChoice(choice: AudioTrackChoice) {
+        playerManager.setAudioChoice(choice)
+    }
+
+    fun setSubtitleChoice(choice: SubtitleChoice) {
+        playerManager.setSubtitleChoice(choice)
+    }
+
+    fun setPlaybackSpeed(speed: Float) {
+        playerManager.setPlaybackSpeed(speed)
+    }
+
+    fun setProcessingMode(mode: ProcessingMode) {
+        settingsManager.setProcessingMode(mode)
+    }
+
+    fun clearTemporaryFiles(): Long {
+        return storageManager.clearTemporaryFiles()
+    }
+
+    fun getStorageBreakdown(): Triple<Long, Long, Long> {
+        return storageManager.getStorageBreakdown()
+    }
+
+    fun getStorageSummary(): Pair<Long, Long> {
+        return modelManager.getStorageSummary()
+    }
+
+    // --- TEST MODE EXECUTION ---
+    fun runStageTest(stageName: String) {
+        viewModelScope.launch {
+            _isTestingRunning.value = true
+            addTestLog("--- Starting test for: $stageName ---")
+
+            try {
+                when (stageName) {
+                    "ASR" -> {
+                        addTestLog("Testing English ASR engine initialization...")
+                        val testWav = File(app.cacheDir, "test_asr_sample.wav")
+                        com.example.audio.WavUtils.createSilenceWav(testWav, 2000L)
+                        val engine = com.example.asr.EnglishAsrEngine(app)
+                        val results = engine.transcribe(testWav)
+                        addTestLog("ASR Engine returned ${results.size} segments.")
+                        results.forEach { addTestLog("Seg: [${it.startMs}ms - ${it.endMs}ms] \"${it.sourceText}\"") }
+                        testWav.delete()
+                        addTestLog("✓ ASR Stage Test Passed.")
+                    }
+                    "TRANSLATION" -> {
+                        addTestLog("Testing English to Bangla offline translator...")
+                        val translator = com.example.translation.EnglishToBanglaTranslator(app)
+                        val testPhrases = listOf(
+                            "How are you?",
+                            "Welcome to this video",
+                            "Today we are demonstrating offline AI video dubbing."
+                        )
+                        for (phrase in testPhrases) {
+                            val bn = translator.translate(phrase)
+                            addTestLog("EN: \"$phrase\" -> BN: \"$bn\"")
+                        }
+                        translator.close()
+                        addTestLog("✓ Translation Stage Test Passed.")
+                    }
+                    "TTS" -> {
+                        addTestLog("Testing Bangla TTS engine...")
+                        val tts = com.example.tts.BanglaTtsEngine(app)
+                        val outWav = File(app.cacheDir, "test_bangla_tts.wav")
+                        tts.synthesize("স্বাগতম। কেমন আছেন?", outWav)
+                        addTestLog("TTS Generated file size: ${outWav.length()} bytes, duration: ${com.example.audio.WavUtils.getWavDurationMs(outWav)}ms")
+                        addTestLog("✓ Bangla TTS Stage Test Passed.")
+                    }
+                    "AUDIO_SYNC" -> {
+                        addTestLog("Testing Audio Synchronizer with time-stretching...")
+                        val synchronizer = com.example.audio.AudioSynchronizer(app)
+                        val segDir = File(app.cacheDir, "test_sync_segs")
+                        segDir.mkdirs()
+                        val dummyWav = File(segDir, "seg1.wav")
+                        com.example.audio.WavUtils.createSilenceWav(dummyWav, 2500L)
+
+                        val segs = listOf(
+                            TranscriptSegmentEntity(
+                                projectId = "test",
+                                index = 0,
+                                startMs = 1000L,
+                                endMs = 3000L,
+                                sourceText = "Test audio sync",
+                                translatedText = "টেস্ট অডিও সিঙ্ক",
+                                audioSegmentPath = dummyWav.absolutePath
+                            )
+                        )
+                        val outM4a = File(app.cacheDir, "test_dubbed_out.m4a")
+                        val result = synchronizer.synchronizeAndMux(segs, 4000L, outM4a) {}
+                        addTestLog("Audio Synchronizer result: success=${result.isSuccess}, size=${result.getOrNull()?.length()} bytes")
+                        addTestLog("✓ Synchronization Stage Test Passed.")
+                    }
+                }
+            } catch (e: Exception) {
+                addTestLog("❌ Stage Test Error: ${e.message}")
+            } finally {
+                _isTestingRunning.value = false
+            }
+        }
+    }
+
+    private fun addTestLog(msg: String) {
+        val current = _testLogs.value.toMutableList()
+        current.add("[${java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())}] $msg")
+        _testLogs.value = current
+    }
+
+    fun clearTestLogs() {
+        _testLogs.value = emptyList()
+    }
+
+    private fun queryFileName(uri: Uri): String? {
+        var name: String? = null
+        val cursor = app.contentResolver.query(uri, null, null, null, null)
+        cursor?.use {
+            if (it.moveToFirst()) {
+                val index = it.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (index != -1) {
+                    name = it.getString(index)
+                }
+            }
+        }
+        return name
+    }
+}

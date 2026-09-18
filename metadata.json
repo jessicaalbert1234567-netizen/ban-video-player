@@ -1,0 +1,6 @@
+{
+  "name": "Offline AI Dubbing Player",
+  "description": "Offline AI video dubbing player that transcribes English speech, translates to Bangla, and synthesizes synchronized Bangla dubbed audio and subtitles completely on-device.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

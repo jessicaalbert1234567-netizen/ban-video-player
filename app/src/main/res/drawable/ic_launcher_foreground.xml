@@ -1,0 +1,42 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Rounded Video Frame Card centered in 66dp safe zone (x: 25 to 83, y: 25 to 83) -->
+    <path
+        android:fillColor="#1E293B"
+        android:pathData="M32,27 h44 a7,7 0 0 1 7,7 v40 a7,7 0 0 1 -7,7 h-44 a7,7 0 0 1 -7,-7 v-40 a7,7 0 0 1 7,-7 z" />
+    
+    <!-- Top film track / header accent -->
+    <path
+        android:fillColor="#0D9488"
+        android:pathData="M32,27 h44 a7,7 0 0 1 7,7 v6 h-58 v-6 a7,7 0 0 1 7,-7 z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M37,30 h3 v3 h-3 z M47,30 h3 v3 h-3 z M57,30 h3 v3 h-3 z M67,30 h3 v3 h-3 z" />
+
+    <!-- Play triangle in center -->
+    <path
+        android:fillColor="#38BDF8"
+        android:pathData="M44,45 L44,63 L58,54 Z" />
+
+    <!-- Sound Waveform Bars on right (Dubbing Audio) -->
+    <path
+        android:fillColor="#34D399"
+        android:pathData="M64,50 h3 v8 h-3 z" />
+    <path
+        android:fillColor="#FBBF24"
+        android:pathData="M70,44 h3 v20 h-3 z" />
+    <path
+        android:fillColor="#38BDF8"
+        android:pathData="M76,48 h3 v12 h-3 z" />
+
+    <!-- Subtitle badge on bottom -->
+    <path
+        android:fillColor="#0284C7"
+        android:pathData="M38,71 h32 v3 h-32 z" />
+    <path
+        android:fillColor="#F472B6"
+        android:pathData="M42,76 h24 v2.5 h-24 z" />
+</vector>
