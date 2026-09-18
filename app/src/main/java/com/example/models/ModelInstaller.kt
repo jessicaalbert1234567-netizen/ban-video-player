@@ -80,13 +80,95 @@ object ModelInstaller {
         return sb.toString()
     }
 
-    fun verifyChecksum(file: File, expectedSha256: String): Boolean {
-        if (expectedSha256.isEmpty() || expectedSha256.equals("NONE", ignoreCase = true)) {
+    fun calculateSha1(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-1")
+        FileInputStream(file).use { fis ->
+            val buffer = ByteArray(8192)
+            var bytesRead: Int
+            while (fis.read(buffer).also { bytesRead = it } != -1) {
+                digest.update(buffer, 0, bytesRead)
+            }
+        }
+        val bytes = digest.digest()
+        val sb = StringBuilder()
+        for (b in bytes) {
+            sb.append(String.format("%02x", b))
+        }
+        return sb.toString()
+    }
+
+    /**
+     * Calculates the Git object hash (sha1 of "blob <size>\0<content>").
+     * Hugging Face uses this as the ETag and file identifier for Git repository text/raw assets.
+     */
+    fun calculateGitBlobHash(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-1")
+        val header = "blob ${file.length()}\u0000".toByteArray(Charsets.US_ASCII)
+        digest.update(header)
+        FileInputStream(file).use { fis ->
+            val buffer = ByteArray(8192)
+            var bytesRead: Int
+            while (fis.read(buffer).also { bytesRead = it } != -1) {
+                digest.update(buffer, 0, bytesRead)
+            }
+        }
+        val bytes = digest.digest()
+        val sb = StringBuilder()
+        for (b in bytes) {
+            sb.append(String.format("%02x", b))
+        }
+        return sb.toString()
+    }
+
+    /**
+     * Detects the file format and extracts the first 16 bytes signature as hex.
+     */
+    fun detectFileFormat(file: File): Pair<String, String> {
+        if (!file.exists() || file.length() == 0L) {
+            return Pair("Empty file (0 bytes)", "")
+        }
+        val header = ByteArray(16)
+        val readBytes = FileInputStream(file).use { it.read(header) }
+        if (readBytes <= 0) return Pair("Empty file", "")
+        val hex = header.take(readBytes).joinToString(" ") { String.format("%02x", it) }
+        val str = String(header.take(readBytes).toByteArray(), Charsets.US_ASCII)
+
+        val format = when {
+            readBytes >= 4 && header[0] == 0x50.toByte() && header[1] == 0x4B.toByte() &&
+                    (header[2] == 0x03.toByte() || header[2] == 0x05.toByte() || header[2] == 0x07.toByte()) -> "ZIP Archive"
+            readBytes >= 2 && header[0] == 0x08.toByte() -> "ONNX / Protocol Buffers Binary"
+            str.startsWith("<!DO") || str.startsWith("<htm") || str.contains("<html", ignoreCase = true) -> "HTML Document (Error/Redirect Page)"
+            str.trimStart().startsWith("{") || str.trimStart().startsWith("[") -> "JSON Text"
+            str.all { it in ' '..'~' || it == '\n' || it == '\r' || it == '\t' } -> "Plain Text"
+            else -> "Binary"
+        }
+        return Pair(format, hex)
+    }
+
+    fun verifyChecksum(file: File, expectedChecksum: String): Boolean {
+        if (expectedChecksum.isBlank() || expectedChecksum.equals("NONE", ignoreCase = true)) {
             return true
         }
-        val calculated = calculateSha256(file)
-        Log.d(TAG, "Verifying checksum: calculated=$calculated expected=$expectedSha256")
-        return calculated.equals(expectedSha256, ignoreCase = true)
+        val trimmed = expectedChecksum.trim()
+        val calculatedSha256 = calculateSha256(file)
+        if (calculatedSha256.equals(trimmed, ignoreCase = true)) {
+            return true
+        }
+        // If expected checksum is a 40-char hash (e.g. Git blob object hash from Hugging Face Git LFS / ETag, or standard SHA-1)
+        if (trimmed.length == 40) {
+            val calculatedGitBlob = calculateGitBlobHash(file)
+            if (calculatedGitBlob.equals(trimmed, ignoreCase = true)) {
+                Log.d(TAG, "File ${file.name} matched expected 40-char Git blob hash: $trimmed")
+                return true
+            }
+            val calculatedSha1 = calculateSha1(file)
+            if (calculatedSha1.equals(trimmed, ignoreCase = true)) {
+                Log.d(TAG, "File ${file.name} matched expected 40-char SHA-1 hash: $trimmed")
+                return true
+            }
+        }
+        Log.w(TAG, "Checksum mismatch for ${file.name}: expected=$trimmed, calculatedSha256=$calculatedSha256")
+        return false
     }
 
     /**
@@ -231,7 +313,9 @@ object ModelInstaller {
             )
         }
 
-        if (expectedMainSize > 0 && fileSize < (expectedMainSize * 0.9).toLong()) {
+        val (detectedFormat, fileSignatureHex) = detectFileFormat(file)
+
+        if (fileSize == 0L || (expectedMainSize > 0 && fileSize < (expectedMainSize * 0.9).toLong())) {
             return ModelVerificationResult(
                 modelId = model.id,
                 isFilePresent = true,
@@ -245,7 +329,9 @@ object ModelInstaller {
                 auxiliaryFilesPresent = false,
                 auxiliaryFilesDetails = null,
                 isReadyForOfflineUse = false,
-                failureReason = "Model file size ($fileSize bytes) is smaller than expected ($expectedMainSize bytes)."
+                failureReason = "Model file size ($fileSize bytes) is smaller than expected ($expectedMainSize bytes). Format: $detectedFormat, signature: $fileSignatureHex",
+                fileSignatureHex = fileSignatureHex,
+                detectedFormat = detectedFormat
             )
         }
 
@@ -271,7 +357,9 @@ object ModelInstaller {
                 auxiliaryFilesPresent = false,
                 auxiliaryFilesDetails = null,
                 isReadyForOfflineUse = false,
-                failureReason = "SHA-256 checksum mismatch (expected: ${expectedMainSha256.take(8)}..., got: ${calculatedSha256.take(8)}...)."
+                failureReason = "SHA-256 checksum mismatch (expected: $expectedMainSha256, got: $calculatedSha256). Format: $detectedFormat, signature: $fileSignatureHex",
+                fileSignatureHex = fileSignatureHex,
+                detectedFormat = detectedFormat
             )
         }
 

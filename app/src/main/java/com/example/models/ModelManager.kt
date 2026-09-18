@@ -48,10 +48,13 @@ class ModelManager(private val context: Context) {
             val status = when {
                 progress?.status == ModelStatus.DOWNLOADING -> ModelStatus.DOWNLOADING
                 progress?.status == ModelStatus.VERIFYING -> ModelStatus.VERIFYING
+                progress?.status == ModelStatus.INSTALLING -> ModelStatus.INSTALLING
+                progress?.status == ModelStatus.ERROR -> ModelStatus.ERROR
                 verification.isReadyForOfflineUse -> ModelStatus.READY
-                !model.isSourceConfigured && !verification.isFilePresent -> ModelStatus.NOT_CONFIGURED
-                !verification.isFilePresent -> ModelStatus.NOT_INSTALLED
                 verification.isFilePresent && !verification.onnxLoadSuccess -> ModelStatus.INCOMPATIBLE
+                verification.isFilePresent && !verification.sha256Matches -> ModelStatus.ERROR
+                !model.isSourceConfigured && !verification.isFilePresent -> ModelStatus.NOT_CONFIGURED
+                !verification.isFilePresent -> ModelStatus.NOT_DOWNLOADED
                 else -> ModelStatus.ERROR
             }
             ModelItemUiState(
@@ -76,10 +79,13 @@ class ModelManager(private val context: Context) {
             val status = when {
                 progress?.status == ModelStatus.DOWNLOADING -> ModelStatus.DOWNLOADING
                 progress?.status == ModelStatus.VERIFYING -> ModelStatus.VERIFYING
+                progress?.status == ModelStatus.INSTALLING -> ModelStatus.INSTALLING
+                progress?.status == ModelStatus.ERROR -> ModelStatus.ERROR
                 verification.isReadyForOfflineUse -> ModelStatus.READY
-                !item.info.isSourceConfigured && !verification.isFilePresent -> ModelStatus.NOT_CONFIGURED
-                !verification.isFilePresent -> ModelStatus.NOT_INSTALLED
                 verification.isFilePresent && !verification.onnxLoadSuccess -> ModelStatus.INCOMPATIBLE
+                verification.isFilePresent && !verification.sha256Matches -> ModelStatus.ERROR
+                !item.info.isSourceConfigured && !verification.isFilePresent -> ModelStatus.NOT_CONFIGURED
+                !verification.isFilePresent -> ModelStatus.NOT_DOWNLOADED
                 else -> ModelStatus.ERROR
             }
             item.copy(

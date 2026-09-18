@@ -13,15 +13,21 @@ enum class ModelFormat {
 }
 
 enum class ModelStatus(val label: String) {
-    NOT_CONFIGURED("Model source not configured"),
-    NOT_AVAILABLE("Not available"),
-    NOT_INSTALLED("Not Installed"),
+    NOT_DOWNLOADED("Not Downloaded"),
     DOWNLOADING("Downloading..."),
     VERIFYING("Verifying..."),
-    INSTALLED("Installed"),
-    READY("Installed & Ready for Offline Use"),
+    INSTALLING("Installing..."),
+    READY("Installed & Ready"),
     ERROR("Error"),
-    INCOMPATIBLE("Incompatible")
+
+    // Compatibility aliases
+    NOT_INSTALLED("Not Downloaded"),
+    NOT_CONFIGURED("Model source not configured"),
+    NOT_AVAILABLE("Not available"),
+    INSTALLED("Installed & Ready"),
+    INCOMPATIBLE("Incompatible");
+
+    val isReady: Boolean get() = this == READY
 }
 
 data class ModelAuxiliaryFile(
@@ -44,7 +50,15 @@ data class ModelVerificationResult(
     val auxiliaryFilesPresent: Boolean,
     val auxiliaryFilesDetails: String?,
     val isReadyForOfflineUse: Boolean,
-    val failureReason: String?
+    val failureReason: String?,
+    val httpStatusCode: Int = 0,
+    val contentType: String? = null,
+    val downloadedFilename: String? = null,
+    val fileSignatureHex: String? = null,
+    val detectedFormat: String? = null,
+    val extractionError: String? = null,
+    val manifestError: String? = null,
+    val diagnosticDetails: String? = null
 )
 
 data class OnnxMetadata(

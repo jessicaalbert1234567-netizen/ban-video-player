@@ -23,9 +23,10 @@ data class DownloadProgress(
     val progressPercent: Int = 0,
     val speedKbps: Long = 0L,
     val estimatedRemainingSeconds: Long = 0L,
-    val status: ModelStatus = ModelStatus.NOT_INSTALLED,
+    val status: ModelStatus = ModelStatus.NOT_DOWNLOADED,
     val verificationStatus: String? = null,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val diagnosticDetails: String? = null
 )
 
 class ModelDownloader(private val context: Context) {
@@ -34,8 +35,10 @@ class ModelDownloader(private val context: Context) {
 
     private val okHttpClient: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
+        .readTimeout(120, TimeUnit.SECONDS)
         .followRedirects(true)
+        .followSslRedirects(true)
+        .retryOnConnectionFailure(true)
         .build()
 
     private val _downloadProgressMap = MutableStateFlow<Map<String, DownloadProgress>>(emptyMap())
@@ -369,11 +372,13 @@ class ModelDownloader(private val context: Context) {
             } catch (e: Exception) {
                 Log.e(TAG, "Error downloading/installing translation package ${model.name}", e)
                 if (tempFile.exists()) tempFile.delete()
+                val errMsg = e.message ?: "Download failed"
                 updateState(
                     DownloadProgress(
                         modelId = model.id,
                         status = ModelStatus.ERROR,
-                        errorMessage = e.message ?: "Download failed"
+                        errorMessage = errMsg,
+                        diagnosticDetails = errMsg
                     ),
                     onProgressUpdate
                 )
@@ -404,15 +409,42 @@ class ModelDownloader(private val context: Context) {
             updateState(
                 DownloadProgress(
                     modelId = model.id,
-                    progressPercent = 99,
-                    status = ModelStatus.VERIFYING
+                    progressPercent = 95,
+                    status = ModelStatus.VERIFYING,
+                    verificationStatus = "Verifying downloaded model artifact..."
                 ),
                 onProgressUpdate
             )
 
-            if (tempFile.length() <= 0) {
-                tempFile.delete()
+            if (!tempFile.exists() || tempFile.length() <= 0) {
+                if (tempFile.exists()) tempFile.delete()
                 throw IllegalStateException("Downloaded model file is empty (0 bytes).")
+            }
+
+            val actualSize = tempFile.length()
+            val actualSha256 = ModelInstaller.calculateSha256(tempFile)
+            val (detectedFormat, fileSigHex) = ModelInstaller.detectFileFormat(tempFile)
+
+            if (detectedFormat.contains("HTML", ignoreCase = true)) {
+                tempFile.delete()
+                throw IllegalStateException(
+                    "Verification failed: Downloaded file is an HTML error/redirect document, not a model binary.\n" +
+                            "• File size: $actualSize bytes\n" +
+                            "• Header: $fileSigHex\n" +
+                            "• URL: ${model.downloadUrl}"
+                )
+            }
+
+            if (model.sha256.isNotBlank() && !ModelInstaller.verifyChecksum(tempFile, model.sha256)) {
+                tempFile.delete()
+                throw IllegalStateException(
+                    "Verification failed: SHA-256 mismatch for ${model.name}.\n" +
+                            "• Expected SHA-256: ${model.sha256}\n" +
+                            "• Actual SHA-256:   $actualSha256\n" +
+                            "• Expected size:    ${model.sizeBytes} bytes\n" +
+                            "• Actual size:      $actualSize bytes\n" +
+                            "• Detected format:  $detectedFormat ($fileSigHex)"
+                )
             }
 
             // Test ONNX load directly on tempFile
@@ -420,10 +452,20 @@ class ModelDownloader(private val context: Context) {
             if (onnxInit.isFailure) {
                 val err = onnxInit.exceptionOrNull()?.localizedMessage ?: "Invalid ONNX model structure"
                 tempFile.delete()
-                throw IllegalStateException("Model verification failed: $err")
+                throw IllegalStateException("ONNX model initialization failed: $err")
             }
 
-            // Stage 3: Download auxiliary files (tokens, phoneme mappings, etc.)
+            // Stage 3: Installing auxiliary files (tokens, phoneme mappings, etc.)
+            updateState(
+                DownloadProgress(
+                    modelId = model.id,
+                    progressPercent = 98,
+                    status = ModelStatus.INSTALLING,
+                    verificationStatus = "Installing companion files..."
+                ),
+                onProgressUpdate
+            )
+
             for (aux in model.auxiliaryFiles) {
                 val auxDestFile = ModelInstaller.getAuxiliaryFile(context, model, aux.fileName)
                 val auxTemp = File(destDir, "${aux.fileName}.download")
@@ -436,6 +478,24 @@ class ModelDownloader(private val context: Context) {
                         onProgressUpdate = null
                     )
                     if (auxTemp.exists() && auxTemp.length() > 0) {
+                        val auxSize = auxTemp.length()
+                        val auxSha256 = ModelInstaller.calculateSha256(auxTemp)
+                        val auxGitBlob = ModelInstaller.calculateGitBlobHash(auxTemp)
+                        val (auxFormat, auxSig) = ModelInstaller.detectFileFormat(auxTemp)
+
+                        if (aux.sha256.isNotBlank() && !ModelInstaller.verifyChecksum(auxTemp, aux.sha256)) {
+                            auxTemp.delete()
+                            throw IllegalStateException(
+                                "Verification failed for companion file '${aux.fileName}':\n" +
+                                        "• Expected hash: ${aux.sha256}\n" +
+                                        "• Actual SHA-256: $auxSha256\n" +
+                                        "• Actual Git blob: $auxGitBlob\n" +
+                                        "• Expected size: ${aux.expectedSizeBytes} bytes\n" +
+                                        "• Actual size: $auxSize bytes\n" +
+                                        "• Format: $auxFormat ($auxSig)"
+                            )
+                        }
+
                         auxTemp.copyTo(auxDestFile, overwrite = true)
                         auxTemp.delete()
                     } else {
@@ -443,7 +503,7 @@ class ModelDownloader(private val context: Context) {
                     }
                 } catch (e: Exception) {
                     if (auxTemp.exists()) auxTemp.delete()
-                    throw IllegalStateException("Failed to download required companion file '${aux.fileName}': ${e.message}")
+                    throw IllegalStateException("Failed companion file '${aux.fileName}': ${e.message}")
                 }
             }
 
@@ -458,7 +518,7 @@ class ModelDownloader(private val context: Context) {
             val verification = ModelInstaller.verifyModelOffline(context, model)
             if (!verification.isReadyForOfflineUse) {
                 finalFile.delete()
-                throw IllegalStateException("Model verification failed: ${verification.failureReason}")
+                throw IllegalStateException("Offline verification failed: ${verification.failureReason}")
             }
 
             updateState(
@@ -467,7 +527,8 @@ class ModelDownloader(private val context: Context) {
                     downloadedBytes = finalFile.length(),
                     totalBytes = finalFile.length(),
                     progressPercent = 100,
-                    status = ModelStatus.READY
+                    status = ModelStatus.READY,
+                    verificationStatus = "Ready for offline use."
                 ),
                 onProgressUpdate
             )
@@ -476,11 +537,13 @@ class ModelDownloader(private val context: Context) {
         } catch (e: Exception) {
             Log.e(TAG, "Error downloading model ${model.name}", e)
             if (tempFile.exists()) tempFile.delete()
+            val errMsg = e.message ?: "Download failed"
             updateState(
                 DownloadProgress(
                     modelId = model.id,
                     status = ModelStatus.ERROR,
-                    errorMessage = e.message ?: "Download failed"
+                    errorMessage = errMsg,
+                    diagnosticDetails = errMsg
                 ),
                 onProgressUpdate
             )
@@ -556,12 +619,32 @@ class ModelDownloader(private val context: Context) {
             .build()
 
         val response = okHttpClient.newCall(request).execute()
+        val finalUrl = response.request.url.toString()
+        val code = response.code
+        val contentType = response.header("Content-Type") ?: "unknown"
+        val serverContentLength = response.body?.contentLength() ?: -1L
+
         if (!response.isSuccessful) {
-            val code = response.code
-            if (code == 404) {
-                throw IllegalStateException("Server returned HTTP 404: Not Found at $url. Ensure that the GitHub Actions release workflow 'v1.0.0-translation-model' has finished uploading translation_en_bn_v1.0.zip.")
+            val errorBodyPreview = try { response.body?.string()?.take(500) } catch (e: Exception) { null }
+            val diag = StringBuilder()
+            diag.append("HTTP $code: ${response.message}\n")
+            diag.append("• URL: $url\n")
+            if (finalUrl != url) {
+                diag.append("• Final URL after redirect: $finalUrl\n")
             }
-            throw IllegalStateException("Server returned HTTP $code: ${response.message}")
+            diag.append("• Content-Type: $contentType\n")
+            diag.append("• Content-Length: $serverContentLength bytes\n")
+            if (code == 404) {
+                if (url.contains("github.com") && url.contains("releases/download")) {
+                    diag.append("• Diagnostic: GitHub Release asset is unavailable.")
+                } else {
+                    diag.append("• Diagnostic: Resource not found on server.")
+                }
+            }
+            if (!errorBodyPreview.isNullOrBlank()) {
+                diag.append("\n• Server response preview: ${errorBodyPreview.trim()}")
+            }
+            throw IllegalStateException(diag.toString().trim())
         }
         val body = response.body ?: throw IllegalStateException("Received empty response body from server.")
         val contentLength = if (body.contentLength() > 0) body.contentLength() else expectedSizeBytes

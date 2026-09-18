@@ -228,8 +228,9 @@ fun ModelCard(
     onConfigureUrl: () -> Unit = {}
 ) {
     val info = item.info
-    val isDownloading = item.downloadProgress?.status == ModelStatus.DOWNLOADING
-    val isVerifying = item.downloadProgress?.status == ModelStatus.VERIFYING
+    val isDownloading = item.downloadProgress?.status == ModelStatus.DOWNLOADING || item.status == ModelStatus.DOWNLOADING
+    val isVerifying = item.downloadProgress?.status == ModelStatus.VERIFYING || item.status == ModelStatus.VERIFYING
+    val isInstalling = item.downloadProgress?.status == ModelStatus.INSTALLING || item.status == ModelStatus.INSTALLING
     val sizeMb = if (info.sizeBytes > 0) info.sizeBytes / (1024 * 1024) else 0
 
     Card(
@@ -262,23 +263,24 @@ fun ModelCard(
                     )
                 }
 
-                // Status chip: strictly "Installed" only if isReadyForOfflineUse is true
+                // Strict model states: NOT_DOWNLOADED, DOWNLOADING, VERIFYING, INSTALLING, READY, ERROR
                 val statusText = when {
-                    !info.isSourceConfigured && !item.isReadyForOfflineUse -> "Not Configured"
-                    item.isReadyForOfflineUse -> "Installed"
+                    item.status == ModelStatus.READY || item.isReadyForOfflineUse -> "Ready"
                     isDownloading -> "Downloading ${item.downloadProgress?.progressPercent ?: 0}%"
                     isVerifying -> "Verifying..."
-                    item.status == ModelStatus.INCOMPATIBLE -> "Incompatible"
+                    isInstalling -> "Installing..."
                     item.status == ModelStatus.ERROR -> "Error"
-                    else -> "Not Installed"
+                    item.status == ModelStatus.INCOMPATIBLE -> "Incompatible"
+                    !info.isSourceConfigured && !item.isReadyForOfflineUse -> "Not Configured"
+                    else -> "Not Downloaded"
                 }
 
                 val statusColor = when {
-                    !info.isSourceConfigured && !item.isReadyForOfflineUse -> WarningAmber
-                    item.isReadyForOfflineUse -> SuccessGreen
+                    item.status == ModelStatus.READY || item.isReadyForOfflineUse -> SuccessGreen
                     isDownloading -> MaterialTheme.colorScheme.primary
-                    isVerifying -> WarningAmber
+                    isVerifying || isInstalling -> WarningAmber
                     item.status == ModelStatus.INCOMPATIBLE || item.status == ModelStatus.ERROR -> ErrorRed
+                    !info.isSourceConfigured && !item.isReadyForOfflineUse -> WarningAmber
                     else -> MaterialTheme.colorScheme.onSurfaceVariant
                 }
 
@@ -431,14 +433,21 @@ fun ModelCard(
                 } else {
                     Button(
                         onClick = onDownload,
-                        enabled = !isDownloading && !isVerifying,
+                        enabled = !isDownloading && !isVerifying && !isInstalling,
                         shape = RoundedCornerShape(10.dp),
                         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
                         modifier = Modifier.testTag("download_model_${info.id}")
                     ) {
                         Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text(if (isDownloading) "Downloading..." else "Download")
+                        Text(
+                            when {
+                                isDownloading -> "Downloading..."
+                                isVerifying -> "Verifying..."
+                                isInstalling -> "Installing..."
+                                else -> "Download"
+                            }
+                        )
                     }
                 }
             }

@@ -3,6 +3,10 @@ name: Publish Translation Model Release
 on:
   workflow_dispatch:
     inputs:
+      package_source_url:
+        description: 'Optional URL to download prebuilt translation_en_bn_v1.0.zip if not present on runner'
+        required: false
+        default: ''
       release_tag:
         description: 'Git Tag for the Release'
         required: true
@@ -26,14 +30,22 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v5
 
-      - name: Verify Prebuilt Model Package Exists
+      - name: Obtain Prebuilt Model Package
         run: |
+          mkdir -p dist
           PACKAGE="dist/translation_en_bn_v1.0.zip"
+          if [ -f "$PACKAGE" ]; then
+            echo "Prebuilt package found locally: $PACKAGE"
+          elif [ -n "${{ github.event.inputs.package_source_url }}" ]; then
+            echo "Downloading prebuilt package from source URL..."
+            curl -fSL "${{ github.event.inputs.package_source_url }}" -o "$PACKAGE"
+          fi
+
           if [ ! -f "$PACKAGE" ]; then
-            echo "::error::Prebuilt model package '$PACKAGE' does not exist on filesystem!"
+            echo "::error::Prebuilt package '$PACKAGE' not found! Provide package_source_url or place the package in dist/."
             exit 1
           fi
-          echo "Verified: '$PACKAGE' exists on the filesystem."
+          echo "Verified: '$PACKAGE' is available for release."
 
       - name: Verify Exact Package Size
         run: |
@@ -108,6 +120,18 @@ jobs:
             `https://github.com/${{ github.repository }}/releases/download/${{ steps.vars.outputs.tag }}/translation_en_bn_v1.0.zip`
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify Resulting Public Asset URL
+        run: |
+          ASSET_URL="https://github.com/${{ github.repository }}/releases/download/${{ steps.vars.outputs.tag }}/translation_en_bn_v1.0.zip"
+          echo "Verifying public asset URL: $ASSET_URL"
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -L "$ASSET_URL")
+          echo "HTTP Status Code: $HTTP_STATUS"
+          if [ "$HTTP_STATUS" -ne 200 ]; then
+            echo "::error::Published asset is not publicly accessible! HTTP status: $HTTP_STATUS"
+            exit 1
+          fi
+          echo "Verification SUCCESS: Public asset is accessible."
 
       - name: Print Final Direct Download URL
         run: |
