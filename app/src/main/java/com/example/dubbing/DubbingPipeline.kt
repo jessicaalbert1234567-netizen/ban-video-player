@@ -126,6 +126,7 @@ class DubbingPipeline(
                     reportStageSync(projectId, ProcessingStage.TRANSCRIBE, (chunkProgress * 100).toInt(), overall, "Transcribing: \"${seg.sourceText.take(24)}...\"", onProgressUpdate)
                 }
                 val rawSegments = asrEngine.transcribe(rawAudioFile)
+                asrEngine.close()
 
                 segments = rawSegments.mapIndexed { index, seg ->
                     TranscriptSegmentEntity(
@@ -140,10 +141,8 @@ class DubbingPipeline(
                 repository.deleteSegmentsForProject(projectId)
                 repository.saveSegments(segments)
 
-                // Memory Saver optimization: run GC hint to unload ASR buffers
-                if (mode == ProcessingMode.MEMORY_SAVER) {
-                    System.gc()
-                }
+                com.example.models.MemoryDiagnostics.logHeapSnapshot("PIPELINE", "ASR Stage Complete, released ASR session")
+                System.gc()
             } else {
                 segments = repository.findSegments(projectId)
             }
@@ -173,10 +172,8 @@ class DubbingPipeline(
                 segments = translatedSegments
                 repository.saveSegments(segments)
                 translator.close()
-
-                if (mode == ProcessingMode.MEMORY_SAVER) {
-                    System.gc()
-                }
+                com.example.models.MemoryDiagnostics.logHeapSnapshot("PIPELINE", "Translation Stage Complete, released translation sessions")
+                System.gc()
             }
 
             // STAGE 4: Generate Bangla Subtitles & JSON transcript (55% - 65%)
@@ -213,10 +210,8 @@ class DubbingPipeline(
                 segments = ttsSegments
                 repository.saveSegments(segments)
                 ttsEngine.close()
-
-                if (mode == ProcessingMode.MEMORY_SAVER) {
-                    System.gc()
-                }
+                com.example.models.MemoryDiagnostics.logHeapSnapshot("PIPELINE", "TTS Stage Complete, released TTS session")
+                System.gc()
             }
 
             // STAGE 6: Audio Synchronization (85% - 95%)

@@ -35,7 +35,7 @@ fun ModelManagerScreen(
     val models by viewModel.modelsState.collectAsState()
     val isAllReady by viewModel.isAllModelsReady.collectAsState()
     val probeResults by viewModel.probeResults.collectAsState()
-    val storageSummary = viewModel.getStorageSummary()
+    val storageSummary by viewModel.storageSummary.collectAsState()
     val requiredMb = storageSummary.first / (1024 * 1024)
     val availableMb = storageSummary.second / (1024 * 1024)
 

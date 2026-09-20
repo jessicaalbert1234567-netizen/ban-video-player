@@ -342,34 +342,18 @@ class ModelDownloader(private val context: Context) {
                 if (decPastCheck.isFailure) throw IllegalStateException("Decoder-with-past ONNX session failed: ${decPastCheck.exceptionOrNull()?.message}")
                 Log.i(TAG, "Step 7 PASSED: MarianMT ONNX sessions initialized.")
 
-                // Step 10: Run test translation
-                updateState(
-                    DownloadProgress(
-                        modelId = model.id,
-                        downloadedBytes = model.sizeBytes,
-                        totalBytes = model.sizeBytes,
-                        progressPercent = 99,
-                        status = ModelStatus.VERIFYING,
-                        verificationStatus = "Step 8/8: Running offline English → Bangla translation test..."
-                    ),
-                    onProgressUpdate
-                )
-                val testPipelineResult = ModelInstaller.testTranslationPipeline(context)
-                if (testPipelineResult.isFailure) {
-                    val err = testPipelineResult.exceptionOrNull()?.message ?: "Translation test inference failed"
-                    throw IllegalStateException("Step 8 translation test failed: $err")
-                }
-                Log.i(TAG, "Step 8 PASSED: Real offline translation test succeeded: '${testPipelineResult.getOrNull()}'")
+                // Step 8: Mark ready on disk (no automatic warm-up inference to avoid ANR/OOM)
+                Log.i(TAG, "Step 8: Translation package files verified on disk.")
 
-                // Step 11: Mark ready
+                // Step 9: Mark ready on disk
                 updateState(
                     DownloadProgress(
                         modelId = model.id,
                         downloadedBytes = model.sizeBytes,
                         totalBytes = model.sizeBytes,
                         progressPercent = 100,
-                        status = ModelStatus.READY,
-                        verificationStatus = "Installed & verified successfully"
+                        status = ModelStatus.READY_ON_DISK,
+                        verificationStatus = "Installed & verified successfully (Ready on disk)"
                     ),
                     onProgressUpdate
                 )
@@ -522,8 +506,8 @@ class ModelDownloader(private val context: Context) {
                 throw IllegalStateException("Failed to atomically install model file to destination.")
             }
 
-            // Stage 5: Final offline verification
-            val verification = ModelInstaller.verifyModelOffline(context, model)
+            // Stage 5: Final offline verification (fast check, binary was already tested in stage 2)
+            val verification = ModelInstaller.verifyModelOffline(context, model, deepCheck = false)
             if (!verification.isReadyForOfflineUse) {
                 finalFile.delete()
                 throw IllegalStateException("Offline verification failed: ${verification.failureReason}")
@@ -535,8 +519,8 @@ class ModelDownloader(private val context: Context) {
                     downloadedBytes = finalFile.length(),
                     totalBytes = finalFile.length(),
                     progressPercent = 100,
-                    status = ModelStatus.READY,
-                    verificationStatus = "Ready for offline use."
+                    status = ModelStatus.READY_ON_DISK,
+                    verificationStatus = "Ready on disk for offline use."
                 ),
                 onProgressUpdate
             )

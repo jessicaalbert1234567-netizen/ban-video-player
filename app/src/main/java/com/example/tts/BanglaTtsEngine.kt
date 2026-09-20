@@ -9,6 +9,7 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import com.example.audio.WavUtils
+import com.example.models.MemoryDiagnostics
 import com.example.models.ModelCatalog
 import com.example.models.ModelInstaller
 import kotlinx.coroutines.Dispatchers
@@ -35,7 +36,14 @@ class BanglaTtsEngine(
     private val context: Context
 ) : TextToSpeechEngine, AutoCloseable {
 
-    private val TAG = "BanglaTtsEngine"
+    companion object {
+        private const val TAG = "TTS"
+    }
+
+    enum class EngineState { NOT_LOADED, LOADING, LOADED, FAILED }
+
+    private val stateLock = Any()
+    @Volatile private var loadState = EngineState.NOT_LOADED
 
     private var ortEnv: OrtEnvironment? = null
     private var ortSession: OrtSession? = null
@@ -50,48 +58,58 @@ class BanglaTtsEngine(
         initializeAndroidTts()
     }
 
-    fun initialize() {
+    fun verifyTtsFiles(): Boolean {
         val model = ModelCatalog.BANGLA_VOICE_TTS
-        val verification = ModelInstaller.verifyModelOffline(context, model)
-        if (!verification.isReadyForOfflineUse) {
-            val reason = verification.failureReason ?: "Model is not ready for offline use."
-            Log.w(TAG, "Bangla TTS model offline verification notice: $reason")
-            return
+        return ModelInstaller.isModelInstalled(context, model)
+    }
+
+    suspend fun loadTtsIntoMemory() = withContext(Dispatchers.IO) {
+        synchronized(stateLock) {
+            if (loadState == EngineState.LOADED && ortSession != null) return@withContext
+            if (loadState == EngineState.LOADING) return@withContext
+            loadState = EngineState.LOADING
         }
 
+        val model = ModelCatalog.BANGLA_VOICE_TTS
         val modelFile = ModelInstaller.getInstalledModelFile(context, model)
-        val expectedFile = File(ModelInstaller.getModelDirectory(context, model), model.archiveName)
-        Log.i(TAG, """
-            |==================================================
-            |MODEL AUDIT:
-            |MODEL NAME: ${model.name}
-            |EXPECTED PATH: ${expectedFile.absolutePath}
-            |ACTUAL PATH: ${modelFile.absolutePath}
-            |EXPECTED FILENAME: ${expectedFile.name}
-            |ACTUAL FILENAME: ${modelFile.name}
-            |ACTUAL BYTE SIZE: ${if (modelFile.exists()) modelFile.length() else 0L}
-            |EXISTS: ${modelFile.exists()}, IS_FILE: ${modelFile.isFile}, CAN_READ: ${modelFile.canRead()}
-            |==================================================
-        """.trimMargin())
 
         if (!modelFile.exists() || modelFile.length() <= 0L) {
+            synchronized(stateLock) { loadState = EngineState.FAILED }
             throw IllegalStateException("Bangla TTS model file is missing on disk: ${modelFile.absolutePath}")
         }
 
-        ortEnv = OrtEnvironment.getEnvironment()
-        val sessionOptions = OrtSession.SessionOptions()
-        sessionOptions.setIntraOpNumThreads(2)
-        val session = ortEnv?.createSession(modelFile.absolutePath, sessionOptions)
-            ?: throw IllegalStateException("Failed to create ONNX session for Bangla TTS model.")
-        ortSession = session
+        try {
+            MemoryDiagnostics.trackModelLoad(MemoryDiagnostics.TAG_TTS, model.name, modelFile) {
+                val env = OrtEnvironment.getEnvironment()
+                ortEnv = env
+                val sessionOptions = OrtSession.SessionOptions().apply {
+                    setIntraOpNumThreads(2)
+                }
+                val session = env.createSession(modelFile.absolutePath, sessionOptions)
+                ortSession = session
 
-        // Load config JSON if available
-        val configFile = ModelInstaller.getAuxiliaryFile(context, model, "bn_BD-google-medium.onnx.json")
-        if (configFile.exists() && configFile.length() > 0) {
-            loadConfigJson(configFile)
+                // Load config JSON if available
+                val configFile = ModelInstaller.getAuxiliaryFile(context, model, "bn_BD-google-medium.onnx.json")
+                if (configFile.exists() && configFile.length() > 0) {
+                    loadConfigJson(configFile)
+                }
+
+                Log.d(TAG, "Bangla TTS ONNX session initialized successfully on '${Thread.currentThread().name}'. Inputs: ${session.inputNames}, Outputs: ${session.outputNames}")
+            }
+            synchronized(stateLock) { loadState = EngineState.LOADED }
+        } catch (e: Exception) {
+            synchronized(stateLock) { loadState = EngineState.FAILED }
+            close()
+            Log.e(TAG, "Bangla TTS ONNX session creation failed on '${Thread.currentThread().name}': ${e.message}", e)
+            throw e
         }
+    }
 
-        Log.d(TAG, "Bangla TTS ONNX session initialized successfully. Inputs: ${session.inputNames}, Outputs: ${session.outputNames}")
+    fun initialize() {
+        // Synchronous or called from pipeline: verify files and load into memory on IO
+        kotlinx.coroutines.runBlocking(Dispatchers.IO) {
+            loadTtsIntoMemory()
+        }
     }
 
     private fun loadConfigJson(configFile: File) {
@@ -151,7 +169,7 @@ class BanglaTtsEngine(
         // 1. Check if ONNX session is ready or can be initialized
         if (ortSession == null) {
             try {
-                initialize()
+                loadTtsIntoMemory()
             } catch (e: Exception) {
                 Log.w(TAG, "ONNX TTS initialization deferred: ${e.message}")
             }
@@ -319,8 +337,14 @@ class BanglaTtsEngine(
         try {
             ortSession?.close()
             ortEnv?.close()
+            ortSession = null
+            ortEnv = null
+            synchronized(stateLock) {
+                loadState = EngineState.NOT_LOADED
+            }
             androidTts?.stop()
             androidTts?.shutdown()
+            androidTts = null
         } catch (e: Exception) {
             Log.w(TAG, "Error closing TTS engine", e)
         }

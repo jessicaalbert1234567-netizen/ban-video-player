@@ -21,7 +21,14 @@ class OnnxSpeechRecognizer(
     private val modelFile: File
 ) : AutoCloseable {
 
-    private val TAG = "OnnxSpeechRecognizer"
+    companion object {
+        private const val TAG = "ASR"
+    }
+
+    enum class AsrState { NOT_LOADED, LOADING, LOADED, FAILED }
+
+    private val lock = Any()
+    @Volatile private var loadState = AsrState.NOT_LOADED
 
     private var ortEnv: OrtEnvironment? = null
     private var ortSession: OrtSession? = null
@@ -29,31 +36,53 @@ class OnnxSpeechRecognizer(
     private var blankTokenId = 1024
 
     fun initialize() {
+        synchronized(lock) {
+            if (loadState == AsrState.LOADED && ortSession != null) return
+            if (loadState == AsrState.LOADING) return
+            loadState = AsrState.LOADING
+        }
+
         if (!modelFile.exists() || modelFile.length() <= 0L) {
+            synchronized(lock) { loadState = AsrState.FAILED }
             throw IllegalStateException("ASR model file does not exist or is empty: ${modelFile.absolutePath}")
         }
 
-        ortEnv = OrtEnvironment.getEnvironment()
-        val sessionOptions = OrtSession.SessionOptions()
-        sessionOptions.setIntraOpNumThreads(2)
-        val session = ortEnv?.createSession(modelFile.absolutePath, sessionOptions)
-            ?: throw IllegalStateException("Failed to create ONNX session for ASR model.")
-        ortSession = session
+        try {
+            com.example.models.MemoryDiagnostics.trackModelLoad(
+                com.example.models.MemoryDiagnostics.TAG_ASR,
+                "English ASR Citrinet",
+                modelFile
+            ) {
+                val env = OrtEnvironment.getEnvironment()
+                ortEnv = env
+                val sessionOptions = OrtSession.SessionOptions().apply {
+                    setIntraOpNumThreads(2)
+                }
+                val session = env.createSession(modelFile.absolutePath, sessionOptions)
+                ortSession = session
 
-        // Load tokens from tokens.txt in model directory
-        val tokensFile = File(modelFile.parentFile, "tokens.txt")
-        if (tokensFile.exists() && tokensFile.length() > 0) {
-            loadVocabulary(tokensFile)
-        } else {
-            // Default Citrinet vocabulary mapping
-            for (c in 'a'..'z') {
-                vocabulary[c - 'a' + 1] = c.toString()
+                // Load tokens from tokens.txt in model directory
+                val tokensFile = File(modelFile.parentFile, "tokens.txt")
+                if (tokensFile.exists() && tokensFile.length() > 0) {
+                    loadVocabulary(tokensFile)
+                } else {
+                    // Default Citrinet vocabulary mapping
+                    for (c in 'a'..'z') {
+                        vocabulary[c - 'a' + 1] = c.toString()
+                    }
+                    vocabulary[0] = " "
+                    vocabulary[27] = "'"
+                }
+
+                Log.d(TAG, "ASR ONNX session initialized successfully on '${Thread.currentThread().name}'. Inputs: ${session.inputNames}, Outputs: ${session.outputNames}, Vocab size: ${vocabulary.size}")
             }
-            vocabulary[0] = " "
-            vocabulary[27] = "'"
+            synchronized(lock) { loadState = AsrState.LOADED }
+        } catch (e: Exception) {
+            synchronized(lock) { loadState = AsrState.FAILED }
+            close()
+            Log.e(TAG, "ASR ONNX session initialization failed on '${Thread.currentThread().name}': ${e.message}", e)
+            throw e
         }
-
-        Log.d(TAG, "ASR ONNX session initialized successfully. Inputs: ${session.inputNames}, Outputs: ${session.outputNames}, Vocab size: ${vocabulary.size}")
     }
 
     private fun loadVocabulary(tokensFile: File) {
@@ -227,6 +256,11 @@ class OnnxSpeechRecognizer(
         try {
             ortSession?.close()
             ortEnv?.close()
+            ortSession = null
+            ortEnv = null
+            synchronized(lock) {
+                loadState = AsrState.NOT_LOADED
+            }
         } catch (e: Exception) {
             Log.w(TAG, "Error closing ORT session", e)
         }

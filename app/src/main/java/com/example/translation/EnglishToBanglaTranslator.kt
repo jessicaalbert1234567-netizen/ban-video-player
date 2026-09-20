@@ -89,21 +89,27 @@ class EnglishToBanglaTranslator(
         // Step 11: If ONNX Runtime cannot load:
         // show: "Translation model failed to initialize."
         try {
-            val env = OrtEnvironment.getEnvironment()
-            ortEnv = env
-            val sessionOptions = OrtSession.SessionOptions().apply {
-                setIntraOpNumThreads(2)
+            com.example.models.MemoryDiagnostics.trackModelLoad(
+                com.example.models.MemoryDiagnostics.TAG_TRANSLATION,
+                "MarianMT Translation Seq2Seq",
+                encoderFile
+            ) {
+                val env = OrtEnvironment.getEnvironment()
+                ortEnv = env
+                val sessionOptions = OrtSession.SessionOptions().apply {
+                    setIntraOpNumThreads(2)
+                }
+                encoderSession = env.createSession(encoderFile.absolutePath, sessionOptions)
+                decoderSession = env.createSession(decoderFile.absolutePath, sessionOptions)
             }
-            encoderSession = env.createSession(encoderFile.absolutePath, sessionOptions)
-            decoderSession = env.createSession(decoderFile.absolutePath, sessionOptions)
         } catch (e: Throwable) {
-            Log.e(TAG, "ONNX Runtime initialization failed", e)
+            Log.e(TAG, "ONNX Runtime initialization failed on '${Thread.currentThread().name}'", e)
             close()
             throw IllegalStateException("Translation model failed to initialize.", e)
         }
 
         isInitialized = true
-        Log.i(TAG, "Real Seq2Seq English → Bangla Translation model initialized successfully.")
+        Log.i(TAG, "Real Seq2Seq English → Bangla Translation model initialized successfully on '${Thread.currentThread().name}'.")
     }
 
     private fun loadTokenizer(vocabFile: File, piecesFile: File) {

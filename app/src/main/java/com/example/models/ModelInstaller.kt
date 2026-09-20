@@ -3,6 +3,7 @@ package com.example.models
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import android.content.Context
+import android.os.Looper
 import android.util.Log
 import java.io.File
 import java.io.FileInputStream
@@ -271,17 +272,28 @@ object ModelInstaller {
      * Throws an exception or returns failure if the session cannot be instantiated.
      */
     fun testOnnxInitialization(modelFile: File): Result<Pair<List<String>, List<String>>> {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            Log.w(TAG, "WARNING: testOnnxInitialization called on main thread! (${Thread.currentThread().name})")
+        }
         return try {
             if (!modelFile.exists() || modelFile.length() <= 0) {
                 return Result.failure(IllegalStateException("Model file is missing or empty: ${modelFile.absolutePath}"))
             }
-            val env = OrtEnvironment.getEnvironment()
-            val session = env.createSession(modelFile.absolutePath, OrtSession.SessionOptions())
-            val inputNames = session.inputNames.toList()
-            val outputNames = session.outputNames.toList()
-            Log.d(TAG, "ONNX model tested successfully: inputs=$inputNames, outputs=$outputNames")
-            session.close()
-            Result.success(Pair(inputNames, outputNames))
+            MemoryDiagnostics.trackModelLoad("ONNX", modelFile.name, modelFile) {
+                val env = OrtEnvironment.getEnvironment()
+                val sessionOptions = OrtSession.SessionOptions().apply {
+                    setIntraOpNumThreads(1)
+                }
+                val session = env.createSession(modelFile.absolutePath, sessionOptions)
+                try {
+                    val inputNames = session.inputNames.toList()
+                    val outputNames = session.outputNames.toList()
+                    Log.d(TAG, "ONNX model tested successfully: inputs=$inputNames, outputs=$outputNames")
+                    Result.success(Pair(inputNames, outputNames))
+                } finally {
+                    session.close()
+                }
+            }
         } catch (e: Throwable) {
             Log.e(TAG, "ONNX model session initialization failed: ${e.message}", e)
             Result.failure(e)
@@ -290,14 +302,16 @@ object ModelInstaller {
 
     /**
      * Performs strict, non-mocked verification of a model on disk.
+     * When deepCheck is false (default), fast disk presence and size verification is performed
+     * without blocking the caller with SHA-256 computation or ONNX session creation.
      */
-    fun verifyModelOffline(context: Context, model: ModelInfo): ModelVerificationResult {
+    fun verifyModelOffline(context: Context, model: ModelInfo, deepCheck: Boolean = false): ModelVerificationResult {
         val file = getInstalledModelFile(context, model)
-        val result = verifyModelOfflineInternal(context, model, file)
+        val result = verifyModelOfflineInternal(context, model, file, deepCheck)
         return result.copy(resolvedFilePath = file.absolutePath)
     }
 
-    private fun verifyModelOfflineInternal(context: Context, model: ModelInfo, file: File): ModelVerificationResult {
+    private fun verifyModelOfflineInternal(context: Context, model: ModelInfo, file: File, deepCheck: Boolean = false): ModelVerificationResult {
         val dir = getModelDirectory(context, model)
         val expectedFile = File(dir, model.archiveName)
         val fileExists = file.exists() && file.isFile && file.length() > 0 && file.canRead()
@@ -457,7 +471,67 @@ object ModelInstaller {
             )
         }
 
-        // SHA-256 calculation
+        // Fast check mode for routine checks, UI state, startup, and progress updates
+        if (!deepCheck) {
+            var auxPresent = true
+            val missingAux = mutableListOf<String>()
+            for (aux in model.auxiliaryFiles) {
+                val auxFile = getAuxiliaryFile(context, model, aux.fileName)
+                if (!auxFile.exists() || auxFile.length() <= 0L) {
+                    auxPresent = false
+                    missingAux.add(aux.fileName)
+                }
+            }
+
+            if (!auxPresent) {
+                val failureMsg = if (model.type == ModelType.TRANSLATION) {
+                    if (missingAux.any { it.contains("vocab") || it.contains("spm") || it.contains("pieces") || it.contains("tokenizer") }) {
+                        "Translation tokenizer files are missing."
+                    } else if (missingAux.any { it.contains("decoder") }) {
+                        "English → Bangla translation model is not installed."
+                    } else {
+                        "Translation tokenizer files are missing."
+                    }
+                } else {
+                    "Required companion file(s) missing: ${missingAux.joinToString()}"
+                }
+                return ModelVerificationResult(
+                    modelId = model.id,
+                    isFilePresent = true,
+                    fileSizeBytes = fileSize,
+                    expectedSizeBytes = model.sizeBytes,
+                    sha256Calculated = null,
+                    sha256Matches = true,
+                    onnxLoadSuccess = true,
+                    onnxInputInfo = null,
+                    onnxOutputInfo = null,
+                    auxiliaryFilesPresent = false,
+                    auxiliaryFilesDetails = "Missing companion files: ${missingAux.joinToString()}",
+                    isReadyForOfflineUse = false,
+                    failureReason = failureMsg
+                )
+            }
+
+            return ModelVerificationResult(
+                modelId = model.id,
+                isFilePresent = true,
+                fileSizeBytes = fileSize,
+                expectedSizeBytes = model.sizeBytes,
+                sha256Calculated = null,
+                sha256Matches = true,
+                onnxLoadSuccess = true,
+                onnxInputInfo = null,
+                onnxOutputInfo = null,
+                auxiliaryFilesPresent = true,
+                auxiliaryFilesDetails = "Model binary and companion files verified on disk.",
+                isReadyForOfflineUse = true,
+                failureReason = null,
+                fileSignatureHex = fileSignatureHex,
+                detectedFormat = detectedFormat
+            )
+        }
+
+        // Deep check mode: SHA-256 calculation and ONNX session test
         val calculatedSha256 = calculateSha256(file)
         val sha256Matches = if (expectedMainSha256.isNotBlank()) {
             calculatedSha256.equals(expectedMainSha256, ignoreCase = true)

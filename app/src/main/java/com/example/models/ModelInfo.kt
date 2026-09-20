@@ -18,7 +18,9 @@ enum class ModelStatus(val label: String) {
     VERIFYING("Verifying..."),
     EXTRACTING("Extracting..."),
     INSTALLING("Installing..."),
-    READY("Installed & Ready"),
+    READY("Ready on Disk"),
+    READY_ON_DISK("Ready on Disk"),
+    LOADED_IN_MEMORY("Loaded in Memory"),
     ERROR("Error"),
 
     // Compatibility & specific status aliases
@@ -26,10 +28,10 @@ enum class ModelStatus(val label: String) {
     NOT_INSTALLED("Not Downloaded"),
     NOT_CONFIGURED("Model source not configured"),
     NOT_AVAILABLE("Not available"),
-    INSTALLED("Installed & Ready"),
+    INSTALLED("Ready on Disk"),
     INCOMPATIBLE("Incompatible");
 
-    val isReady: Boolean get() = this == READY
+    val isReady: Boolean get() = this == READY || this == READY_ON_DISK || this == LOADED_IN_MEMORY || this == INSTALLED
 }
 
 data class ModelAuxiliaryFile(

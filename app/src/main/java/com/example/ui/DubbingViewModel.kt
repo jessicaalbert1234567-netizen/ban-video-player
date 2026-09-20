@@ -41,6 +41,7 @@ class DubbingViewModel(application: Application) : AndroidViewModel(application)
 
     val modelsState: StateFlow<List<ModelItemUiState>> = modelManager.modelsState
     val isAllModelsReady: StateFlow<Boolean> = modelManager.isAllRequiredReady
+    val storageSummary: StateFlow<Pair<Long, Long>> = modelManager.storageSummary
     val allProjects: StateFlow<List<DubbingProject>> = repository.allProjects
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 

@@ -1,6 +1,7 @@
 package com.example.models
 
 import android.content.Context
+import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -8,7 +9,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 
 data class ModelItemUiState(
     val info: ModelInfo,
@@ -17,12 +20,17 @@ data class ModelItemUiState(
     val installedSizeBytes: Long = 0L,
     val downloadProgress: DownloadProgress? = null,
     val verification: ModelVerificationResult? = null,
-    val isReadyForOfflineUse: Boolean = false
+    val isReadyForOfflineUse: Boolean = false,
+    val isLoadedInMemory: Boolean = false
 )
 
 class ModelManager(private val context: Context) {
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    companion object {
+        private const val TAG = "MODEL_MANAGER"
+    }
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     val downloader = ModelDownloader(context)
 
     private val _modelsState = MutableStateFlow<List<ModelItemUiState>>(emptyList())
@@ -31,9 +39,20 @@ class ModelManager(private val context: Context) {
     private val _isAllRequiredReady = MutableStateFlow(false)
     val isAllRequiredReady: StateFlow<Boolean> = _isAllRequiredReady.asStateFlow()
 
+    private val _storageSummary = MutableStateFlow<Pair<Long, Long>>(Pair(0L, 0L))
+    val storageSummary: StateFlow<Pair<Long, Long>> = _storageSummary.asStateFlow()
+
+    // In-memory verification cache to prevent redundant disk I/O and SHA-256 calculations
+    private val verificationCache = ConcurrentHashMap<String, ModelVerificationResult>()
+
     init {
-        refreshModelStatuses()
-        // Listen to progress updates
+        Log.i(TAG, "Initializing ModelManager on thread '${Thread.currentThread().name}'")
+        // Initial model status scan (always run off UI thread on Dispatchers.IO)
+        scope.launch {
+            refreshModelStatusesInternal(forceDeepCheck = false)
+        }
+
+        // Listen to downloader progress updates without triggering disk re-verification
         scope.launch {
             downloader.downloadProgressMap.collect { progressMap ->
                 updateWithProgress(progressMap)
@@ -41,9 +60,31 @@ class ModelManager(private val context: Context) {
         }
     }
 
-    fun refreshModelStatuses() {
+    fun refreshModelStatuses(forceDeepCheck: Boolean = false) {
+        scope.launch {
+            refreshModelStatusesInternal(forceDeepCheck)
+        }
+    }
+
+    suspend fun refreshModelStatusesSync(forceDeepCheck: Boolean = false) {
+        withContext(Dispatchers.IO) {
+            refreshModelStatusesInternal(forceDeepCheck)
+        }
+    }
+
+    private suspend fun refreshModelStatusesInternal(forceDeepCheck: Boolean) = withContext(Dispatchers.IO) {
+        val threadName = Thread.currentThread().name
+        Log.d(TAG, "Refreshing model statuses (deepCheck=$forceDeepCheck) on thread '$threadName'")
+
         val updatedList = ModelCatalog.REQUIRED_MODELS.map { model ->
-            val verification = ModelInstaller.verifyModelOffline(context, model)
+            val verification = if (forceDeepCheck || !verificationCache.containsKey(model.id)) {
+                val v = ModelInstaller.verifyModelOffline(context, model, deepCheck = forceDeepCheck)
+                verificationCache[model.id] = v
+                v
+            } else {
+                verificationCache[model.id]!!
+            }
+
             val progress = downloader.downloadProgressMap.value[model.id]
             val status = when {
                 progress?.status == ModelStatus.DOWNLOADING -> ModelStatus.DOWNLOADING
@@ -51,13 +92,14 @@ class ModelManager(private val context: Context) {
                 progress?.status == ModelStatus.EXTRACTING -> ModelStatus.EXTRACTING
                 progress?.status == ModelStatus.INSTALLING -> ModelStatus.INSTALLING
                 progress?.status == ModelStatus.ERROR -> ModelStatus.ERROR
-                verification.isReadyForOfflineUse -> ModelStatus.READY
+                verification.isReadyForOfflineUse -> ModelStatus.READY_ON_DISK
                 verification.isFilePresent && !verification.onnxLoadSuccess -> ModelStatus.INCOMPATIBLE
                 verification.isFilePresent && !verification.sha256Matches -> ModelStatus.ERROR
                 !model.isSourceConfigured && !verification.isFilePresent -> ModelStatus.NOT_CONFIGURED
                 !verification.isFilePresent -> ModelStatus.NOT_DOWNLOADED
                 else -> ModelStatus.ERROR
             }
+
             ModelItemUiState(
                 info = model,
                 isInstalled = verification.isReadyForOfflineUse,
@@ -65,98 +107,144 @@ class ModelManager(private val context: Context) {
                 installedSizeBytes = verification.fileSizeBytes,
                 downloadProgress = progress,
                 verification = verification,
-                isReadyForOfflineUse = verification.isReadyForOfflineUse
+                isReadyForOfflineUse = verification.isReadyForOfflineUse,
+                isLoadedInMemory = false
             )
         }
+
         _modelsState.value = updatedList
         _isAllRequiredReady.value = updatedList.all { it.isReadyForOfflineUse }
+
+        // Update cached storage summary asynchronously
+        val baseDir = File(context.filesDir, "models")
+        val availableBytes = if (baseDir.exists()) baseDir.usableSpace else 0L
+        val requiredBytes = updatedList
+            .filter { !it.isReadyForOfflineUse }
+            .sumOf { it.info.sizeBytes }
+        _storageSummary.value = Pair(requiredBytes, availableBytes)
+
+        Log.d(
+            TAG,
+            "Model statuses updated on thread '$threadName'. All ready: ${_isAllRequiredReady.value} " +
+                    "(required missing: ${requiredBytes / (1024 * 1024)}MB, available: ${availableBytes / (1024 * 1024)}MB)"
+        )
     }
 
+    /**
+     * Efficiently handles download progress updates in memory.
+     * NEVER performs disk scans, SHA-256 hashing, or ONNX session checks during progress ticks.
+     */
     private fun updateWithProgress(progressMap: Map<String, DownloadProgress>) {
         val currentList = _modelsState.value
+        if (currentList.isEmpty() || progressMap.isEmpty()) return
+
+        var anyCompleted = false
         val updated = currentList.map { item ->
-            val progress = progressMap[item.info.id]
-            val verification = ModelInstaller.verifyModelOffline(context, item.info)
-            val status = when {
-                progress?.status == ModelStatus.DOWNLOADING -> ModelStatus.DOWNLOADING
-                progress?.status == ModelStatus.VERIFYING -> ModelStatus.VERIFYING
-                progress?.status == ModelStatus.EXTRACTING -> ModelStatus.EXTRACTING
-                progress?.status == ModelStatus.INSTALLING -> ModelStatus.INSTALLING
-                progress?.status == ModelStatus.ERROR -> ModelStatus.ERROR
-                verification.isReadyForOfflineUse -> ModelStatus.READY
-                verification.isFilePresent && !verification.onnxLoadSuccess -> ModelStatus.INCOMPATIBLE
-                verification.isFilePresent && !verification.sha256Matches -> ModelStatus.ERROR
-                !item.info.isSourceConfigured && !verification.isFilePresent -> ModelStatus.NOT_CONFIGURED
-                !verification.isFilePresent -> ModelStatus.NOT_DOWNLOADED
-                else -> ModelStatus.ERROR
+            val progress = progressMap[item.info.id] ?: return@map item
+
+            if (progress.status == ModelStatus.READY_ON_DISK || progress.status == ModelStatus.READY) {
+                if (!item.isReadyForOfflineUse) {
+                    anyCompleted = true
+                }
             }
+
+            val newStatus = when (progress.status) {
+                ModelStatus.DOWNLOADING -> ModelStatus.DOWNLOADING
+                ModelStatus.VERIFYING -> ModelStatus.VERIFYING
+                ModelStatus.EXTRACTING -> ModelStatus.EXTRACTING
+                ModelStatus.INSTALLING -> ModelStatus.INSTALLING
+                ModelStatus.READY, ModelStatus.READY_ON_DISK -> ModelStatus.READY_ON_DISK
+                ModelStatus.ERROR -> ModelStatus.ERROR
+                else -> item.status
+            }
+
+            val isInstalledNow = if (progress.status == ModelStatus.READY || progress.status == ModelStatus.READY_ON_DISK) {
+                true
+            } else {
+                item.isInstalled
+            }
+
             item.copy(
-                isInstalled = verification.isReadyForOfflineUse,
-                status = status,
-                installedSizeBytes = verification.fileSizeBytes,
+                status = newStatus,
                 downloadProgress = progress,
-                verification = verification,
-                isReadyForOfflineUse = verification.isReadyForOfflineUse
+                isInstalled = isInstalledNow,
+                isReadyForOfflineUse = isInstalledNow
             )
         }
+
         _modelsState.value = updated
         _isAllRequiredReady.value = updated.all { it.isReadyForOfflineUse }
+
+        // When a model finishes installation, invalidate its cache and refresh status on Dispatchers.IO
+        if (anyCompleted) {
+            scope.launch {
+                verificationCache.clear()
+                refreshModelStatusesInternal(forceDeepCheck = false)
+            }
+        }
     }
 
     fun downloadModel(model: ModelInfo) {
         scope.launch {
+            Log.i(TAG, "Starting download for ${model.name} on thread '${Thread.currentThread().name}'")
             downloader.downloadAndInstall(model)
-            refreshModelStatuses()
+            verificationCache.remove(model.id)
+            refreshModelStatusesInternal(forceDeepCheck = false)
         }
     }
 
     fun downloadAllRequiredModels() {
         scope.launch {
+            Log.i(TAG, "Starting download for all required models on thread '${Thread.currentThread().name}'")
             for (model in ModelCatalog.REQUIRED_MODELS) {
                 if (model.isSourceConfigured) {
-                    val verified = ModelInstaller.verifyModelOffline(context, model)
+                    val verified = verificationCache[model.id]
+                        ?: ModelInstaller.verifyModelOffline(context, model, deepCheck = false)
                     if (!verified.isReadyForOfflineUse) {
                         downloader.downloadAndInstall(model)
+                        verificationCache.remove(model.id)
                     }
                 }
             }
-            refreshModelStatuses()
+            refreshModelStatusesInternal(forceDeepCheck = false)
         }
     }
 
     fun deleteModel(model: ModelInfo): Boolean {
+        verificationCache.remove(model.id)
         val file = ModelInstaller.getInstalledModelFile(context, model)
-        var deleted = if (file.exists()) file.delete() else true
+        val deleted = if (file.exists()) file.delete() else true
         for (aux in model.auxiliaryFiles) {
             val auxFile = ModelInstaller.getAuxiliaryFile(context, model, aux.fileName)
             if (auxFile.exists()) {
                 auxFile.delete()
             }
         }
-        refreshModelStatuses()
+        scope.launch {
+            refreshModelStatusesInternal(forceDeepCheck = false)
+        }
         return deleted
     }
 
     fun verifyAllModelsOffline(): Map<String, ModelVerificationResult> {
+        verificationCache.clear()
         val results = mutableMapOf<String, ModelVerificationResult>()
         for (model in ModelCatalog.REQUIRED_MODELS) {
-            results[model.id] = ModelInstaller.verifyModelOffline(context, model)
+            val v = ModelInstaller.verifyModelOffline(context, model, deepCheck = true)
+            verificationCache[model.id] = v
+            results[model.id] = v
         }
-        refreshModelStatuses()
+        scope.launch {
+            refreshModelStatusesInternal(forceDeepCheck = false)
+        }
         return results
     }
 
+    /**
+     * Non-blocking getter returning pre-computed storage summary.
+     */
     fun getStorageSummary(): Pair<Long, Long> {
-        val baseDir = File(context.filesDir, "models")
-        if (!baseDir.exists()) baseDir.mkdirs()
-        val availableBytes = baseDir.usableSpace
-        val requiredBytes = ModelCatalog.REQUIRED_MODELS
-            .filter { model ->
-                val v = ModelInstaller.verifyModelOffline(context, model)
-                !v.isReadyForOfflineUse
-            }
-            .sumOf { it.sizeBytes }
-        return Pair(requiredBytes, availableBytes)
+        return _storageSummary.value
     }
 
     fun getModelsDirectoryTotalSize(): Long {
@@ -174,4 +262,3 @@ class ModelManager(private val context: Context) {
         return length
     }
 }
-

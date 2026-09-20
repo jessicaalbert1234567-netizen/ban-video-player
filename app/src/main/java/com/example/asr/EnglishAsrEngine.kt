@@ -12,9 +12,10 @@ import java.io.File
 class EnglishAsrEngine(
     private val context: Context,
     private val onChunkTranscribed: ((TranscriptSegment, Float) -> Unit)? = null
-) : SpeechRecognizer {
+) : SpeechRecognizer, AutoCloseable {
 
-    private val TAG = "EnglishAsrEngine"
+    private val TAG = "ASR"
+    private var activeRecognizer: OnnxSpeechRecognizer? = null
 
     companion object {
         const val CHUNK_DURATION_MS = 24_000L // 24 seconds chunk
@@ -26,34 +27,21 @@ class EnglishAsrEngine(
         val segments = mutableListOf<TranscriptSegment>()
         val totalDurationMs = WavUtils.getWavDurationMs(audioFile)
 
-        Log.d(TAG, "Starting transcription for ${audioFile.name}, total duration: ${totalDurationMs}ms")
+        Log.d(TAG, "Starting transcription for ${audioFile.name}, total duration: ${totalDurationMs}ms on thread '${Thread.currentThread().name}'")
         if (totalDurationMs <= 0) {
             return@withContext emptyList()
         }
 
         val model = ModelCatalog.ENGLISH_ASR
-        val verification = ModelInstaller.verifyModelOffline(context, model)
+        val verification = ModelInstaller.verifyModelOffline(context, model, deepCheck = false)
         if (!verification.isReadyForOfflineUse) {
             val reason = verification.failureReason ?: "ASR model is not ready for offline use."
             throw IllegalStateException("ASR model verification failed: $reason")
         }
 
         val modelFile = ModelInstaller.getInstalledModelFile(context, model)
-        val expectedFile = File(ModelInstaller.getModelDirectory(context, model), model.archiveName)
-        Log.i(TAG, """
-            |==================================================
-            |MODEL AUDIT:
-            |MODEL NAME: ${model.name}
-            |EXPECTED PATH: ${expectedFile.absolutePath}
-            |ACTUAL PATH: ${modelFile.absolutePath}
-            |EXPECTED FILENAME: ${expectedFile.name}
-            |ACTUAL FILENAME: ${modelFile.name}
-            |ACTUAL BYTE SIZE: ${if (modelFile.exists()) modelFile.length() else 0L}
-            |EXISTS: ${modelFile.exists()}, IS_FILE: ${modelFile.isFile}, CAN_READ: ${modelFile.canRead()}
-            |==================================================
-        """.trimMargin())
-
         val onnxRecognizer = OnnxSpeechRecognizer(context, modelFile)
+        activeRecognizer = onnxRecognizer
         onnxRecognizer.initialize()
 
         val tempChunkFile = File(context.cacheDir, "temp_asr_chunk.wav")
@@ -153,5 +141,14 @@ class EnglishAsrEngine(
         }
 
         return result
+    }
+
+    override fun close() {
+        try {
+            activeRecognizer?.close()
+            activeRecognizer = null
+        } catch (e: Exception) {
+            Log.w(TAG, "Error closing EnglishAsrEngine", e)
+        }
     }
 }
