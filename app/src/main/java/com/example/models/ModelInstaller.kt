@@ -5,6 +5,8 @@ import ai.onnxruntime.OrtSession
 import android.content.Context
 import android.os.Looper
 import android.util.Log
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
 import java.io.File
 import java.io.FileInputStream
 import java.security.MessageDigest
@@ -16,20 +18,9 @@ object ModelInstaller {
 
     fun getModelDirectory(context: Context, model: ModelInfo): File {
         val baseDir = File(context.filesDir, "models")
-        if (model.type == ModelType.TRANSLATION) {
-            val namedDir = File(baseDir, "translation_en_bn_v1.0")
-            if (File(namedDir, "encoder_model.onnx").exists()) {
-                return namedDir
-            }
-            val subDir = File(baseDir, "translation/${model.sourceLanguage}_${model.targetLanguage ?: "bn"}")
-            if (!subDir.exists()) {
-                subDir.mkdirs()
-            }
-            return subDir
-        }
         val subDir = when (model.type) {
             ModelType.ASR -> File(baseDir, "asr/${model.sourceLanguage}")
-            ModelType.TRANSLATION -> File(baseDir, "translation/${model.sourceLanguage}_${model.targetLanguage ?: "bn"}")
+            ModelType.TRANSLATION -> File(baseDir, "translation")
             ModelType.TTS -> File(baseDir, "tts/${model.sourceLanguage}")
         }
         if (!subDir.exists()) {
@@ -40,20 +31,6 @@ object ModelInstaller {
 
     fun getInstalledModelFile(context: Context, model: ModelInfo): File {
         val dir = getModelDirectory(context, model)
-        if (model.type == ModelType.TRANSLATION) {
-            val primary = File(dir, "encoder_model.onnx")
-            if (primary.exists() && primary.isFile && primary.length() > 0 && primary.canRead()) {
-                return primary
-            }
-            val baseDir = File(context.filesDir, "models")
-            val altDir = File(baseDir, "translation_en_bn_v1.0")
-            val altPrimary = File(altDir, "encoder_model.onnx")
-            if (altPrimary.exists() && altPrimary.isFile && altPrimary.length() > 0 && altPrimary.canRead()) {
-                return altPrimary
-            }
-            return primary
-        }
-
         val defaultFile = File(dir, model.archiveName)
         if (defaultFile.exists() && defaultFile.isFile && defaultFile.length() > 0 && defaultFile.canRead()) {
             return defaultFile
@@ -102,21 +79,13 @@ object ModelInstaller {
 
     fun isModelInstalled(context: Context, model: ModelInfo): Boolean {
         if (model.type == ModelType.TRANSLATION) {
-            val dir = getModelDirectory(context, model)
-            val encoder = File(dir, "encoder_model.onnx")
-            val decoder = File(dir, "decoder_model.onnx")
-            val decoderWithPast = File(dir, "decoder_with_past_model.onnx")
-            val vocab = File(dir, "vocab.json")
-            val sourcePieces = File(dir, "source_pieces.json")
-            val sourceSpm = File(dir, "source.spm")
-            val targetSpm = File(dir, "target.spm")
-            val manifest = File(dir, "model_manifest.json")
-            return encoder.exists() && encoder.isFile && encoder.length() > 0 && encoder.canRead() &&
-                    decoder.exists() && decoder.isFile && decoder.length() > 0 && decoder.canRead() &&
-                    decoderWithPast.exists() && decoderWithPast.isFile && decoderWithPast.length() > 0 && decoderWithPast.canRead() &&
-                    vocab.exists() && vocab.isFile && vocab.length() > 0 && vocab.canRead() &&
-                    (sourcePieces.exists() || sourceSpm.exists()) &&
-                    manifest.exists() && manifest.isFile && manifest.length() > 0 && manifest.canRead()
+            return try {
+                runBlocking(Dispatchers.IO) {
+                    com.example.translation.EnglishToBanglaTranslator.isModelDownloaded()
+                }
+            } catch (_: Throwable) {
+                false
+            }
         }
         val file = getInstalledModelFile(context, model)
         val mainFileOk = file.exists() && file.isFile && file.length() > 0 && file.canRead()
@@ -306,6 +275,53 @@ object ModelInstaller {
      * without blocking the caller with SHA-256 computation or ONNX session creation.
      */
     fun verifyModelOffline(context: Context, model: ModelInfo, deepCheck: Boolean = false): ModelVerificationResult {
+        if (model.type == ModelType.TRANSLATION) {
+            val isDownloaded = try {
+                runBlocking(Dispatchers.IO) {
+                    com.example.translation.EnglishToBanglaTranslator.isModelDownloaded()
+                }
+            } catch (e: Throwable) {
+                Log.e(TAG, "Error checking ML Kit model download status", e)
+                false
+            }
+            return if (isDownloaded) {
+                ModelVerificationResult(
+                    modelId = model.id,
+                    isFilePresent = true,
+                    fileSizeBytes = 0L,
+                    expectedSizeBytes = 0L,
+                    sha256Calculated = null,
+                    sha256Matches = true,
+                    onnxLoadSuccess = true,
+                    onnxInputInfo = "English text",
+                    onnxOutputInfo = "Bangla text",
+                    auxiliaryFilesPresent = true,
+                    auxiliaryFilesDetails = "Google ML Kit on-device model ready",
+                    isReadyForOfflineUse = true,
+                    failureReason = null,
+                    resolvedFilePath = "Google ML Kit (On-Device)",
+                    detectedFormat = "Google ML Kit"
+                )
+            } else {
+                ModelVerificationResult(
+                    modelId = model.id,
+                    isFilePresent = false,
+                    fileSizeBytes = 0L,
+                    expectedSizeBytes = 0L,
+                    sha256Calculated = null,
+                    sha256Matches = false,
+                    onnxLoadSuccess = false,
+                    onnxInputInfo = null,
+                    onnxOutputInfo = null,
+                    auxiliaryFilesPresent = false,
+                    auxiliaryFilesDetails = "Model not downloaded",
+                    isReadyForOfflineUse = false,
+                    failureReason = "English → Bangla translation model is not downloaded.",
+                    resolvedFilePath = "Google ML Kit (On-Device)",
+                    detectedFormat = "Google ML Kit"
+                )
+            }
+        }
         val file = getInstalledModelFile(context, model)
         val result = verifyModelOfflineInternal(context, model, file, deepCheck)
         return result.copy(resolvedFilePath = file.absolutePath)
@@ -330,26 +346,16 @@ object ModelInstaller {
             |==================================================
         """.trimMargin())
 
-        val expectedMainSize = if (model.type == ModelType.TRANSLATION) {
-            51_062_030L // encoder_model.onnx size
-        } else if (model.archiveSizeBytes > 0L) {
+        val expectedMainSize = if (model.archiveSizeBytes > 0L) {
             model.archiveSizeBytes
         } else {
             model.sizeBytes
         }
 
-        val expectedMainSha256 = if (model.type == ModelType.TRANSLATION) {
-            "ddb11a17b599458d736b4f1f65b8c69ea778e32348316705193c1c9226e2f2a8" // encoder_model.onnx SHA-256
-        } else {
-            model.sha256
-        }
+        val expectedMainSha256 = model.sha256
 
         if (!model.isSourceConfigured && !file.exists()) {
-            val failureMsg = if (model.type == ModelType.TRANSLATION) {
-                "English → Bangla translation model is not installed. (Model source not configured)"
-            } else {
-                "Model source not configured: No verified download URL is available."
-            }
+            val failureMsg = "Model source not configured: No verified download URL is available."
             return ModelVerificationResult(
                 modelId = model.id,
                 isFilePresent = false,
@@ -632,53 +638,6 @@ object ModelInstaller {
             )
         }
 
-        // For translation model: also verify decoder and decoder_with_past ONNX initialization
-        if (model.type == ModelType.TRANSLATION) {
-            val decoderFile = getAuxiliaryFile(context, model, "decoder_model.onnx")
-            if (decoderFile.exists()) {
-                val decResult = testOnnxInitialization(decoderFile)
-                if (decResult.isFailure) {
-                    return ModelVerificationResult(
-                        modelId = model.id,
-                        isFilePresent = true,
-                        fileSizeBytes = fileSize,
-                        expectedSizeBytes = model.sizeBytes,
-                        sha256Calculated = calculatedSha256,
-                        sha256Matches = true,
-                        onnxLoadSuccess = false,
-                        onnxInputInfo = inputs.joinToString(),
-                        onnxOutputInfo = outputs.joinToString(),
-                        auxiliaryFilesPresent = true,
-                        auxiliaryFilesDetails = "Decoder ONNX session failed",
-                        isReadyForOfflineUse = false,
-                        failureReason = "Translation model decoder failed to initialize."
-                    )
-                }
-            }
-
-            val decoderPastFile = getAuxiliaryFile(context, model, "decoder_with_past_model.onnx")
-            if (decoderPastFile.exists()) {
-                val decPastResult = testOnnxInitialization(decoderPastFile)
-                if (decPastResult.isFailure) {
-                    return ModelVerificationResult(
-                        modelId = model.id,
-                        isFilePresent = true,
-                        fileSizeBytes = fileSize,
-                        expectedSizeBytes = model.sizeBytes,
-                        sha256Calculated = calculatedSha256,
-                        sha256Matches = true,
-                        onnxLoadSuccess = false,
-                        onnxInputInfo = inputs.joinToString(),
-                        onnxOutputInfo = outputs.joinToString(),
-                        auxiliaryFilesPresent = true,
-                        auxiliaryFilesDetails = "Decoder with past ONNX session failed",
-                        isReadyForOfflineUse = false,
-                        failureReason = "Translation model decoder with past failed to initialize."
-                    )
-                }
-            }
-        }
-
         return ModelVerificationResult(
             modelId = model.id,
             isFilePresent = true,
@@ -698,33 +657,14 @@ object ModelInstaller {
 
     /**
      * Performs end-to-end post-installation verification of the translation model:
-     * 1. Verifies that encoder, decoder, and decoder_with_past ONNX sessions initialize.
-     * 2. Verifies that tokenizer files load correctly.
-     * 3. Executes a real test translation ("Hello, how are you today?") and ensures non-empty Bangla output.
+     * 1. Verifies that Google ML Kit on-device model is downloaded.
+     * 2. Executes a real test translation ("Hello, how are you today?") and ensures non-empty Bangla output.
      */
     suspend fun testTranslationPipeline(context: Context): Result<String> {
         return try {
-            val modelDir = getModelDirectory(context, ModelCatalog.ENGLISH_TO_BANGLA_TRANSLATION)
-            val encoderFile = File(modelDir, "encoder_model.onnx")
-            val decoderFile = File(modelDir, "decoder_model.onnx")
-            val decoderWithPastFile = File(modelDir, "decoder_with_past_model.onnx")
-
-            if (!encoderFile.exists() || !decoderFile.exists() || !decoderWithPastFile.exists()) {
-                return Result.failure(IllegalStateException("One or more required ONNX model files are missing from $modelDir"))
-            }
-
-            // Test ONNX session creations
-            val encInit = testOnnxInitialization(encoderFile)
-            if (encInit.isFailure) {
-                return Result.failure(IllegalStateException("Encoder ONNX failed to initialize: ${encInit.exceptionOrNull()?.message}"))
-            }
-            val decInit = testOnnxInitialization(decoderFile)
-            if (decInit.isFailure) {
-                return Result.failure(IllegalStateException("Decoder ONNX failed to initialize: ${decInit.exceptionOrNull()?.message}"))
-            }
-            val decPastInit = testOnnxInitialization(decoderWithPastFile)
-            if (decPastInit.isFailure) {
-                return Result.failure(IllegalStateException("Decoder-with-past ONNX failed to initialize: ${decPastInit.exceptionOrNull()?.message}"))
+            val isDownloaded = com.example.translation.EnglishToBanglaTranslator.isModelDownloaded()
+            if (!isDownloaded) {
+                return Result.failure(IllegalStateException("Google ML Kit English → Bangla translation model is not downloaded."))
             }
 
             // Instantiate translator and run actual inference

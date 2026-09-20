@@ -43,97 +43,35 @@ object ModelCatalog {
         )
     )
 
-    // Model 2: English -> Bangla Translation (MarianMT Seq2Seq INT8 ONNX)
-    // Production Distribution Package: translation_en_bn_v1.0.zip (~150.4 MB compressed, ~221.0 MB uncompressed)
-    // Published via GitHub Actions workflow as a GitHub Release asset.
-    const val DEFAULT_TRANSLATION_RELEASE_URL =
-        "https://github.com/jessicaalbert1234567-netizen/ban-video-player/releases/download/v1.0.0-translation-model/translation_en_bn_v1.0.zip"
-
-    @Volatile
-    var translationReleaseUrl: String = DEFAULT_TRANSLATION_RELEASE_URL
-
-    fun configureTranslationReleaseUrl(url: String) {
-        translationReleaseUrl = if (url.isBlank()) DEFAULT_TRANSLATION_RELEASE_URL else url.trim()
-    }
-
-    val ENGLISH_TO_BANGLA_TRANSLATION: ModelInfo
-        get() = ModelInfo(
-            id = "en_bn_translation_onnx",
-            name = "English → Bangla Translation",
-            version = "1.0.0",
-            sourceLanguage = "en",
-            targetLanguage = "bn",
-            type = ModelType.TRANSLATION,
-            downloadUrl = translationReleaseUrl,
-            sizeBytes = 231_754_408L, // Real verified uncompressed package size ~221.0 MB
-            archiveSizeBytes = 157_681_950L, // Real distribution zip archive size: 157,681,950 bytes
-            sha256 = "ff8b97888c8413c4ba2509e39a50234d040c6b894ab0a005f39bbd47595c0e27", // SHA-256 of translation_en_bn_v1.0.zip
-            format = ModelFormat.BINARY_ARCHIVE,
-            archiveName = "translation_en_bn_v1.0.zip",
-            minimumRamMb = 512,
-            minimumStorageMb = 450,
-            onnxMetadata = OnnxMetadata(
-                inputTensorName = "input_ids",
-                outputTensorName = "last_hidden_state",
-                inputShape = listOf(1L, -1L),
-                dataType = "INT64",
-                vocabFileName = "vocab.json",
-                decoderType = "SEQ2SEQ_MARIAN"
-            ),
-            description = "Real offline English → Bangla neural translation model (shhossain/opus-mt-en-to-bn MarianMT Seq2Seq INT8 ONNX). Official GitHub Release package.",
-            licenseSource = "Helsinki-NLP / shhossain (Apache-2.0)",
-            runtimeRequirements = "ONNX Runtime Mobile (Encoder + Decoder Seq2Seq INT8, SentencePiece tokenizer)",
-            auxiliaryFiles = listOf(
-                ModelAuxiliaryFile(
-                    fileName = "encoder_model.onnx",
-                    downloadUrl = "",
-                    expectedSizeBytes = 51_062_030L,
-                    sha256 = "ddb11a17b599458d736b4f1f65b8c69ea778e32348316705193c1c9226e2f2a8"
-                ),
-                ModelAuxiliaryFile(
-                    fileName = "decoder_model.onnx",
-                    downloadUrl = "",
-                    expectedSizeBytes = 89_507_041L,
-                    sha256 = "02c6143216641cbb1c7ac171931bb4ee65d2864b60049292aef044dfd773b0b9"
-                ),
-                ModelAuxiliaryFile(
-                    fileName = "decoder_with_past_model.onnx",
-                    downloadUrl = "",
-                    expectedSizeBytes = 86_295_092L,
-                    sha256 = "f86fd21ae96746ce3cce2c72f0e3a3f81daf30902284164a806efd86e7ebf165"
-                ),
-                ModelAuxiliaryFile(
-                    fileName = "source.spm",
-                    downloadUrl = "",
-                    expectedSizeBytes = 801_944L,
-                    sha256 = "42579d7e10efa316d46046d93b32ec58575741d43e86cd54edd5382e7c0ebcfb"
-                ),
-                ModelAuxiliaryFile(
-                    fileName = "target.spm",
-                    downloadUrl = "",
-                    expectedSizeBytes = 969_253L,
-                    sha256 = "e6c0bae089a84b8d524ba3fa274388c09aec3c492fd74cb13c12ae8dbd1379de"
-                ),
-                ModelAuxiliaryFile(
-                    fileName = "vocab.json",
-                    downloadUrl = "",
-                    expectedSizeBytes = 2_049_060L,
-                    sha256 = "5419d2b1ce532f694971b3f1c651064b01f48c203a2e94a4fb3a468ad692d383"
-                ),
-                ModelAuxiliaryFile(
-                    fileName = "source_pieces.json",
-                    downloadUrl = "",
-                    expectedSizeBytes = 1_067_467L,
-                    sha256 = "f2ee3f64dbacf9ef768388da197dcab26e35dde695277bb60c3eb0e5bee43cd4"
-                ),
-                ModelAuxiliaryFile(
-                    fileName = "model_manifest.json",
-                    downloadUrl = "",
-                    expectedSizeBytes = 3_114L,
-                    sha256 = "06960a09ec46487e651e7f607c3365fa316d56314f5ec9832791550c606cb87b"
-                )
-            )
-        )
+    // Model 2: English -> Bangla Google ML Kit Offline Translation
+    val ENGLISH_TO_BANGLA_TRANSLATION = ModelInfo(
+        id = "google_mlkit_en_bn",
+        name = "English → Bangla",
+        version = "Google ML Kit",
+        sourceLanguage = "en",
+        targetLanguage = "bn",
+        type = ModelType.TRANSLATION,
+        downloadUrl = "https://developers.google.com/ml-kit/language/translation",
+        sizeBytes = 0L, // Google-managed offline language model
+        archiveSizeBytes = 0L,
+        sha256 = "",
+        format = ModelFormat.BINARY_ARCHIVE,
+        archiveName = "google_mlkit_en_bn",
+        minimumRamMb = 256,
+        minimumStorageMb = 50,
+        onnxMetadata = OnnxMetadata(
+            inputTensorName = "",
+            outputTensorName = "",
+            inputShape = emptyList(),
+            dataType = "TEXT",
+            vocabFileName = "",
+            decoderType = "MLKIT_TRANSLATE"
+        ),
+        description = "Google ML Kit Offline Translation (on-device neural translation).",
+        licenseSource = "Google ML Kit On-Device Translation SDK",
+        runtimeRequirements = "Google-managed offline language model",
+        auxiliaryFiles = emptyList()
+    )
 
     // Model 3: Bangla Voice / Speech Synthesis (Piper VITS ONNX)
     val BANGLA_VOICE_TTS = ModelInfo(
@@ -180,4 +118,8 @@ object ModelCatalog {
             ENGLISH_TO_BANGLA_TRANSLATION,
             BANGLA_VOICE_TTS
         )
+
+    fun configureTranslationReleaseUrl(url: String) {
+        // No-op: Google ML Kit manages translation model downloads directly via on-device SDK
+    }
 }

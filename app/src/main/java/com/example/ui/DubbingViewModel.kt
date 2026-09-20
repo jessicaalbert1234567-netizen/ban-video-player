@@ -211,7 +211,15 @@ class DubbingViewModel(application: Application) : AndroidViewModel(application)
                         addTestLog("✓ ASR Stage Test Passed.")
                     }
                     "TRANSLATION" -> {
-                        addTestLog("Testing English to Bangla offline translator...")
+                        addTestLog("Testing English to Bangla offline translator (Google ML Kit)...")
+                        val isDl = com.example.translation.EnglishToBanglaTranslator.isModelDownloaded()
+                        if (!isDl) {
+                            addTestLog("ML Kit English-Bangla model not downloaded yet. Downloading on-device...")
+                            val dlTranslator = com.example.translation.EnglishToBanglaTranslator(app)
+                            dlTranslator.downloadModel(requireWifi = false)
+                            dlTranslator.close()
+                            addTestLog("ML Kit model downloaded successfully.")
+                        }
                         val translator = com.example.translation.EnglishToBanglaTranslator(app)
                         val testPhrases = listOf(
                             "How are you?",

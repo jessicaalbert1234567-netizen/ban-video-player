@@ -154,7 +154,15 @@ class DubbingPipeline(
             // STAGE 3: Translate to Bangla (40% - 55%)
             if (startingStage.ordinal <= ProcessingStage.TRANSLATE.ordinal) {
                 checkCancelled()
-                reportStage(projectId, ProcessingStage.TRANSLATE, 0, 40, "Translating dialogue to Bangla...", onProgressUpdate)
+                reportStage(projectId, ProcessingStage.TRANSLATE, 0, 40, "Preparing on-device English → Bangla translation...", onProgressUpdate)
+
+                val isModelDownloaded = EnglishToBanglaTranslator.isModelDownloaded()
+                if (!isModelDownloaded) {
+                    reportStage(projectId, ProcessingStage.TRANSLATE, 5, 41, "Downloading Google ML Kit English → Bangla model...", onProgressUpdate)
+                    val dlTranslator = EnglishToBanglaTranslator(context)
+                    dlTranslator.downloadModel(requireWifi = false)
+                    dlTranslator.close()
+                }
 
                 val translator = EnglishToBanglaTranslator(context)
                 val translatedSegments = mutableListOf<TranscriptSegmentEntity>()

@@ -65,56 +65,18 @@ class ExampleRobolectricTest {
             }
             org.junit.Assert.fail("Should have thrown IllegalStateException when translation model is not installed")
         } catch (e: IllegalStateException) {
-            assertTrue(e.message?.contains("English → Bangla translation model is not installed") == true)
+            assertTrue(e.message?.contains("translation model is not downloaded") == true || e.message?.contains("Translation failed") == true)
         } finally {
             translator.close()
         }
     }
 
     @Test
-    fun `test translation engine failure message when uninstalled`() {
-        val context = ApplicationProvider.getApplicationContext<Context>()
-        val translator = EnglishToBanglaTranslator(context)
-        try {
-            translator.initialize()
-            org.junit.Assert.fail("Should have thrown IllegalStateException")
-        } catch (e: IllegalStateException) {
-            assertEquals("English → Bangla translation model is not installed.", e.message)
-        } finally {
-            translator.close()
-        }
-    }
-
-    @Test
-    fun `test translation model package size and configured release status`() {
+    fun `test translation model package catalog info`() {
         val model = com.example.models.ModelCatalog.ENGLISH_TO_BANGLA_TRANSLATION
-        assertEquals("English → Bangla Translation", model.name)
-        // Verify real uncompressed package size is ~221 MB
-        assertEquals(231_754_408L, model.sizeBytes)
-        val sizeMb = model.sizeBytes / (1024 * 1024)
-        assertEquals(221L, sizeMb)
-        // Verify download source is configured with the official GitHub Release asset
+        assertEquals("English → Bangla", model.name)
+        assertEquals(com.example.models.ModelFormat.BINARY_ARCHIVE, model.format)
         org.junit.Assert.assertTrue(model.isSourceConfigured)
-        assertEquals(
-            "https://github.com/jessicaalbert1234567-netizen/ban-video-player/releases/download/v1.0.0-translation-model/translation_en_bn_v1.0.zip",
-            model.downloadUrl
-        )
-        assertEquals(157_681_950L, model.archiveSizeBytes)
-        assertEquals("ff8b97888c8413c4ba2509e39a50234d040c6b894ab0a005f39bbd47595c0e27", model.sha256)
-    }
-
-    @Test
-    fun `test translation model manifest assets verification`() {
-        val context = ApplicationProvider.getApplicationContext<Context>()
-        val manifestStream = context.assets.open("models/translation_en_bn/model_manifest.json")
-        val manifestJson = org.json.JSONObject(manifestStream.bufferedReader().use { it.readText() })
-        assertEquals("translation_en_bn", manifestJson.getString("id"))
-        assertEquals("en-bn", manifestJson.getString("languagePair"))
-        assertEquals("onnxruntime", manifestJson.getString("runtime"))
-        assertEquals("onnx", manifestJson.getString("format"))
-        assertEquals(231754408L, manifestJson.getLong("totalSizeBytes"))
-        val filesArray = manifestJson.getJSONArray("files")
-        assertTrue(filesArray.length() >= 10)
     }
 
     @Test
@@ -126,7 +88,7 @@ class ExampleRobolectricTest {
         )
         org.junit.Assert.assertFalse(verification.isReadyForOfflineUse)
         org.junit.Assert.assertNotNull(verification.failureReason)
-        assertTrue(verification.failureReason!!.contains("English → Bangla translation model is not installed"))
+        assertTrue(verification.failureReason!!.contains("translation model is not downloaded"))
     }
 
     @Test

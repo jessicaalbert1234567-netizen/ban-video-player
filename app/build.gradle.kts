@@ -93,6 +93,7 @@ dependencies {
   implementation(libs.androidx.media3.ui)
   implementation(libs.androidx.media3.common)
   implementation(libs.onnxruntime.android)
+  implementation("com.google.mlkit:translate:17.0.3")
   implementation(libs.androidx.room.ktx)
   implementation(libs.androidx.room.runtime)
   // implementation(libs.coil.compose)

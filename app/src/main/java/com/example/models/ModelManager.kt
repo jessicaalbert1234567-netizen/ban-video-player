@@ -212,6 +212,17 @@ class ModelManager(private val context: Context) {
 
     fun deleteModel(model: ModelInfo): Boolean {
         verificationCache.remove(model.id)
+        if (model.type == ModelType.TRANSLATION) {
+            scope.launch {
+                try {
+                    com.example.translation.EnglishToBanglaTranslator.deleteModel()
+                } catch (e: Throwable) {
+                    Log.e(TAG, "Failed to delete ML Kit translation model", e)
+                }
+                refreshModelStatusesInternal(forceDeepCheck = false)
+            }
+            return true
+        }
         val file = ModelInstaller.getInstalledModelFile(context, model)
         val deleted = if (file.exists()) file.delete() else true
         for (aux in model.auxiliaryFiles) {
