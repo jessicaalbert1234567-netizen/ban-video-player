@@ -39,6 +39,20 @@ class EnglishAsrEngine(
         }
 
         val modelFile = ModelInstaller.getInstalledModelFile(context, model)
+        val expectedFile = File(ModelInstaller.getModelDirectory(context, model), model.archiveName)
+        Log.i(TAG, """
+            |==================================================
+            |MODEL AUDIT:
+            |MODEL NAME: ${model.name}
+            |EXPECTED PATH: ${expectedFile.absolutePath}
+            |ACTUAL PATH: ${modelFile.absolutePath}
+            |EXPECTED FILENAME: ${expectedFile.name}
+            |ACTUAL FILENAME: ${modelFile.name}
+            |ACTUAL BYTE SIZE: ${if (modelFile.exists()) modelFile.length() else 0L}
+            |EXISTS: ${modelFile.exists()}, IS_FILE: ${modelFile.isFile}, CAN_READ: ${modelFile.canRead()}
+            |==================================================
+        """.trimMargin())
+
         val onnxRecognizer = OnnxSpeechRecognizer(context, modelFile)
         onnxRecognizer.initialize()
 

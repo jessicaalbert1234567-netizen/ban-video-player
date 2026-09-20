@@ -121,6 +121,18 @@ class ModelDownloader(private val context: Context) {
             val archiveExpectedSize = if (model.archiveSizeBytes > 0L) model.archiveSizeBytes else 157_681_950L
             val expectedArchiveSha256 = if (model.sha256.isNotBlank()) model.sha256 else "ff8b97888c8413c4ba2509e39a50234d040c6b894ab0a005f39bbd47595c0e27"
 
+            val baseModelsDir = File(context.filesDir, "models")
+            if (!baseModelsDir.exists()) baseModelsDir.mkdirs()
+
+            val partFile = File(baseModelsDir, "translation_en_bn_v1.0.zip.part")
+            val finalZipFile = File(baseModelsDir, "translation_en_bn_v1.0.zip")
+            val tmpExtractDir = File(baseModelsDir, "translation_en_bn_v1.0.tmp")
+            val finalExtractDir = File(baseModelsDir, "translation_en_bn_v1.0")
+
+            // Clean up any stale partial files
+            if (partFile.exists()) partFile.delete()
+            if (tmpExtractDir.exists()) tmpExtractDir.deleteRecursively()
+
             updateState(
                 DownloadProgress(
                     modelId = model.id,
@@ -128,182 +140,185 @@ class ModelDownloader(private val context: Context) {
                     totalBytes = archiveExpectedSize,
                     progressPercent = 0,
                     status = ModelStatus.DOWNLOADING,
-                    verificationStatus = "Starting download of translation package..."
+                    verificationStatus = "Starting download to translation_en_bn_v1.0.zip.part..."
                 ),
                 onProgressUpdate
             )
 
             try {
-                // Step 0: Download package archive with live progress
+                // Step 0: Download package archive to translation_en_bn_v1.0.zip.part
                 downloadFileWithProgress(
                     url = model.downloadUrl,
-                    destinationTempFile = tempFile,
+                    destinationTempFile = partFile,
                     expectedSizeBytes = archiveExpectedSize,
                     modelId = model.id,
                     onProgressUpdate = onProgressUpdate
                 )
 
-                if (!tempFile.exists() || tempFile.length() <= 0) {
-                    if (tempFile.exists()) tempFile.delete()
+                if (!partFile.exists() || partFile.length() <= 0) {
+                    if (partFile.exists()) partFile.delete()
                     throw IllegalStateException("Downloaded translation archive is empty (0 bytes).")
                 }
 
-                // Step 1: Verify archive SHA-256
+                // Step 1: Verify downloaded byte size
                 updateState(
                     DownloadProgress(
                         modelId = model.id,
-                        downloadedBytes = tempFile.length(),
-                        totalBytes = tempFile.length(),
-                        progressPercent = 91,
+                        downloadedBytes = partFile.length(),
+                        totalBytes = partFile.length(),
+                        progressPercent = 90,
                         status = ModelStatus.VERIFYING,
-                        verificationStatus = "Step 1/8: Verifying archive SHA-256 checksum..."
+                        verificationStatus = "Step 1/8: Verifying downloaded byte size..."
                     ),
                     onProgressUpdate
                 )
-
-                val actualArchiveSize = tempFile.length()
+                val actualArchiveSize = partFile.length()
                 if (actualArchiveSize != 157681950L && actualArchiveSize != archiveExpectedSize) {
                     Log.w(TAG, "Archive size ($actualArchiveSize bytes) differs from expected ($archiveExpectedSize bytes)")
                 }
 
-                val calculatedArchiveSha = ModelInstaller.calculateSha256(tempFile)
+                // Step 2: Verify SHA-256
+                updateState(
+                    DownloadProgress(
+                        modelId = model.id,
+                        downloadedBytes = partFile.length(),
+                        totalBytes = partFile.length(),
+                        progressPercent = 92,
+                        status = ModelStatus.VERIFYING,
+                        verificationStatus = "Step 2/8: Verifying archive SHA-256 checksum..."
+                    ),
+                    onProgressUpdate
+                )
+                val calculatedArchiveSha = ModelInstaller.calculateSha256(partFile)
                 if (!calculatedArchiveSha.equals(expectedArchiveSha256, ignoreCase = true)) {
-                    tempFile.delete()
+                    partFile.delete()
                     throw IllegalStateException("Archive SHA-256 mismatch! Expected: ${expectedArchiveSha256.take(12)}..., got: ${calculatedArchiveSha.take(12)}...")
                 }
-                Log.i(TAG, "Step 1 PASSED: Archive SHA-256 verified ($calculatedArchiveSha).")
+                Log.i(TAG, "Step 2 PASSED: Archive SHA-256 verified ($calculatedArchiveSha).")
 
-                // Step 2: Extract atomically into a clean staging folder
+                // Step 3: Rename to final ZIP
+                if (finalZipFile.exists()) finalZipFile.delete()
+                val renameSuccess = partFile.renameTo(finalZipFile)
+                val activeZip = if (renameSuccess) finalZipFile else partFile
+
+                // Step 4: Extract into temporary directory translation_en_bn_v1.0.tmp/
                 updateState(
                     DownloadProgress(
                         modelId = model.id,
-                        downloadedBytes = tempFile.length(),
-                        totalBytes = tempFile.length(),
-                        progressPercent = 93,
-                        status = ModelStatus.VERIFYING,
-                        verificationStatus = "Step 2/8: Extracting model archive atomically..."
+                        downloadedBytes = activeZip.length(),
+                        totalBytes = activeZip.length(),
+                        progressPercent = 94,
+                        status = ModelStatus.EXTRACTING,
+                        verificationStatus = "Step 3/8: Extracting into translation_en_bn_v1.0.tmp..."
                     ),
                     onProgressUpdate
                 )
+                tmpExtractDir.mkdirs()
+                ModelInstaller.extractZipSafely(activeZip, tmpExtractDir)
+                Log.i(TAG, "Step 3 PASSED: Extracted archive into temporary directory.")
 
-                val stagingDir = File(destDir, "staging_${System.currentTimeMillis()}")
-                if (stagingDir.exists()) stagingDir.deleteRecursively()
-                stagingDir.mkdirs()
-
-                try {
-                    ModelInstaller.extractZipSafely(tempFile, stagingDir)
-                    Log.i(TAG, "Step 2 PASSED: Extracted archive atomically into staging directory.")
-
-                    // Step 3: Verify all files using model_manifest.json
-                    updateState(
-                        DownloadProgress(
-                            modelId = model.id,
-                            downloadedBytes = tempFile.length(),
-                            totalBytes = tempFile.length(),
-                            progressPercent = 95,
-                            status = ModelStatus.VERIFYING,
-                            verificationStatus = "Step 3/8: Verifying all files using model_manifest.json..."
-                        ),
-                        onProgressUpdate
-                    )
-
-                    val manifestFile = File(stagingDir, "model_manifest.json")
-                    if (!manifestFile.exists() || manifestFile.length() == 0L) {
-                        throw IllegalStateException("Extracted package is missing model_manifest.json")
-                    }
-
-                    val manifestJson = org.json.JSONObject(manifestFile.readText())
-                    if (manifestJson.has("files")) {
-                        val filesArray = manifestJson.getJSONArray("files")
-                        for (i in 0 until filesArray.length()) {
-                            val fObj = filesArray.getJSONObject(i)
-                            val fName = fObj.getString("name")
-                            val fExpectedSize = fObj.optLong("sizeBytes", 0L)
-                            val fExpectedSha = fObj.optString("sha256", "")
-
-                            val f = File(stagingDir, fName)
-                            if (!f.exists()) {
-                                throw IllegalStateException("Manifest file '$fName' is missing in extracted package.")
-                            }
-                            if (fExpectedSize > 0 && f.length() != fExpectedSize) {
-                                throw IllegalStateException("Manifest file '$fName' size mismatch: expected $fExpectedSize bytes, got ${f.length()} bytes")
-                            }
-                            if (fExpectedSha.isNotBlank()) {
-                                val actualSha = ModelInstaller.calculateSha256(f)
-                                if (!actualSha.equals(fExpectedSha, ignoreCase = true)) {
-                                    throw IllegalStateException("Manifest file '$fName' SHA-256 mismatch: expected $fExpectedSha, got $actualSha")
-                                }
-                            }
-                        }
-                    }
-                    Log.i(TAG, "Step 3 PASSED: All files in model_manifest.json verified successfully.")
-
-                    // Step 4: Verify core required files explicitly:
-                    // encoder_model.onnx, decoder_model.onnx, decoder_with_past_model.onnx,
-                    // source.spm, target.spm, vocab.json, source_pieces.json, model_manifest.json
-                    updateState(
-                        DownloadProgress(
-                            modelId = model.id,
-                            downloadedBytes = tempFile.length(),
-                            totalBytes = tempFile.length(),
-                            progressPercent = 96,
-                            status = ModelStatus.VERIFYING,
-                            verificationStatus = "Step 4/8: Verifying core neural models & tokenizers..."
-                        ),
-                        onProgressUpdate
-                    )
-
-                    val requiredFiles = listOf(
-                        "encoder_model.onnx",
-                        "decoder_model.onnx",
-                        "decoder_with_past_model.onnx",
-                        "source.spm",
-                        "target.spm",
-                        "vocab.json",
-                        "source_pieces.json",
-                        "model_manifest.json"
-                    )
-
-                    for (rf in requiredFiles) {
-                        val f = File(stagingDir, rf)
-                        if (!f.exists() || f.length() == 0L) {
-                            throw IllegalStateException("Required translation model file missing or empty: $rf")
-                        }
-                    }
-                    Log.i(TAG, "Step 4 PASSED: All 8 required files verified.")
-
-                    // Atomically move/copy all verified files from stagingDir to destDir
-                    stagingDir.listFiles()?.forEach { extractedFile ->
-                        val targetFile = File(destDir, extractedFile.name)
-                        extractedFile.copyTo(targetFile, overwrite = true)
-                    }
-                } finally {
-                    stagingDir.deleteRecursively()
-                    tempFile.delete()
-                }
-
-                // Step 5: Load the tokenizer
+                // Step 5: Verify every required file in tmpExtractDir
                 updateState(
                     DownloadProgress(
                         modelId = model.id,
-                        downloadedBytes = model.sizeBytes,
-                        totalBytes = model.sizeBytes,
+                        downloadedBytes = activeZip.length(),
+                        totalBytes = activeZip.length(),
+                        progressPercent = 95,
+                        status = ModelStatus.VERIFYING,
+                        verificationStatus = "Step 4/8: Verifying all 8 required translation files..."
+                    ),
+                    onProgressUpdate
+                )
+                val requiredFiles = listOf(
+                    "encoder_model.onnx",
+                    "decoder_model.onnx",
+                    "decoder_with_past_model.onnx",
+                    "source.spm",
+                    "target.spm",
+                    "vocab.json",
+                    "source_pieces.json",
+                    "model_manifest.json"
+                )
+                for (rf in requiredFiles) {
+                    val f = File(tmpExtractDir, rf)
+                    if (!f.exists() || !f.isFile || f.length() == 0L || !f.canRead()) {
+                        throw IllegalStateException("Required translation model file missing, empty or unreadable: $rf")
+                    }
+                }
+                Log.i(TAG, "Step 4 PASSED: All 8 required files verified.")
+
+                // Step 6: Verify model_manifest.json
+                updateState(
+                    DownloadProgress(
+                        modelId = model.id,
+                        downloadedBytes = activeZip.length(),
+                        totalBytes = activeZip.length(),
+                        progressPercent = 96,
+                        status = ModelStatus.VERIFYING,
+                        verificationStatus = "Step 5/8: Verifying model_manifest.json..."
+                    ),
+                    onProgressUpdate
+                )
+                val manifestFile = File(tmpExtractDir, "model_manifest.json")
+                val manifestJson = org.json.JSONObject(manifestFile.readText())
+                if (manifestJson.has("files")) {
+                    val filesArray = manifestJson.getJSONArray("files")
+                    for (i in 0 until filesArray.length()) {
+                        val fObj = filesArray.getJSONObject(i)
+                        val fName = fObj.getString("name")
+                        val fExpectedSize = fObj.optLong("sizeBytes", 0L)
+                        val fExpectedSha = fObj.optString("sha256", "")
+
+                        val f = File(tmpExtractDir, fName)
+                        if (!f.exists() || !f.isFile) {
+                            throw IllegalStateException("Manifest file '$fName' is missing in extracted package.")
+                        }
+                        if (fExpectedSize > 0 && f.length() != fExpectedSize) {
+                            throw IllegalStateException("Manifest file '$fName' size mismatch: expected $fExpectedSize bytes, got ${f.length()} bytes")
+                        }
+                        // Step 7: Verify individual files where hashes are available
+                        if (fExpectedSha.isNotBlank()) {
+                            val actualSha = ModelInstaller.calculateSha256(f)
+                            if (!actualSha.equals(fExpectedSha, ignoreCase = true)) {
+                                throw IllegalStateException("Manifest file '$fName' SHA-256 mismatch: expected $fExpectedSha, got $actualSha")
+                            }
+                        }
+                    }
+                }
+                Log.i(TAG, "Step 5 PASSED: Manifest verified.")
+
+                // Step 8: Only then rename translation_en_bn_v1.0.tmp/ to translation_en_bn_v1.0/
+                updateState(
+                    DownloadProgress(
+                        modelId = model.id,
+                        downloadedBytes = activeZip.length(),
+                        totalBytes = activeZip.length(),
                         progressPercent = 97,
-                        status = ModelStatus.VERIFYING,
-                        verificationStatus = "Step 5/8: Loading SentencePiece tokenizer..."
+                        status = ModelStatus.INSTALLING,
+                        verificationStatus = "Step 6/8: Installing directory atomically..."
                     ),
                     onProgressUpdate
                 )
-
-                val vocabFile = File(destDir, "vocab.json")
-                val piecesFile = File(destDir, "source_pieces.json")
-                val spmFile = File(destDir, "source.spm")
-                if (!vocabFile.exists() || (!piecesFile.exists() && !spmFile.exists())) {
-                    throw IllegalStateException("Translation tokenizer files are missing.")
+                if (finalExtractDir.exists()) {
+                    finalExtractDir.deleteRecursively()
                 }
-                Log.i(TAG, "Step 5 PASSED: Tokenizer verified.")
+                val dirRenamed = tmpExtractDir.renameTo(finalExtractDir)
+                if (!dirRenamed) {
+                    finalExtractDir.mkdirs()
+                    tmpExtractDir.copyRecursively(finalExtractDir, overwrite = true)
+                    tmpExtractDir.deleteRecursively()
+                }
 
-                // Step 6: Load the MarianMT ONNX sessions
+                // Also populate destDir (translation/en_bn) to guarantee both paths work
+                if (destDir.absolutePath != finalExtractDir.absolutePath) {
+                    finalExtractDir.copyRecursively(destDir, overwrite = true)
+                }
+
+                // Clean up zip files
+                if (finalZipFile.exists()) finalZipFile.delete()
+                if (partFile.exists()) partFile.delete()
+
+                // Step 9: Verify ONNX sessions
                 updateState(
                     DownloadProgress(
                         modelId = model.id,
@@ -311,30 +326,23 @@ class ModelDownloader(private val context: Context) {
                         totalBytes = model.sizeBytes,
                         progressPercent = 98,
                         status = ModelStatus.VERIFYING,
-                        verificationStatus = "Step 6/8: Loading MarianMT ONNX sessions..."
+                        verificationStatus = "Step 7/8: Loading MarianMT ONNX sessions..."
                     ),
                     onProgressUpdate
                 )
-
-                val encFile = File(destDir, "encoder_model.onnx")
-                val decFile = File(destDir, "decoder_model.onnx")
-                val decPastFile = File(destDir, "decoder_with_past_model.onnx")
+                val encFile = File(finalExtractDir, "encoder_model.onnx")
+                val decFile = File(finalExtractDir, "decoder_model.onnx")
+                val decPastFile = File(finalExtractDir, "decoder_with_past_model.onnx")
 
                 val encCheck = ModelInstaller.testOnnxInitialization(encFile)
-                if (encCheck.isFailure) {
-                    throw IllegalStateException("Encoder ONNX session failed: ${encCheck.exceptionOrNull()?.message}")
-                }
+                if (encCheck.isFailure) throw IllegalStateException("Encoder ONNX session failed: ${encCheck.exceptionOrNull()?.message}")
                 val decCheck = ModelInstaller.testOnnxInitialization(decFile)
-                if (decCheck.isFailure) {
-                    throw IllegalStateException("Decoder ONNX session failed: ${decCheck.exceptionOrNull()?.message}")
-                }
+                if (decCheck.isFailure) throw IllegalStateException("Decoder ONNX session failed: ${decCheck.exceptionOrNull()?.message}")
                 val decPastCheck = ModelInstaller.testOnnxInitialization(decPastFile)
-                if (decPastCheck.isFailure) {
-                    throw IllegalStateException("Decoder-with-past ONNX session failed: ${decPastCheck.exceptionOrNull()?.message}")
-                }
-                Log.i(TAG, "Step 6 PASSED: MarianMT ONNX sessions initialized.")
+                if (decPastCheck.isFailure) throw IllegalStateException("Decoder-with-past ONNX session failed: ${decPastCheck.exceptionOrNull()?.message}")
+                Log.i(TAG, "Step 7 PASSED: MarianMT ONNX sessions initialized.")
 
-                // Step 7: Run a real offline English → Bangla translation test
+                // Step 10: Run test translation
                 updateState(
                     DownloadProgress(
                         modelId = model.id,
@@ -342,19 +350,18 @@ class ModelDownloader(private val context: Context) {
                         totalBytes = model.sizeBytes,
                         progressPercent = 99,
                         status = ModelStatus.VERIFYING,
-                        verificationStatus = "Step 7/8: Running offline English → Bangla translation test..."
+                        verificationStatus = "Step 8/8: Running offline English → Bangla translation test..."
                     ),
                     onProgressUpdate
                 )
-
                 val testPipelineResult = ModelInstaller.testTranslationPipeline(context)
                 if (testPipelineResult.isFailure) {
                     val err = testPipelineResult.exceptionOrNull()?.message ?: "Translation test inference failed"
-                    throw IllegalStateException("Step 7 translation test failed: $err")
+                    throw IllegalStateException("Step 8 translation test failed: $err")
                 }
-                Log.i(TAG, "Step 7 PASSED: Real offline translation test succeeded: '${testPipelineResult.getOrNull()}'")
+                Log.i(TAG, "Step 8 PASSED: Real offline translation test succeeded: '${testPipelineResult.getOrNull()}'")
 
-                // Step 8: Only then mark the model as READY/Installed
+                // Step 11: Mark ready
                 updateState(
                     DownloadProgress(
                         modelId = model.id,
@@ -362,17 +369,18 @@ class ModelDownloader(private val context: Context) {
                         totalBytes = model.sizeBytes,
                         progressPercent = 100,
                         status = ModelStatus.READY,
-                        verificationStatus = "Step 8/8: Model verified and ready for offline use."
+                        verificationStatus = "Installed & verified successfully"
                     ),
                     onProgressUpdate
                 )
-
-                Log.i(TAG, "Step 8 PASSED: English → Bangla translation model marked READY.")
-                return@withContext Result.success(finalFile)
-            } catch (e: Exception) {
-                Log.e(TAG, "Error downloading/installing translation package ${model.name}", e)
-                if (tempFile.exists()) tempFile.delete()
-                val errMsg = e.message ?: "Download failed"
+                Log.i(TAG, "English → Bangla translation model marked READY.")
+                return@withContext Result.success(encFile)
+            } catch (e: Throwable) {
+                // If any step fails: delete incomplete temporary directory and part file. Never report READY.
+                if (tmpExtractDir.exists()) tmpExtractDir.deleteRecursively()
+                if (partFile.exists()) partFile.delete()
+                val errMsg = e.message ?: "Failed to install translation package"
+                Log.e(TAG, "Translation package installation failed: $errMsg", e)
                 updateState(
                     DownloadProgress(
                         modelId = model.id,
@@ -700,6 +708,120 @@ class ModelDownloader(private val context: Context) {
     private fun isCancelled(modelId: String): Boolean {
         synchronized(activeCancellations) {
             return activeCancellations.contains(modelId)
+        }
+    }
+
+    data class HttpProbeResult(
+        val statusCode: Int,
+        val statusMessage: String,
+        val finalUrl: String,
+        val contentType: String?,
+        val contentLength: Long,
+        val isAvailable: Boolean,
+        val errorMessage: String? = null
+    )
+
+    fun probeUrl(url: String): HttpProbeResult {
+        if (url.isBlank() || url.startsWith("unconfigured://")) {
+            return HttpProbeResult(
+                statusCode = 0,
+                statusMessage = "Unconfigured",
+                finalUrl = url,
+                contentType = null,
+                contentLength = 0L,
+                isAvailable = false,
+                errorMessage = "Model source URL is not configured."
+            )
+        }
+        if (url.startsWith("file://") || url.startsWith("/")) {
+            val f = File(url.removePrefix("file://"))
+            val available = f.exists() && f.isFile && f.length() > 0
+            return HttpProbeResult(
+                statusCode = if (available) 200 else 404,
+                statusMessage = if (available) "OK (Local File)" else "Local File Not Found",
+                finalUrl = url,
+                contentType = "application/octet-stream",
+                contentLength = if (available) f.length() else 0L,
+                isAvailable = available,
+                errorMessage = if (available) null else "Local file not found at ${f.absolutePath}"
+            )
+        }
+
+        return try {
+            val request = Request.Builder()
+                .url(url)
+                .head()
+                .header("User-Agent", "OfflineAIDubbingPlayer/1.0")
+                .build()
+
+            val response = try {
+                okHttpClient.newCall(request).execute()
+            } catch (e: Exception) {
+                // If HEAD fails, try GET with Range
+                val getReq = Request.Builder()
+                    .url(url)
+                    .header("Range", "bytes=0-0")
+                    .header("User-Agent", "OfflineAIDubbingPlayer/1.0")
+                    .build()
+                okHttpClient.newCall(getReq).execute()
+            }
+
+            val finalUrl = response.request.url.toString()
+            val code = response.code
+            val message = response.message
+            val contentType = response.header("Content-Type")
+            val contentLength = response.header("Content-Length")?.toLongOrNull() ?: response.body?.contentLength() ?: -1L
+            val isSuccess = response.isSuccessful || code == 206
+            val errorMsg = if (!isSuccess) {
+                if (code == 404) "HTTP 404: Not Found on remote server" else "HTTP $code: $message"
+            } else null
+
+            Log.i(TAG, """
+                |==================================================
+                |HTTP PROBE RESULT:
+                |URL: $url
+                |HTTP STATUS: $code $message
+                |FINAL URL AFTER REDIRECT: $finalUrl
+                |Content-Type: ${contentType ?: "unknown"}
+                |Content-Length: $contentLength
+                |Downloaded byte count: 0
+                |Exception/error message: ${errorMsg ?: "None"}
+                |==================================================
+            """.trimMargin())
+
+            response.close()
+
+            HttpProbeResult(
+                statusCode = code,
+                statusMessage = message,
+                finalUrl = finalUrl,
+                contentType = contentType,
+                contentLength = contentLength,
+                isAvailable = isSuccess,
+                errorMessage = errorMsg
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, """
+                |==================================================
+                |HTTP PROBE FAILED:
+                |URL: $url
+                |HTTP STATUS: 0 Exception
+                |FINAL URL AFTER REDIRECT: $url
+                |Content-Type: unknown
+                |Content-Length: -1
+                |Downloaded byte count: 0
+                |Exception/error message: ${e.message}
+                |==================================================
+            """.trimMargin(), e)
+            HttpProbeResult(
+                statusCode = 0,
+                statusMessage = "Network Exception",
+                finalUrl = url,
+                contentType = null,
+                contentLength = -1L,
+                isAvailable = false,
+                errorMessage = e.message ?: "Network probe failed"
+            )
         }
     }
 

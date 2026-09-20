@@ -53,6 +53,19 @@ class EnglishToBanglaTranslator(
 
         // Step 11: If translation ONNX files are missing:
         // show: "English → Bangla translation model is not installed."
+        Log.i(TAG, """
+            |==================================================
+            |MODEL AUDIT:
+            |MODEL NAME: ${model.name}
+            |EXPECTED PATH: ${encoderFile.absolutePath}
+            |ACTUAL PATH: ${encoderFile.absolutePath}
+            |EXPECTED FILENAME: encoder_model.onnx
+            |ACTUAL FILENAME: ${encoderFile.name}
+            |ACTUAL BYTE SIZE: ${if (encoderFile.exists()) encoderFile.length() else 0L}
+            |EXISTS: ${encoderFile.exists()}, IS_FILE: ${encoderFile.isFile}, CAN_READ: ${encoderFile.canRead()}
+            |==================================================
+        """.trimMargin())
+
         if (!encoderFile.exists() || encoderFile.length() <= 0L || !decoderFile.exists() || decoderFile.length() <= 0L) {
             throw IllegalStateException("English → Bangla translation model is not installed.")
         }

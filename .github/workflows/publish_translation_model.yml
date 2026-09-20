@@ -35,17 +35,22 @@ jobs:
           mkdir -p dist
           PACKAGE="dist/translation_en_bn_v1.0.zip"
           if [ -f "$PACKAGE" ]; then
-            echo "Prebuilt package found locally: $PACKAGE"
+            echo "Prebuilt package found locally in runner workspace: $PACKAGE"
           elif [ -n "${{ github.event.inputs.package_source_url }}" ]; then
-            echo "Downloading prebuilt package from source URL..."
+            echo "Downloading prebuilt package from supplied source URL: ${{ github.event.inputs.package_source_url }}..."
             curl -fSL "${{ github.event.inputs.package_source_url }}" -o "$PACKAGE"
           fi
 
           if [ ! -f "$PACKAGE" ]; then
-            echo "::error::Prebuilt package '$PACKAGE' not found! Provide package_source_url or place the package in dist/."
+            echo "::error::Prebuilt model package '$PACKAGE' is missing! Because large model binaries (>100MB) cannot be committed to Git repositories and 'dist/' is in .gitignore, a fresh GitHub Actions runner does not contain the ZIP asset."
+            echo "::error::To publish this release:"
+            echo "::error::  1) Trigger this workflow manually (workflow_dispatch) with 'package_source_url' pointing to the hosted model archive, OR"
+            echo "::error::  2) Upload the release asset directly using GitHub CLI:"
+            echo "::error::     gh release create v1.0.0-translation-model dist/translation_en_bn_v1.0.zip --title 'Offline English-Bangla Translation Model v1.0.0'"
+            echo "MARKING WORKFLOW AS INCOMPLETE: Cannot publish release without authentic prebuilt asset."
             exit 1
           fi
-          echo "Verified: '$PACKAGE' is available for release."
+          echo "Verified: Authentic package '$PACKAGE' is available for release."
 
       - name: Verify Exact Package Size
         run: |

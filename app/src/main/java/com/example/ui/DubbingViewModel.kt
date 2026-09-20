@@ -78,6 +78,18 @@ class DubbingViewModel(application: Application) : AndroidViewModel(application)
         modelManager.refreshModelStatuses()
     }
 
+    private val _probeResults = MutableStateFlow<Map<String, com.example.models.ModelDownloader.HttpProbeResult>>(emptyMap())
+    val probeResults: StateFlow<Map<String, com.example.models.ModelDownloader.HttpProbeResult>> = _probeResults.asStateFlow()
+
+    fun probeModel(model: ModelInfo) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val result = modelManager.downloader.probeUrl(model.downloadUrl)
+            val updated = _probeResults.value.toMutableMap()
+            updated[model.id] = result
+            _probeResults.value = updated
+        }
+    }
+
     fun selectVideoForDubbing(uri: Uri, onNavigateToProgress: (String) -> Unit) {
         viewModelScope.launch {
             val fileName = queryFileName(uri) ?: "video_${System.currentTimeMillis()}.mp4"

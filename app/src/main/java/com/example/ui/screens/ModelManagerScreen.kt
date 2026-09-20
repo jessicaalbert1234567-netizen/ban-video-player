@@ -34,12 +34,14 @@ fun ModelManagerScreen(
 ) {
     val models by viewModel.modelsState.collectAsState()
     val isAllReady by viewModel.isAllModelsReady.collectAsState()
+    val probeResults by viewModel.probeResults.collectAsState()
     val storageSummary = viewModel.getStorageSummary()
     val requiredMb = storageSummary.first / (1024 * 1024)
     val availableMb = storageSummary.second / (1024 * 1024)
 
     var showConfigDialogForModel by remember { mutableStateOf<com.example.models.ModelInfo?>(null) }
     var releaseUrlInput by remember { mutableStateOf("") }
+    var diagnosticsModelItem by remember { mutableStateOf<ModelItemUiState?>(null) }
 
     if (showConfigDialogForModel != null) {
         val model = showConfigDialogForModel!!
@@ -91,6 +93,23 @@ fun ModelManagerScreen(
         )
     }
 
+    if (diagnosticsModelItem != null) {
+        val item = models.find { it.info.id == diagnosticsModelItem!!.info.id } ?: diagnosticsModelItem!!
+        val probe = probeResults[item.info.id]
+        ModelDiagnosticsDialog(
+            item = item,
+            probeResult = probe,
+            onProbe = { viewModel.probeModel(item.info) },
+            onRefresh = { viewModel.refreshModelStatuses() },
+            onConfigureUrl = {
+                releaseUrlInput = item.info.downloadUrl
+                showConfigDialogForModel = item.info
+                diagnosticsModelItem = null
+            },
+            onDismiss = { diagnosticsModelItem = null }
+        )
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -101,6 +120,12 @@ fun ModelManagerScreen(
                     }
                 },
                 actions = {
+                    IconButton(
+                        onClick = { diagnosticsModelItem = models.firstOrNull() },
+                        modifier = Modifier.testTag("model_diagnostics_button")
+                    ) {
+                        Icon(Icons.Default.Analytics, contentDescription = "Model Diagnostics")
+                    }
                     IconButton(
                         onClick = { viewModel.refreshModelStatuses() },
                         modifier = Modifier.testTag("refresh_models_button")
@@ -213,7 +238,8 @@ fun ModelManagerScreen(
                     onConfigureUrl = {
                         releaseUrlInput = item.info.downloadUrl
                         showConfigDialogForModel = item.info
-                    }
+                    },
+                    onOpenDiagnostics = { diagnosticsModelItem = item }
                 )
             }
         }
@@ -225,11 +251,13 @@ fun ModelCard(
     item: ModelItemUiState,
     onDownload: () -> Unit,
     onDelete: () -> Unit,
-    onConfigureUrl: () -> Unit = {}
+    onConfigureUrl: () -> Unit = {},
+    onOpenDiagnostics: () -> Unit = {}
 ) {
     val info = item.info
     val isDownloading = item.downloadProgress?.status == ModelStatus.DOWNLOADING || item.status == ModelStatus.DOWNLOADING
     val isVerifying = item.downloadProgress?.status == ModelStatus.VERIFYING || item.status == ModelStatus.VERIFYING
+    val isExtracting = item.downloadProgress?.status == ModelStatus.EXTRACTING || item.status == ModelStatus.EXTRACTING
     val isInstalling = item.downloadProgress?.status == ModelStatus.INSTALLING || item.status == ModelStatus.INSTALLING
     val sizeMb = if (info.sizeBytes > 0) info.sizeBytes / (1024 * 1024) else 0
 
@@ -263,14 +291,16 @@ fun ModelCard(
                     )
                 }
 
-                // Strict model states: NOT_DOWNLOADED, DOWNLOADING, VERIFYING, INSTALLING, READY, ERROR
+                // Strict model states: NOT_DOWNLOADED, DOWNLOADING, VERIFYING, EXTRACTING, INSTALLING, READY, ERROR
                 val statusText = when {
                     item.status == ModelStatus.READY || item.isReadyForOfflineUse -> "Ready"
                     isDownloading -> "Downloading ${item.downloadProgress?.progressPercent ?: 0}%"
                     isVerifying -> "Verifying..."
+                    isExtracting -> "Extracting..."
                     isInstalling -> "Installing..."
                     item.status == ModelStatus.ERROR -> "Error"
                     item.status == ModelStatus.INCOMPATIBLE -> "Incompatible"
+                    item.status == ModelStatus.SOURCE_UNAVAILABLE -> "Source 404"
                     !info.isSourceConfigured && !item.isReadyForOfflineUse -> "Not Configured"
                     else -> "Not Downloaded"
                 }
@@ -278,8 +308,8 @@ fun ModelCard(
                 val statusColor = when {
                     item.status == ModelStatus.READY || item.isReadyForOfflineUse -> SuccessGreen
                     isDownloading -> MaterialTheme.colorScheme.primary
-                    isVerifying || isInstalling -> WarningAmber
-                    item.status == ModelStatus.INCOMPATIBLE || item.status == ModelStatus.ERROR -> ErrorRed
+                    isVerifying || isExtracting || isInstalling -> WarningAmber
+                    item.status == ModelStatus.INCOMPATIBLE || item.status == ModelStatus.ERROR || item.status == ModelStatus.SOURCE_UNAVAILABLE -> ErrorRed
                     !info.isSourceConfigured && !item.isReadyForOfflineUse -> WarningAmber
                     else -> MaterialTheme.colorScheme.onSurfaceVariant
                 }
@@ -312,8 +342,8 @@ fun ModelCard(
                 )
             }
 
-            // Verification in progress: show active verification phase
-            if (isVerifying) {
+            // Verification or extraction in progress
+            if (isVerifying || isExtracting) {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     LinearProgressIndicator(
                         modifier = Modifier
@@ -324,7 +354,7 @@ fun ModelCard(
                     )
                     Text(
                         text = item.downloadProgress?.verificationStatus
-                            ?: "Verifying package checksums, integrity, and test translation...",
+                            ?: if (isExtracting) "Extracting package contents..." else "Verifying integrity & checksums...",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -372,7 +402,7 @@ fun ModelCard(
 
             // Error or Incompatibility explanation
             val failureReason = item.verification?.failureReason ?: item.downloadProgress?.errorMessage
-            if (failureReason != null && !item.isReadyForOfflineUse && (item.status == ModelStatus.ERROR || item.status == ModelStatus.INCOMPATIBLE)) {
+            if (failureReason != null && !item.isReadyForOfflineUse && (item.status == ModelStatus.ERROR || item.status == ModelStatus.INCOMPATIBLE || item.status == ModelStatus.SOURCE_UNAVAILABLE)) {
                 Surface(
                     color = ErrorRed.copy(alpha = 0.1f),
                     shape = RoundedCornerShape(8.dp),
@@ -407,50 +437,239 @@ fun ModelCard(
             // Action row
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
+                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                if (item.isInstalled || item.verification?.isFilePresent == true) {
-                    TextButton(
-                        onClick = onDelete,
-                        colors = ButtonDefaults.textButtonColors(contentColor = ErrorRed),
-                        modifier = Modifier.testTag("delete_model_${info.id}")
-                    ) {
-                        Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Delete Model")
-                    }
-                } else if (!info.isSourceConfigured) {
-                    OutlinedButton(
-                        onClick = onConfigureUrl,
-                        shape = RoundedCornerShape(10.dp),
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
-                    ) {
-                        Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Set Release URL")
-                    }
-                } else {
-                    Button(
-                        onClick = onDownload,
-                        enabled = !isDownloading && !isVerifying && !isInstalling,
-                        shape = RoundedCornerShape(10.dp),
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
-                        modifier = Modifier.testTag("download_model_${info.id}")
-                    ) {
-                        Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            when {
-                                isDownloading -> "Downloading..."
-                                isVerifying -> "Verifying..."
-                                isInstalling -> "Installing..."
-                                else -> "Download"
-                            }
-                        )
+                TextButton(
+                    onClick = onOpenDiagnostics,
+                    modifier = Modifier.testTag("diagnostics_btn_${info.id}")
+                ) {
+                    Icon(Icons.Default.Info, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Diagnostics", style = MaterialTheme.typography.labelMedium)
+                }
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (item.isInstalled || item.verification?.isFilePresent == true) {
+                        TextButton(
+                            onClick = onDelete,
+                            colors = ButtonDefaults.textButtonColors(contentColor = ErrorRed),
+                            modifier = Modifier.testTag("delete_model_${info.id}")
+                        ) {
+                            Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Delete")
+                        }
+                    } else if (!info.isSourceConfigured) {
+                        OutlinedButton(
+                            onClick = onConfigureUrl,
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+                        ) {
+                            Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Set Release URL")
+                        }
+                    } else {
+                        Button(
+                            onClick = onDownload,
+                            enabled = !isDownloading && !isVerifying && !isExtracting && !isInstalling,
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                            modifier = Modifier.testTag("download_model_${info.id}")
+                        ) {
+                            Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                when {
+                                    isDownloading -> "Downloading..."
+                                    isVerifying -> "Verifying..."
+                                    isExtracting -> "Extracting..."
+                                    isInstalling -> "Installing..."
+                                    else -> "Download"
+                                }
+                            )
+                        }
                     }
                 }
             }
         }
     }
+}
+
+@Composable
+fun ModelDiagnosticsDialog(
+    item: ModelItemUiState,
+    probeResult: com.example.models.ModelDownloader.HttpProbeResult?,
+    onProbe: () -> Unit,
+    onRefresh: () -> Unit,
+    onConfigureUrl: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val info = item.info
+    val v = item.verification
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Model Diagnostics",
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
+                )
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = (if (item.isReadyForOfflineUse) SuccessGreen else ErrorRed).copy(alpha = 0.15f)
+                ) {
+                    Text(
+                        text = if (item.isReadyForOfflineUse) "READY" else item.status.name,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                        color = if (item.isReadyForOfflineUse) SuccessGreen else ErrorRed
+                    )
+                }
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                // Model Identity
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(text = "${info.name} (${info.id})", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold))
+                        Text(text = "Format: ${info.format.name} | Requirements: ${info.runtimeRequirements}", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+
+                // File System Audit
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(text = "Local Storage & Path Audit:", style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold))
+                    Text(
+                        text = "• Resolved Path: ${v?.resolvedFilePath ?: "(Unresolved)"}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = "• File Present: ${if (v?.isFilePresent == true) "YES (${v.fileSizeBytes} bytes)" else "NO (0 bytes)"}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (v?.isFilePresent == true) SuccessGreen else ErrorRed
+                    )
+                    Text(
+                        text = "• SHA-256 Checksum: ${if (v?.sha256Matches == true) "MATCHED" else "UNVERIFIED / MISMATCH"}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (v?.sha256Matches == true) SuccessGreen else WarningAmber
+                    )
+                    Text(
+                        text = "• ONNX Session: ${if (v?.onnxLoadSuccess == true) "PASSED" else "NOT INITIALIZED"}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (v?.onnxLoadSuccess == true) SuccessGreen else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (!v?.failureReason.isNullOrBlank()) {
+                        Text(
+                            text = "• Failure Reason: ${v?.failureReason}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = ErrorRed
+                        )
+                    }
+                }
+
+                HorizontalDivider()
+
+                // Remote Distribution Audit
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(text = "Remote Distribution Audit:", style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold))
+                    Text(
+                        text = "• Source URL: ${if (info.isSourceConfigured) info.downloadUrl else "NOT CONFIGURED"}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (info.isSourceConfigured) MaterialTheme.colorScheme.onSurfaceVariant else WarningAmber
+                    )
+
+                    if (probeResult != null) {
+                        Text(
+                            text = "• HTTP Status: ${probeResult.statusCode} ${probeResult.statusMessage}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (probeResult.isAvailable) SuccessGreen else ErrorRed
+                        )
+                        if (probeResult.finalUrl != info.downloadUrl) {
+                            Text(
+                                text = "• Final URL after redirect: ${probeResult.finalUrl}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Text(
+                            text = "• Content-Type: ${probeResult.contentType ?: "unknown"}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = "• Content-Length: ${probeResult.contentLength} bytes",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        if (!probeResult.errorMessage.isNullOrBlank()) {
+                            Text(
+                                text = "• Diagnostic Detail: ${probeResult.errorMessage}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = ErrorRed
+                            )
+                        }
+                    } else {
+                        Text(
+                            text = "• HTTP Status: (Not probed yet)",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = onProbe,
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                    ) {
+                        Text("Probe URL", style = MaterialTheme.typography.labelSmall)
+                    }
+                    OutlinedButton(
+                        onClick = onRefresh,
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                    ) {
+                        Text("Verify Disk", style = MaterialTheme.typography.labelSmall)
+                    }
+                    if (info.type == com.example.models.ModelType.TRANSLATION) {
+                        OutlinedButton(
+                            onClick = onConfigureUrl,
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                        ) {
+                            Text("Set URL", style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = onDismiss) {
+                Text("Close")
+            }
+        }
+    )
 }

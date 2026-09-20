@@ -48,6 +48,7 @@ class ModelManager(private val context: Context) {
             val status = when {
                 progress?.status == ModelStatus.DOWNLOADING -> ModelStatus.DOWNLOADING
                 progress?.status == ModelStatus.VERIFYING -> ModelStatus.VERIFYING
+                progress?.status == ModelStatus.EXTRACTING -> ModelStatus.EXTRACTING
                 progress?.status == ModelStatus.INSTALLING -> ModelStatus.INSTALLING
                 progress?.status == ModelStatus.ERROR -> ModelStatus.ERROR
                 verification.isReadyForOfflineUse -> ModelStatus.READY
@@ -79,6 +80,7 @@ class ModelManager(private val context: Context) {
             val status = when {
                 progress?.status == ModelStatus.DOWNLOADING -> ModelStatus.DOWNLOADING
                 progress?.status == ModelStatus.VERIFYING -> ModelStatus.VERIFYING
+                progress?.status == ModelStatus.EXTRACTING -> ModelStatus.EXTRACTING
                 progress?.status == ModelStatus.INSTALLING -> ModelStatus.INSTALLING
                 progress?.status == ModelStatus.ERROR -> ModelStatus.ERROR
                 verification.isReadyForOfflineUse -> ModelStatus.READY

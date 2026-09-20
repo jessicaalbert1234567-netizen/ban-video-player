@@ -16,11 +16,13 @@ enum class ModelStatus(val label: String) {
     NOT_DOWNLOADED("Not Downloaded"),
     DOWNLOADING("Downloading..."),
     VERIFYING("Verifying..."),
+    EXTRACTING("Extracting..."),
     INSTALLING("Installing..."),
     READY("Installed & Ready"),
     ERROR("Error"),
 
-    // Compatibility aliases
+    // Compatibility & specific status aliases
+    SOURCE_UNAVAILABLE("Download source unavailable"),
     NOT_INSTALLED("Not Downloaded"),
     NOT_CONFIGURED("Model source not configured"),
     NOT_AVAILABLE("Not available"),
@@ -51,7 +53,10 @@ data class ModelVerificationResult(
     val auxiliaryFilesDetails: String?,
     val isReadyForOfflineUse: Boolean,
     val failureReason: String?,
+    val resolvedFilePath: String? = null,
     val httpStatusCode: Int = 0,
+    val httpStatusMessage: String? = null,
+    val finalRedirectUrl: String? = null,
     val contentType: String? = null,
     val downloadedFilename: String? = null,
     val fileSignatureHex: String? = null,

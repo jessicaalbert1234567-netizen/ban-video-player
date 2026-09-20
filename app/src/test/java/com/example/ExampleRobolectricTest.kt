@@ -55,16 +55,19 @@ class ExampleRobolectricTest {
         testSrt.delete()
     }
 
-    @Test(expected = IllegalStateException::class)
-    fun `test offline translation engine throws when model uninstalled`() {
-        runBlocking {
-            val context = ApplicationProvider.getApplicationContext<Context>()
-            val translator = EnglishToBanglaTranslator(context)
-            try {
+    @Test
+    fun testOfflineTranslationEngineThrowsWhenModelUninstalled() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val translator = EnglishToBanglaTranslator(context)
+        try {
+            runBlocking {
                 translator.translate("How are you?")
-            } finally {
-                translator.close()
             }
+            org.junit.Assert.fail("Should have thrown IllegalStateException when translation model is not installed")
+        } catch (e: IllegalStateException) {
+            assertTrue(e.message?.contains("English → Bangla translation model is not installed") == true)
+        } finally {
+            translator.close()
         }
     }
 
@@ -124,5 +127,14 @@ class ExampleRobolectricTest {
         org.junit.Assert.assertFalse(verification.isReadyForOfflineUse)
         org.junit.Assert.assertNotNull(verification.failureReason)
         assertTrue(verification.failureReason!!.contains("English → Bangla translation model is not installed"))
+    }
+
+    @Test
+    fun `test onnx model initialization with test file`() {
+        val testFile = File("/tmp/test_asr.onnx")
+        if (testFile.exists()) {
+            val res = com.example.models.ModelInstaller.testOnnxInitialization(testFile)
+            println("ONNX Test result: $res")
+        }
     }
 }

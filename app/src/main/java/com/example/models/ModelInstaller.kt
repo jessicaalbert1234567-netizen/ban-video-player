@@ -15,6 +15,17 @@ object ModelInstaller {
 
     fun getModelDirectory(context: Context, model: ModelInfo): File {
         val baseDir = File(context.filesDir, "models")
+        if (model.type == ModelType.TRANSLATION) {
+            val namedDir = File(baseDir, "translation_en_bn_v1.0")
+            if (File(namedDir, "encoder_model.onnx").exists()) {
+                return namedDir
+            }
+            val subDir = File(baseDir, "translation/${model.sourceLanguage}_${model.targetLanguage ?: "bn"}")
+            if (!subDir.exists()) {
+                subDir.mkdirs()
+            }
+            return subDir
+        }
         val subDir = when (model.type) {
             ModelType.ASR -> File(baseDir, "asr/${model.sourceLanguage}")
             ModelType.TRANSLATION -> File(baseDir, "translation/${model.sourceLanguage}_${model.targetLanguage ?: "bn"}")
@@ -28,17 +39,64 @@ object ModelInstaller {
 
     fun getInstalledModelFile(context: Context, model: ModelInfo): File {
         val dir = getModelDirectory(context, model)
-        val fileName = if (model.type == ModelType.TRANSLATION && model.archiveName.endsWith(".zip")) {
-            "encoder_model.onnx"
-        } else {
-            model.archiveName
+        if (model.type == ModelType.TRANSLATION) {
+            val primary = File(dir, "encoder_model.onnx")
+            if (primary.exists() && primary.isFile && primary.length() > 0 && primary.canRead()) {
+                return primary
+            }
+            val baseDir = File(context.filesDir, "models")
+            val altDir = File(baseDir, "translation_en_bn_v1.0")
+            val altPrimary = File(altDir, "encoder_model.onnx")
+            if (altPrimary.exists() && altPrimary.isFile && altPrimary.length() > 0 && altPrimary.canRead()) {
+                return altPrimary
+            }
+            return primary
         }
-        return File(dir, fileName)
+
+        val defaultFile = File(dir, model.archiveName)
+        if (defaultFile.exists() && defaultFile.isFile && defaultFile.length() > 0 && defaultFile.canRead()) {
+            return defaultFile
+        }
+
+        // Alternative filenames fallback
+        if (model.type == ModelType.ASR) {
+            val alternatives = listOf("model.int8.onnx", "model.onnx", "citrinet.onnx")
+            for (alt in alternatives) {
+                val candidate = File(dir, alt)
+                if (candidate.exists() && candidate.isFile && candidate.length() > 0 && candidate.canRead()) {
+                    return candidate
+                }
+            }
+        } else if (model.type == ModelType.TTS) {
+            val alternatives = listOf("bn_BD-google-medium.onnx", "model.onnx", "piper.onnx")
+            for (alt in alternatives) {
+                val candidate = File(dir, alt)
+                if (candidate.exists() && candidate.isFile && candidate.length() > 0 && candidate.canRead()) {
+                    return candidate
+                }
+            }
+        }
+        return defaultFile
     }
 
     fun getAuxiliaryFile(context: Context, model: ModelInfo, fileName: String): File {
         val dir = getModelDirectory(context, model)
         return File(dir, fileName)
+    }
+
+    fun cleanupIncompleteInstallations(context: Context) {
+        try {
+            val baseDir = File(context.filesDir, "models")
+            if (!baseDir.exists()) return
+            baseDir.walkTopDown().forEach { file ->
+                if (file.name.endsWith(".download") || file.name.endsWith(".part") || file.name.endsWith(".tmp") || file.name.startsWith("staging_")) {
+                    Log.i(TAG, "Cleaning up incomplete installation artifact: ${file.absolutePath}")
+                    file.deleteRecursively()
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error cleaning up incomplete installations", e)
+        }
     }
 
     fun isModelInstalled(context: Context, model: ModelInfo): Boolean {
@@ -52,15 +110,23 @@ object ModelInstaller {
             val sourceSpm = File(dir, "source.spm")
             val targetSpm = File(dir, "target.spm")
             val manifest = File(dir, "model_manifest.json")
-            return encoder.exists() && encoder.length() > 0 &&
-                   decoder.exists() && decoder.length() > 0 &&
-                   decoderWithPast.exists() && decoderWithPast.length() > 0 &&
-                   vocab.exists() && vocab.length() > 0 &&
-                   (sourcePieces.exists() || sourceSpm.exists()) &&
-                   manifest.exists() && manifest.length() > 0
+            return encoder.exists() && encoder.isFile && encoder.length() > 0 && encoder.canRead() &&
+                    decoder.exists() && decoder.isFile && decoder.length() > 0 && decoder.canRead() &&
+                    decoderWithPast.exists() && decoderWithPast.isFile && decoderWithPast.length() > 0 && decoderWithPast.canRead() &&
+                    vocab.exists() && vocab.isFile && vocab.length() > 0 && vocab.canRead() &&
+                    (sourcePieces.exists() || sourceSpm.exists()) &&
+                    manifest.exists() && manifest.isFile && manifest.length() > 0 && manifest.canRead()
         }
         val file = getInstalledModelFile(context, model)
-        return file.exists() && file.length() > 0
+        val mainFileOk = file.exists() && file.isFile && file.length() > 0 && file.canRead()
+        if (!mainFileOk) return false
+        for (aux in model.auxiliaryFiles) {
+            val auxFile = getAuxiliaryFile(context, model, aux.fileName)
+            if (!auxFile.exists() || !auxFile.isFile || auxFile.length() <= 0 || !auxFile.canRead()) {
+                return false
+            }
+        }
+        return true
     }
 
     fun calculateSha256(file: File): String {
@@ -227,8 +293,28 @@ object ModelInstaller {
      */
     fun verifyModelOffline(context: Context, model: ModelInfo): ModelVerificationResult {
         val file = getInstalledModelFile(context, model)
-        val fileExists = file.exists()
-        val fileSize = if (fileExists) file.length() else 0L
+        val result = verifyModelOfflineInternal(context, model, file)
+        return result.copy(resolvedFilePath = file.absolutePath)
+    }
+
+    private fun verifyModelOfflineInternal(context: Context, model: ModelInfo, file: File): ModelVerificationResult {
+        val dir = getModelDirectory(context, model)
+        val expectedFile = File(dir, model.archiveName)
+        val fileExists = file.exists() && file.isFile && file.length() > 0 && file.canRead()
+        val fileSize = if (file.exists()) file.length() else 0L
+
+        Log.i(TAG, """
+            |==================================================
+            |MODEL AUDIT:
+            |MODEL NAME: ${model.name}
+            |EXPECTED PATH: ${expectedFile.absolutePath}
+            |ACTUAL PATH: ${file.absolutePath}
+            |EXPECTED FILENAME: ${expectedFile.name}
+            |ACTUAL FILENAME: ${file.name}
+            |ACTUAL BYTE SIZE: $fileSize
+            |EXISTS: ${file.exists()}, IS_FILE: ${file.isFile}, CAN_READ: ${file.canRead()}
+            |==================================================
+        """.trimMargin())
 
         val expectedMainSize = if (model.type == ModelType.TRANSLATION) {
             51_062_030L // encoder_model.onnx size
@@ -244,7 +330,7 @@ object ModelInstaller {
             model.sha256
         }
 
-        if (!model.isSourceConfigured && !fileExists) {
+        if (!model.isSourceConfigured && !file.exists()) {
             val failureMsg = if (model.type == ModelType.TRANSLATION) {
                 "English → Bangla translation model is not installed. (Model source not configured)"
             } else {
@@ -267,7 +353,7 @@ object ModelInstaller {
             )
         }
 
-        if (!fileExists) {
+        if (!file.exists()) {
             val failureMsg = if (model.type == ModelType.TRANSLATION) {
                 "English → Bangla translation model is not installed."
             } else {
@@ -287,6 +373,24 @@ object ModelInstaller {
                 auxiliaryFilesDetails = null,
                 isReadyForOfflineUse = false,
                 failureReason = failureMsg
+            )
+        }
+
+        if (!file.isFile) {
+            return ModelVerificationResult(
+                modelId = model.id,
+                isFilePresent = true,
+                fileSizeBytes = 0L,
+                expectedSizeBytes = model.sizeBytes,
+                sha256Calculated = null,
+                sha256Matches = false,
+                onnxLoadSuccess = false,
+                onnxInputInfo = null,
+                onnxOutputInfo = null,
+                auxiliaryFilesPresent = false,
+                auxiliaryFilesDetails = null,
+                isReadyForOfflineUse = false,
+                failureReason = "Path exists but is a directory, not a file: ${file.absolutePath}"
             )
         }
 
@@ -310,6 +414,24 @@ object ModelInstaller {
                 auxiliaryFilesDetails = null,
                 isReadyForOfflineUse = false,
                 failureReason = failureMsg
+            )
+        }
+
+        if (!file.canRead()) {
+            return ModelVerificationResult(
+                modelId = model.id,
+                isFilePresent = true,
+                fileSizeBytes = fileSize,
+                expectedSizeBytes = model.sizeBytes,
+                sha256Calculated = null,
+                sha256Matches = false,
+                onnxLoadSuccess = false,
+                onnxInputInfo = null,
+                onnxOutputInfo = null,
+                auxiliaryFilesPresent = false,
+                auxiliaryFilesDetails = null,
+                isReadyForOfflineUse = false,
+                failureReason = "Model file exists but cannot be read (check filesystem permissions): ${file.absolutePath}"
             )
         }
 
