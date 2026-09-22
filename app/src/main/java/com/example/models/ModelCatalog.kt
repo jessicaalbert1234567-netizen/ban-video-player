@@ -4,41 +4,47 @@ object ModelCatalog {
 
     const val MODEL_URL_NOT_CONFIGURED = ""
 
-    // Model 1: English Speech Recognition (Citrinet-512 CTC ONNX Mobile)
+    // Model 1: English Speech Recognition (OpenAI Whisper Tiny English - tiny.en ONNX Mobile)
     val ENGLISH_ASR = ModelInfo(
-        id = "english_asr_citrinet",
-        name = "English Speech Recognition (Citrinet-512)",
+        id = "whisper_tiny_en",
+        name = "English Speech Recognition (Whisper Tiny)",
         version = "1.0.0",
         sourceLanguage = "en",
         targetLanguage = null,
         type = ModelType.ASR,
-        // Real HuggingFace ONNX Sherpa / NeMo Citrinet-512 INT8 model
-        downloadUrl = "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-ctc-en-citrinet-512/resolve/main/model.int8.onnx",
-        sizeBytes = 38_048_112L, // ~38 MB
-        sha256 = "fc42a69b0c113c3188a15487652b10564584255dbcb093b3d543334c898af1eb",
+        // Real HuggingFace Sherpa-ONNX Whisper Tiny English (tiny.en) INT8 model
+        downloadUrl = "https://huggingface.co/csukuangfj/sherpa-onnx-whisper-tiny.en/resolve/main/tiny.en-encoder.int8.onnx",
+        sizeBytes = 12_937_772L, // ~13 MB encoder
+        sha256 = "0ce578b827c94a961aacb8fa14b02f096504b337e5c94be37c36238cbe3e8bc6",
         format = ModelFormat.ONNX,
-        archiveName = "model.int8.onnx",
+        archiveName = "tiny.en-encoder.int8.onnx",
         minimumRamMb = 512,
-        minimumStorageMb = 100,
+        minimumStorageMb = 250,
         onnxMetadata = OnnxMetadata(
-            inputTensorName = "audio_signal",
-            outputTensorName = "logprobs",
-            inputShape = listOf(1L, 80L, -1L),
+            inputTensorName = "mel",
+            outputTensorName = "n_layer_cross_k",
+            inputShape = listOf(1L, 80L, 3000L),
             dataType = "FLOAT32",
             sampleRate = 16000,
-            blankTokenId = 1024,
-            vocabFileName = "tokens.txt",
-            decoderType = "CTC_GREEDY"
+            blankTokenId = 50256,
+            vocabFileName = "tiny.en-tokens.txt",
+            decoderType = "WHISPER_ENCODER_DECODER"
         ),
-        description = "Real quantized English CTC acoustic model for on-device automatic speech recognition.",
-        licenseSource = "NVIDIA NeMo / Sherpa-ONNX (Apache-2.0)",
-        runtimeRequirements = "ONNX Runtime Mobile (16kHz mono PCM, 80-bin mel fbank, tokens.txt)",
+        description = "OpenAI Whisper Tiny English (tiny.en) quantized encoder-decoder model for high-accuracy on-device speech recognition.",
+        licenseSource = "OpenAI / Sherpa-ONNX (MIT)",
+        runtimeRequirements = "ONNX Runtime Mobile (16kHz mono PCM, 80-bin mel spectrogram, encoder + decoder + tokens.txt)",
         auxiliaryFiles = listOf(
             ModelAuxiliaryFile(
-                fileName = "tokens.txt",
-                downloadUrl = "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-ctc-en-citrinet-512/raw/main/tokens.txt",
-                expectedSizeBytes = 11022L,
-                sha256 = "ec47e32278739a7423a610ec8127b55ead3ac7c6"
+                fileName = "tiny.en-decoder.int8.onnx",
+                downloadUrl = "https://huggingface.co/csukuangfj/sherpa-onnx-whisper-tiny.en/resolve/main/tiny.en-decoder.int8.onnx",
+                expectedSizeBytes = 89_853_865L,
+                sha256 = "06c0e6ff6348d427e51839219d1c886c18cfdf411e629e33f5e1679bff9c1527"
+            ),
+            ModelAuxiliaryFile(
+                fileName = "tiny.en-tokens.txt",
+                downloadUrl = "https://huggingface.co/csukuangfj/sherpa-onnx-whisper-tiny.en/resolve/main/tiny.en-tokens.txt",
+                expectedSizeBytes = 835_554L,
+                sha256 = "306cd27f03c1a714eca7108e03d66b7dc042abe8c258b44c199a7ed9838dd930"
             )
         )
     )

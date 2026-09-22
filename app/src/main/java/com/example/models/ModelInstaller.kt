@@ -38,7 +38,7 @@ object ModelInstaller {
 
         // Alternative filenames fallback
         if (model.type == ModelType.ASR) {
-            val alternatives = listOf("model.int8.onnx", "model.onnx", "citrinet.onnx")
+            val alternatives = listOf("tiny.en-encoder.int8.onnx", "whisper_encoder.onnx", "model.int8.onnx", "model.onnx")
             for (alt in alternatives) {
                 val candidate = File(dir, alt)
                 if (candidate.exists() && candidate.isFile && candidate.length() > 0 && candidate.canRead()) {

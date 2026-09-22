@@ -21,6 +21,7 @@ import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
+import java.nio.IntBuffer
 import java.nio.LongBuffer
 import java.util.Locale
 import java.util.UUID
@@ -47,7 +48,11 @@ class BanglaTtsEngine(
 
     private var ortEnv: OrtEnvironment? = null
     private var ortSession: OrtSession? = null
+    private var activeModelFile: File? = null
     private val phonemeIdMap = mutableMapOf<String, Long>()
+    private val speakerIdMap = mutableMapOf<String, Long>()
+    private var selectedSpeakerId: Long = 0L
+    private var numSpeakers: Int = 1
     private var modelSampleRate = 22050
 
     private var androidTts: TextToSpeech? = null
@@ -87,6 +92,7 @@ class BanglaTtsEngine(
                 }
                 val session = env.createSession(modelFile.absolutePath, sessionOptions)
                 ortSession = session
+                activeModelFile = modelFile
 
                 // Load config JSON if available
                 val configFile = ModelInstaller.getAuxiliaryFile(context, model, "bn_BD-google-medium.onnx.json")
@@ -120,6 +126,7 @@ class BanglaTtsEngine(
             if (audioObj != null) {
                 modelSampleRate = audioObj.optInt("sample_rate", 22050)
             }
+            numSpeakers = root.optInt("num_speakers", 1)
             val idMapObj = root.optJSONObject("phoneme_id_map")
             if (idMapObj != null) {
                 phonemeIdMap.clear()
@@ -132,7 +139,30 @@ class BanglaTtsEngine(
                     }
                 }
             }
-            Log.d(TAG, "Loaded TTS config: sampleRate=$modelSampleRate, phoneme map size=${phonemeIdMap.size}")
+
+            val speakerMapObj = root.optJSONObject("speaker_id_map")
+            if (speakerMapObj != null) {
+                speakerIdMap.clear()
+                val keys = speakerMapObj.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    val sid = speakerMapObj.optLong(key, -1L)
+                    if (sid >= 0) {
+                        speakerIdMap[key] = sid
+                    }
+                }
+                selectedSpeakerId = if (speakerIdMap.values.contains(0L)) {
+                    0L
+                } else if (speakerIdMap.isNotEmpty()) {
+                    speakerIdMap.values.minOrNull() ?: 0L
+                } else {
+                    0L
+                }
+            } else {
+                selectedSpeakerId = 0L
+            }
+
+            Log.d(TAG, "Loaded TTS config: sampleRate=$modelSampleRate, phoneme map size=${phonemeIdMap.size}, speakers=$numSpeakers, selectedSpeakerId=$selectedSpeakerId")
         } catch (e: Exception) {
             Log.w(TAG, "Notice while parsing TTS config JSON: ${e.message}")
         }
@@ -199,6 +229,16 @@ class BanglaTtsEngine(
         val session = ortSession ?: throw IllegalStateException("ONNX TTS session is not open.")
         val env = ortEnv ?: throw IllegalStateException("ONNX environment is not open.")
 
+        Log.i(TAG, """
+            |TTS MODEL:
+            |${activeModelFile?.name ?: "bn_BD-google-medium.onnx"}
+            |INPUTS:
+            |${session.inputInfo.entries.joinToString("\n") { (name, nodeInfo) ->
+                val tensorInfo = nodeInfo.info as? ai.onnxruntime.TensorInfo
+                "name=$name, type=${tensorInfo?.type}, shape=${tensorInfo?.shape?.contentToString()}"
+            }}
+        """.trimMargin())
+
         val inputNames = session.inputNames.toList()
         val inputsMap = mutableMapOf<String, OnnxTensor>()
 
@@ -215,21 +255,66 @@ class BanglaTtsEngine(
             phonemeIds.add(phonemeIdMap["$"] ?: 2L) // end token
 
             val seqLen = phonemeIds.size.toLong()
-            val inputTensor = OnnxTensor.createTensor(env, LongBuffer.wrap(phonemeIds.toLongArray()), longArrayOf(1, seqLen))
-            inputsMap[inputNames[0]] = inputTensor
 
-            if (inputNames.size > 1 && inputNames.any { it.contains("length") }) {
-                val lenName = inputNames.first { it.contains("length") }
+            // 1. Phonemes / text sequence
+            val textInputName = inputNames.firstOrNull { it == "input" || it.contains("text") } ?: inputNames[0]
+            val inputTensor = OnnxTensor.createTensor(env, LongBuffer.wrap(phonemeIds.toLongArray()), longArrayOf(1, seqLen))
+            inputsMap[textInputName] = inputTensor
+
+            // 2. Lengths input
+            val lenName = inputNames.firstOrNull { it.contains("length") }
+            if (lenName != null) {
                 val lenTensor = OnnxTensor.createTensor(env, LongBuffer.wrap(longArrayOf(seqLen)), longArrayOf(1))
                 inputsMap[lenName] = lenTensor
             }
 
-            if (inputNames.size > 2 && inputNames.any { it.contains("scale") }) {
-                val scaleName = inputNames.first { it.contains("scale") }
+            // 3. Scales input: noise_scale (0.667), length_scale (1.0), noise_w (0.8)
+            val scaleName = inputNames.firstOrNull { it.contains("scale") }
+            if (scaleName != null) {
                 val scales = floatArrayOf(0.667f, 1.0f, 0.8f)
                 val scaleTensor = OnnxTensor.createTensor(env, FloatBuffer.wrap(scales), longArrayOf(3))
                 inputsMap[scaleName] = scaleTensor
             }
+
+            // 4. Speaker ID (sid) input: handle multi-speaker Piper models
+            val sidName = inputNames.firstOrNull { it == "sid" || it.contains("speaker") || it.contains("sid") }
+            if (sidName != null) {
+                val nodeInfo = session.inputInfo[sidName]
+                val tensorInfo = nodeInfo?.info as? ai.onnxruntime.TensorInfo
+                val isInt32 = tensorInfo?.type == ai.onnxruntime.OnnxJavaType.INT32
+                val targetShape = tensorInfo?.shape ?: longArrayOf(1)
+
+                val concreteShape = if (targetShape.isEmpty()) {
+                    longArrayOf()
+                } else {
+                    LongArray(targetShape.size) { i -> if (targetShape[i] <= 0) 1L else targetShape[i] }
+                }
+
+                val sidTensor = if (concreteShape.isEmpty()) {
+                    if (isInt32) {
+                        OnnxTensor.createTensor(env, IntBuffer.wrap(intArrayOf(selectedSpeakerId.toInt())), longArrayOf())
+                    } else {
+                        OnnxTensor.createTensor(env, LongBuffer.wrap(longArrayOf(selectedSpeakerId)), longArrayOf())
+                    }
+                } else {
+                    val count = concreteShape.fold(1L) { acc, d -> acc * d }.toInt().coerceAtLeast(1)
+                    if (isInt32) {
+                        val arr = IntArray(count) { selectedSpeakerId.toInt() }
+                        OnnxTensor.createTensor(env, IntBuffer.wrap(arr), concreteShape)
+                    } else {
+                        val arr = LongArray(count) { selectedSpeakerId }
+                        OnnxTensor.createTensor(env, LongBuffer.wrap(arr), concreteShape)
+                    }
+                }
+                inputsMap[sidName] = sidTensor
+            }
+
+            Log.i(TAG, """
+                |ACTUAL INFERENCE INPUTS:
+                |${inputsMap.entries.joinToString("\n") { (name, tensor) ->
+                    "name=$name, type=${tensor.info.type}, shape=${tensor.info.shape.contentToString()}"
+                }}
+            """.trimMargin())
 
             // Run ONNX VITS inference
             val results = session.run(inputsMap)
@@ -257,11 +342,9 @@ class BanglaTtsEngine(
         if (outputValue == null) return FloatArray(0)
         if (outputValue is FloatArray) return outputValue
         if (outputValue is Array<*>) {
-            val first = outputValue[0]
-            if (first is FloatArray) return first
-            if (first is Array<*>) {
-                val sub = first[0]
-                if (sub is FloatArray) return sub
+            for (item in outputValue) {
+                val res = extractFloatAudio(item)
+                if (res.isNotEmpty()) return res
             }
         }
         return FloatArray(0)

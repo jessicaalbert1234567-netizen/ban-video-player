@@ -15,10 +15,10 @@ class EnglishAsrEngine(
 ) : SpeechRecognizer, AutoCloseable {
 
     private val TAG = "ASR"
-    private var activeRecognizer: OnnxSpeechRecognizer? = null
+    private var activeWhisperRecognizer: WhisperSpeechRecognizer? = null
 
     companion object {
-        const val CHUNK_DURATION_MS = 24_000L // 24 seconds chunk
+        const val CHUNK_DURATION_MS = 28_000L // 28 seconds chunk fits Whisper 30s window
         const val OVERLAP_MS = 1_000L         // 1 second overlap
         const val SILENCE_RMS_THRESHOLD = 180.0
     }
@@ -27,7 +27,7 @@ class EnglishAsrEngine(
         val segments = mutableListOf<TranscriptSegment>()
         val totalDurationMs = WavUtils.getWavDurationMs(audioFile)
 
-        Log.d(TAG, "Starting transcription for ${audioFile.name}, total duration: ${totalDurationMs}ms on thread '${Thread.currentThread().name}'")
+        Log.d(TAG, "Starting Whisper transcription for ${audioFile.name}, total duration: ${totalDurationMs}ms on thread '${Thread.currentThread().name}'")
         if (totalDurationMs <= 0) {
             return@withContext emptyList()
         }
@@ -35,14 +35,24 @@ class EnglishAsrEngine(
         val model = ModelCatalog.ENGLISH_ASR
         val verification = ModelInstaller.verifyModelOffline(context, model, deepCheck = false)
         if (!verification.isReadyForOfflineUse) {
-            val reason = verification.failureReason ?: "ASR model is not ready for offline use."
+            val reason = verification.failureReason ?: "Whisper ASR model is not ready for offline use."
             throw IllegalStateException("ASR model verification failed: $reason")
         }
 
-        val modelFile = ModelInstaller.getInstalledModelFile(context, model)
-        val onnxRecognizer = OnnxSpeechRecognizer(context, modelFile)
-        activeRecognizer = onnxRecognizer
-        onnxRecognizer.initialize()
+        val encoderFile = ModelInstaller.getInstalledModelFile(context, model)
+        var decoderFile = ModelInstaller.getAuxiliaryFile(context, model, "tiny.en-decoder.int8.onnx")
+        if (!decoderFile.exists() && encoderFile.parentFile != null) {
+            decoderFile = File(encoderFile.parentFile, "tiny.en-decoder.int8.onnx")
+        }
+
+        var tokensFile = ModelInstaller.getAuxiliaryFile(context, model, "tiny.en-tokens.txt")
+        if (!tokensFile.exists() && encoderFile.parentFile != null) {
+            tokensFile = File(encoderFile.parentFile, "tiny.en-tokens.txt")
+        }
+
+        val whisperRecognizer = WhisperSpeechRecognizer(context, encoderFile, decoderFile, tokensFile)
+        activeWhisperRecognizer = whisperRecognizer
+        whisperRecognizer.initialize()
 
         val tempChunkFile = File(context.cacheDir, "temp_asr_chunk.wav")
 
@@ -71,7 +81,7 @@ class EnglishAsrEngine(
                     )
 
                     // Transcribe chunk
-                    val rawText = onnxRecognizer.transcribeChunk(tempChunkFile)
+                    val rawText = whisperRecognizer.transcribeChunk(tempChunkFile)
 
                     if (rawText.isNotBlank()) {
                         // Split into sentence-level segments for natural subtitle pacing
@@ -92,7 +102,8 @@ class EnglishAsrEngine(
             if (tempChunkFile.exists()) {
                 tempChunkFile.delete()
             }
-            onnxRecognizer.close()
+            whisperRecognizer.close()
+            activeWhisperRecognizer = null
         }
 
         Log.d(TAG, "Completed transcription: generated ${segments.size} segments")
@@ -145,8 +156,8 @@ class EnglishAsrEngine(
 
     override fun close() {
         try {
-            activeRecognizer?.close()
-            activeRecognizer = null
+            activeWhisperRecognizer?.close()
+            activeWhisperRecognizer = null
         } catch (e: Exception) {
             Log.w(TAG, "Error closing EnglishAsrEngine", e)
         }
