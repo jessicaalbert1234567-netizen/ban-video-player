@@ -18,6 +18,7 @@ import androidx.compose.ui.unit.sp
 import com.example.settings.ProcessingMode
 import com.example.settings.VoiceGender
 import com.example.ui.DubbingViewModel
+import com.example.ui.theme.ErrorRed
 import com.example.ui.theme.SuccessGreen
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -80,6 +81,8 @@ fun SettingsScreen(
                 val isDownloading = modelItem?.downloadProgress?.status == com.example.models.ModelStatus.DOWNLOADING ||
                         modelItem?.downloadProgress?.status == com.example.models.ModelStatus.INSTALLING ||
                         modelItem?.downloadProgress?.status == com.example.models.ModelStatus.VERIFYING
+                val isError = modelItem?.downloadProgress?.status == com.example.models.ModelStatus.ERROR
+                val errorMessage = modelItem?.downloadProgress?.errorMessage
                 val progressPercent = modelItem?.downloadProgress?.progressPercent ?: 0
                 val progressStatus = modelItem?.downloadProgress?.verificationStatus
 
@@ -141,15 +144,23 @@ fun SettingsScreen(
                             )
                         } else if (!isInstalled) {
                             Spacer(modifier = Modifier.height(8.dp))
+                            if (isError && !errorMessage.isNullOrBlank()) {
+                                Text(
+                                    text = errorMessage,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = ErrorRed
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                            }
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    text = "Not downloaded (~123 MB)",
+                                    text = if (isError) "Download incomplete" else "Not downloaded (~123 MB)",
                                     style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    color = if (isError) ErrorRed else MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                                 OutlinedButton(
                                     onClick = { viewModel.downloadModel(targetModel) },
@@ -161,7 +172,7 @@ fun SettingsScreen(
                                         modifier = Modifier.size(16.dp)
                                     )
                                     Spacer(modifier = Modifier.width(6.dp))
-                                    Text("Download Voice", style = MaterialTheme.typography.labelMedium)
+                                    Text(if (isError) "Retry Download" else "Download Voice", style = MaterialTheme.typography.labelMedium)
                                 }
                             }
                         }

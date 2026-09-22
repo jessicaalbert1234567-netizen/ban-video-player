@@ -52,6 +52,12 @@ class ModelDownloader(private val context: Context) {
         }
     }
 
+    fun clearProgress(modelId: String) {
+        val current = _downloadProgressMap.value.toMutableMap()
+        current.remove(modelId)
+        _downloadProgressMap.value = current
+    }
+
     fun isNetworkAvailable(): Boolean {
         val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return false
         val network = connectivityManager.activeNetwork ?: return false
@@ -199,69 +205,84 @@ class ModelDownloader(private val context: Context) {
             DownloadProgress(
                 modelId = model.id,
                 totalBytes = model.sizeBytes,
-                status = ModelStatus.DOWNLOADING
+                status = ModelStatus.DOWNLOADING,
+                verificationStatus = "Preparing download..."
             ),
             onProgressUpdate
         )
 
         try {
-            // Download main model binary
-            downloadFileWithProgress(
-                url = model.downloadUrl,
-                destinationTempFile = tempFile,
-                expectedSizeBytes = model.sizeBytes,
-                modelId = model.id,
-                onProgressUpdate = onProgressUpdate
-            )
+            // Stage 1: Download or verify main model binary
+            val mainAlreadyInstalled = finalFile.exists() && finalFile.length() > 0 &&
+                    (model.sha256.isBlank() || ModelInstaller.verifyChecksum(finalFile, model.sha256))
 
-            // Stage 2: Verifying
-            updateState(
-                DownloadProgress(
+            if (!mainAlreadyInstalled) {
+                updateState(
+                    DownloadProgress(
+                        modelId = model.id,
+                        totalBytes = model.sizeBytes,
+                        status = ModelStatus.DOWNLOADING,
+                        verificationStatus = "Downloading main model binary..."
+                    ),
+                    onProgressUpdate
+                )
+
+                downloadFileWithProgress(
+                    url = model.downloadUrl,
+                    destinationTempFile = tempFile,
+                    expectedSizeBytes = model.sizeBytes,
                     modelId = model.id,
-                    progressPercent = 95,
-                    status = ModelStatus.VERIFYING,
-                    verificationStatus = "Verifying downloaded model artifact..."
-                ),
-                onProgressUpdate
-            )
-
-            if (!tempFile.exists() || tempFile.length() <= 0) {
-                if (tempFile.exists()) tempFile.delete()
-                throw IllegalStateException("Downloaded model file is empty (0 bytes).")
-            }
-
-            val actualSize = tempFile.length()
-            val actualSha256 = ModelInstaller.calculateSha256(tempFile)
-            val (detectedFormat, fileSigHex) = ModelInstaller.detectFileFormat(tempFile)
-
-            if (detectedFormat.contains("HTML", ignoreCase = true)) {
-                tempFile.delete()
-                throw IllegalStateException(
-                    "Verification failed: Downloaded file is an HTML error/redirect document, not a model binary.\n" +
-                            "• File size: $actualSize bytes\n" +
-                            "• Header: $fileSigHex\n" +
-                            "• URL: ${model.downloadUrl}"
+                    onProgressUpdate = onProgressUpdate
                 )
-            }
 
-            if (model.sha256.isNotBlank() && !ModelInstaller.verifyChecksum(tempFile, model.sha256)) {
-                tempFile.delete()
-                throw IllegalStateException(
-                    "Verification failed: SHA-256 mismatch for ${model.name}.\n" +
-                            "• Expected SHA-256: ${model.sha256}\n" +
-                            "• Actual SHA-256:   $actualSha256\n" +
-                            "• Expected size:    ${model.sizeBytes} bytes\n" +
-                            "• Actual size:      $actualSize bytes\n" +
-                            "• Detected format:  $detectedFormat ($fileSigHex)"
+                // Stage 2: Verifying main binary
+                updateState(
+                    DownloadProgress(
+                        modelId = model.id,
+                        progressPercent = 95,
+                        status = ModelStatus.VERIFYING,
+                        verificationStatus = "Verifying downloaded model artifact..."
+                    ),
+                    onProgressUpdate
                 )
-            }
 
-            // Test ONNX load directly on tempFile
-            val onnxInit = ModelInstaller.testOnnxInitialization(tempFile)
-            if (onnxInit.isFailure) {
-                val err = onnxInit.exceptionOrNull()?.localizedMessage ?: "Invalid ONNX model structure"
-                tempFile.delete()
-                throw IllegalStateException("ONNX model initialization failed: $err")
+                if (!tempFile.exists() || tempFile.length() <= 0) {
+                    if (tempFile.exists()) tempFile.delete()
+                    throw IllegalStateException("Downloaded model file is empty (0 bytes).")
+                }
+
+                val actualSize = tempFile.length()
+                val actualSha256 = ModelInstaller.calculateSha256(tempFile)
+                val (detectedFormat, fileSigHex) = ModelInstaller.detectFileFormat(tempFile)
+
+                if (detectedFormat.contains("HTML", ignoreCase = true)) {
+                    tempFile.delete()
+                    throw IllegalStateException(
+                        "Verification failed: Downloaded file is an HTML error/redirect document, not a model binary.\n" +
+                                "• File size: $actualSize bytes\n" +
+                                "• Header: $fileSigHex\n" +
+                                "• URL: ${model.downloadUrl}"
+                    )
+                }
+
+                if (model.sha256.isNotBlank() && !ModelInstaller.verifyChecksum(tempFile, model.sha256)) {
+                    tempFile.delete()
+                    throw IllegalStateException(
+                        "Verification failed: SHA-256 mismatch for ${model.name}.\n" +
+                                "• Expected SHA-256: ${model.sha256}\n" +
+                                "• Actual SHA-256:   $actualSha256\n" +
+                                "• Expected size:    ${model.sizeBytes} bytes\n" +
+                                "• Actual size:      $actualSize bytes\n" +
+                                "• Detected format:  $detectedFormat ($fileSigHex)"
+                    )
+                }
+
+                // Stage 2.5: Atomically install main model binary immediately
+                val installed = ModelInstaller.installModelAtomically(tempFile, finalFile)
+                if (!installed) {
+                    tempFile.delete()
+                    throw IllegalStateException("Failed to atomically install model file to destination.")
+                }
             }
 
             // Stage 3: Installing auxiliary files (tokens, phoneme mappings, vocoder, etc.)
@@ -269,6 +290,15 @@ class ModelDownloader(private val context: Context) {
             for (aux in model.auxiliaryFiles) {
                 auxIndex++
                 val auxDestFile = ModelInstaller.getAuxiliaryFile(context, model, aux.fileName)
+                auxDestFile.parentFile?.mkdirs()
+
+                // Check if auxiliary file is already present and valid
+                if (auxDestFile.exists() && auxDestFile.length() > 0 &&
+                    (aux.sha256.isBlank() || ModelInstaller.verifyChecksum(auxDestFile, aux.sha256))) {
+                    Log.i(TAG, "Auxiliary component '${aux.fileName}' already present and verified. Skipping.")
+                    continue
+                }
+
                 val auxTemp = File(destDir, "${aux.fileName}.download")
                 try {
                     val auxName = aux.fileName
@@ -297,7 +327,6 @@ class ModelDownloader(private val context: Context) {
                     if (auxTemp.exists() && auxTemp.length() > 0) {
                         val auxSize = auxTemp.length()
                         val auxSha256 = ModelInstaller.calculateSha256(auxTemp)
-                        val auxGitBlob = ModelInstaller.calculateGitBlobHash(auxTemp)
                         val (auxFormat, auxSig) = ModelInstaller.detectFileFormat(auxTemp)
 
                         if (aux.sha256.isNotBlank() && !ModelInstaller.verifyChecksum(auxTemp, aux.sha256)) {
@@ -306,15 +335,16 @@ class ModelDownloader(private val context: Context) {
                                 "Verification failed for companion file '${aux.fileName}':\n" +
                                         "• Expected hash: ${aux.sha256}\n" +
                                         "• Actual SHA-256: $auxSha256\n" +
-                                        "• Actual Git blob: $auxGitBlob\n" +
                                         "• Expected size: ${aux.expectedSizeBytes} bytes\n" +
                                         "• Actual size: $auxSize bytes\n" +
                                         "• Format: $auxFormat ($auxSig)"
                             )
                         }
 
-                        auxTemp.copyTo(auxDestFile, overwrite = true)
-                        auxTemp.delete()
+                        if (!auxTemp.renameTo(auxDestFile)) {
+                            auxTemp.copyTo(auxDestFile, overwrite = true)
+                            auxTemp.delete()
+                        }
                     } else {
                         throw IllegalStateException("Failed to download companion file: ${aux.fileName}")
                     }
@@ -324,18 +354,11 @@ class ModelDownloader(private val context: Context) {
                 }
             }
 
-            // Stage 4: Atomic install
-            val installed = ModelInstaller.installModelAtomically(tempFile, finalFile)
-            if (!installed) {
-                tempFile.delete()
-                throw IllegalStateException("Failed to atomically install model file to destination.")
-            }
-
-            // Stage 5: Final offline verification (fast check, binary was already tested in stage 2)
+            // Stage 4: Final offline verification (fast check, verify all model files exist and readable)
             val verification = ModelInstaller.verifyModelOffline(context, model, deepCheck = false)
             if (!verification.isReadyForOfflineUse) {
-                finalFile.delete()
-                throw IllegalStateException("Offline verification failed: ${verification.failureReason}")
+                // Do not delete finalFile so progress is preserved
+                throw IllegalStateException("Verification failed: ${verification.failureReason}")
             }
 
             updateState(
@@ -353,7 +376,9 @@ class ModelDownloader(private val context: Context) {
             Result.success(finalFile)
         } catch (e: Exception) {
             Log.e(TAG, "Error downloading model ${model.name}", e)
-            if (tempFile.exists()) tempFile.delete()
+            if (tempFile.exists() && tempFile.absolutePath != finalFile.absolutePath) {
+                tempFile.delete()
+            }
             val errMsg = e.message ?: "Download failed"
             updateState(
                 DownloadProgress(

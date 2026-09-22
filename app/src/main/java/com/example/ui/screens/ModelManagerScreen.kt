@@ -401,7 +401,19 @@ fun ModelCard(
             }
 
             // Error or Incompatibility explanation
-            val failureReason = item.verification?.failureReason ?: item.downloadProgress?.errorMessage
+            val failureReason = when {
+                item.status == ModelStatus.ERROR && !item.downloadProgress?.errorMessage.isNullOrBlank() ->
+                    item.downloadProgress?.errorMessage
+                item.status == ModelStatus.ERROR && item.verification?.isFilePresent == true && !item.verification?.failureReason.isNullOrBlank() ->
+                    item.verification?.failureReason
+                item.status == ModelStatus.INCOMPATIBLE ->
+                    item.verification?.failureReason ?: "Model architecture or tensor format incompatible with this device runtime."
+                item.status == ModelStatus.SOURCE_UNAVAILABLE ->
+                    item.verification?.failureReason ?: "Model download source is unavailable."
+                item.status == ModelStatus.ERROR ->
+                    item.downloadProgress?.errorMessage ?: (if (item.verification?.isFilePresent == true) item.verification?.failureReason else null)
+                else -> null
+            }
             if (failureReason != null && !item.isReadyForOfflineUse && (item.status == ModelStatus.ERROR || item.status == ModelStatus.INCOMPATIBLE || item.status == ModelStatus.SOURCE_UNAVAILABLE)) {
                 Surface(
                     color = ErrorRed.copy(alpha = 0.1f),
