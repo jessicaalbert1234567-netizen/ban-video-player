@@ -206,9 +206,13 @@ class BanglaTtsEngine(
         }
 
         if (ortSession != null) {
-            synthesizeWithOnnx(cleanText, outputFile)
-            if (outputFile.exists() && outputFile.length() > 44) {
-                return@withContext outputFile
+            try {
+                synthesizeWithOnnx(cleanText, outputFile)
+                if (outputFile.exists() && outputFile.length() > 44) {
+                    return@withContext outputFile
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Piper ONNX synthesis failed, checking System TTS fallback: ${e.message}")
             }
         }
 
@@ -243,22 +247,16 @@ class BanglaTtsEngine(
         val inputsMap = mutableMapOf<String, OnnxTensor>()
 
         try {
-            // Map text graphemes/phonemes to integer IDs
-            val phonemeIds = mutableListOf<Long>()
-            phonemeIds.add(phonemeIdMap["^"] ?: 1L) // start token
-            for (ch in text) {
-                val s = ch.toString()
-                val id = phonemeIdMap[s] ?: phonemeIdMap[" "] ?: 3L
-                phonemeIds.add(id)
-                phonemeIds.add(phonemeIdMap["_"] ?: 0L) // padding / separator token
-            }
-            phonemeIds.add(phonemeIdMap["$"] ?: 2L) // end token
+            // Convert Bengali script into IPA phonemes, then map to Piper model token IDs
+            val ipaText = BanglaG2p.textToIpa(text)
+            Log.i(TAG, "G2P phonemized text: '$text' -> IPA: '$ipaText'")
 
-            val seqLen = phonemeIds.size.toLong()
+            val phonemeTokenIds = BanglaG2p.ipaToTokenIds(ipaText, phonemeIdMap)
+            val seqLen = phonemeTokenIds.size.toLong()
 
             // 1. Phonemes / text sequence
             val textInputName = inputNames.firstOrNull { it == "input" || it.contains("text") } ?: inputNames[0]
-            val inputTensor = OnnxTensor.createTensor(env, LongBuffer.wrap(phonemeIds.toLongArray()), longArrayOf(1, seqLen))
+            val inputTensor = OnnxTensor.createTensor(env, LongBuffer.wrap(phonemeTokenIds), longArrayOf(1, seqLen))
             inputsMap[textInputName] = inputTensor
 
             // 2. Lengths input
