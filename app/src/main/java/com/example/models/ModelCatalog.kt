@@ -199,7 +199,8 @@ object ModelCatalog {
         get() = listOf(
             ENGLISH_ASR,
             ENGLISH_TO_BANGLA_TRANSLATION,
-            BHASHINI_BANGLA_FEMALE_TTS
+            BHASHINI_BANGLA_FEMALE_TTS,
+            BHASHINI_BANGLA_MALE_TTS
         )
 
     val ALL_MODELS: List<ModelInfo>

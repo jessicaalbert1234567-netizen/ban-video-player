@@ -121,7 +121,7 @@ class ModelManager(private val context: Context) {
         val availableBytes = if (baseDir.exists()) baseDir.usableSpace else 0L
         val requiredBytes = updatedList
             .filter { !it.isReadyForOfflineUse }
-            .sumOf { it.info.sizeBytes }
+            .sumOf { it.info.sizeBytes + it.info.auxiliaryFiles.sumOf { aux -> aux.expectedSizeBytes } }
         _storageSummary.value = Pair(requiredBytes, availableBytes)
 
         Log.d(

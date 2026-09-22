@@ -52,7 +52,7 @@ class ModelDownloader(private val context: Context) {
         }
     }
 
-    private fun isNetworkAvailable(): Boolean {
+    fun isNetworkAvailable(): Boolean {
         val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return false
         val network = connectivityManager.activeNetwork ?: return false
         val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
@@ -264,27 +264,35 @@ class ModelDownloader(private val context: Context) {
                 throw IllegalStateException("ONNX model initialization failed: $err")
             }
 
-            // Stage 3: Installing auxiliary files (tokens, phoneme mappings, etc.)
-            updateState(
-                DownloadProgress(
-                    modelId = model.id,
-                    progressPercent = 98,
-                    status = ModelStatus.INSTALLING,
-                    verificationStatus = "Installing companion files..."
-                ),
-                onProgressUpdate
-            )
-
+            // Stage 3: Installing auxiliary files (tokens, phoneme mappings, vocoder, etc.)
+            var auxIndex = 0
             for (aux in model.auxiliaryFiles) {
+                auxIndex++
                 val auxDestFile = ModelInstaller.getAuxiliaryFile(context, model, aux.fileName)
                 val auxTemp = File(destDir, "${aux.fileName}.download")
                 try {
+                    val auxName = aux.fileName
+                    updateState(
+                        DownloadProgress(
+                            modelId = model.id,
+                            status = ModelStatus.DOWNLOADING,
+                            verificationStatus = "Downloading component ($auxIndex/${model.auxiliaryFiles.size}): $auxName..."
+                        ),
+                        onProgressUpdate
+                    )
                     downloadFileWithProgress(
                         url = aux.downloadUrl,
                         destinationTempFile = auxTemp,
                         expectedSizeBytes = aux.expectedSizeBytes,
                         modelId = model.id,
-                        onProgressUpdate = null
+                        onProgressUpdate = { progress ->
+                            updateState(
+                                progress.copy(
+                                    verificationStatus = "Downloading ($auxIndex/${model.auxiliaryFiles.size}) $auxName: ${progress.progressPercent}%"
+                                ),
+                                onProgressUpdate
+                            )
+                        }
                     )
                     if (auxTemp.exists() && auxTemp.length() > 0) {
                         val auxSize = auxTemp.length()

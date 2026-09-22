@@ -28,6 +28,7 @@ fun SettingsScreen(
 ) {
     val processingMode by viewModel.processingMode.collectAsState()
     val voiceGender by viewModel.voiceGender.collectAsState()
+    val modelsState by viewModel.modelsState.collectAsState()
     var storageBreakdown by remember { mutableStateOf(viewModel.getStorageBreakdown()) }
     var clearedBytesMsg by remember { mutableStateOf<String?>(null) }
 
@@ -73,6 +74,15 @@ fun SettingsScreen(
             }
 
             items(VoiceGender.entries) { gender ->
+                val targetModel = if (gender == VoiceGender.FEMALE) com.example.models.ModelCatalog.BHASHINI_BANGLA_FEMALE_TTS else com.example.models.ModelCatalog.BHASHINI_BANGLA_MALE_TTS
+                val modelItem = modelsState.firstOrNull { it.info.id == targetModel.id }
+                val isInstalled = modelItem?.isReadyForOfflineUse == true
+                val isDownloading = modelItem?.downloadProgress?.status == com.example.models.ModelStatus.DOWNLOADING ||
+                        modelItem?.downloadProgress?.status == com.example.models.ModelStatus.INSTALLING ||
+                        modelItem?.downloadProgress?.status == com.example.models.ModelStatus.VERIFYING
+                val progressPercent = modelItem?.downloadProgress?.progressPercent ?: 0
+                val progressStatus = modelItem?.downloadProgress?.verificationStatus
+
                 Card(
                     colors = CardDefaults.cardColors(
                         containerColor = if (voiceGender == gender) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f) else MaterialTheme.colorScheme.surface
@@ -80,28 +90,80 @@ fun SettingsScreen(
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(14.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        RadioButton(
-                            selected = voiceGender == gender,
-                            onClick = { viewModel.setVoiceGender(gender) },
-                            modifier = Modifier.testTag("voice_${gender.name}")
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Column {
-                            Text(
-                                text = gender.displayName,
-                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = voiceGender == gender,
+                                onClick = { viewModel.setVoiceGender(gender) },
+                                modifier = Modifier.testTag("voice_${gender.name}")
                             )
-                            Text(
-                                text = gender.description,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = gender.displayName,
+                                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                                )
+                                Text(
+                                    text = gender.description,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            if (isInstalled) {
+                                Surface(
+                                    color = SuccessGreen.copy(alpha = 0.15f),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text(
+                                        text = "✓ Ready",
+                                        color = SuccessGreen,
+                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        if (isDownloading) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            LinearProgressIndicator(
+                                progress = { progressPercent / 100f },
+                                modifier = Modifier.fillMaxWidth()
                             )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = progressStatus ?: "Downloading: $progressPercent%",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        } else if (!isInstalled) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Not downloaded (~123 MB)",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                OutlinedButton(
+                                    onClick = { viewModel.downloadModel(targetModel) },
+                                    modifier = Modifier.testTag("download_voice_${gender.name}")
+                                ) {
+                                    Icon(
+                                        Icons.Default.Download,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Download Voice", style = MaterialTheme.typography.labelMedium)
+                                }
+                            }
                         }
                     }
                 }

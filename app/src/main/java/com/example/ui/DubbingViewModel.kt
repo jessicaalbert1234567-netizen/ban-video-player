@@ -239,10 +239,27 @@ class DubbingViewModel(application: Application) : AndroidViewModel(application)
                         addTestLog("✓ Translation Stage Test Passed.")
                     }
                     "TTS" -> {
-                        addTestLog("Testing Bangla TTS engine...")
+                        addTestLog("Testing Bhashini Bangla Neural Voice TTS engine...")
+                        val isFemale = voiceGender.value == com.example.settings.VoiceGender.FEMALE
+                        val targetVoice = if (isFemale) com.example.models.ModelCatalog.BHASHINI_BANGLA_FEMALE_TTS else com.example.models.ModelCatalog.BHASHINI_BANGLA_MALE_TTS
+                        val isInstalled = com.example.models.ModelInstaller.isModelInstalled(app, targetVoice)
+                        if (!isInstalled) {
+                            addTestLog("Bhashini ${targetVoice.name} not on disk yet. Downloading on-device (~123 MB)...")
+                            val dlResult = modelManager.downloader.downloadAndInstall(targetVoice) { p ->
+                                if (p.progressPercent % 20 == 0 || p.progressPercent == 98) {
+                                    addTestLog("Progress: ${p.progressPercent}% - ${p.verificationStatus ?: ""}")
+                                }
+                            }
+                            if (dlResult.isSuccess) {
+                                addTestLog("✓ Bhashini model downloaded and verified successfully.")
+                                modelManager.refreshModelStatuses()
+                            } else {
+                                addTestLog("Notice: ${dlResult.exceptionOrNull()?.message}")
+                            }
+                        }
                         val tts = com.example.tts.BanglaTtsEngine(app)
                         val outWav = File(app.cacheDir, "test_bangla_tts.wav")
-                        tts.synthesize("স্বাগতম। কেমন আছেন?", outWav)
+                        tts.synthesize("স্বাগতম। কেমন আছেন? এটি অফলাইন বাংলা ডাবিং টেস্ট।", outWav)
                         addTestLog("TTS Generated file size: ${outWav.length()} bytes, duration: ${com.example.audio.WavUtils.getWavDurationMs(outWav)}ms")
                         addTestLog("✓ Bangla TTS Stage Test Passed.")
                     }

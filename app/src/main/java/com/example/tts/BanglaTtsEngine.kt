@@ -239,7 +239,23 @@ class BanglaTtsEngine(
 
         val isFemale = settingsManager.voiceGender.value == com.example.settings.VoiceGender.FEMALE
 
-        // 1. Prioritize Bhashini FastSpeech2-HS + HiFi-GAN ONNX model for state-of-the-art natural Indic voice
+        val selectedBhashiniModel = if (isFemale) ModelCatalog.BHASHINI_BANGLA_FEMALE_TTS else ModelCatalog.BHASHINI_BANGLA_MALE_TTS
+
+        // 1. Check if chosen Bhashini model is ready, or attempt download if connected to internet
+        if (!bhashiniEngine.isModelReady(isFemale)) {
+            val downloader = com.example.models.ModelDownloader(context)
+            if (downloader.isNetworkAvailable()) {
+                Log.i(TAG, "Bhashini ${selectedBhashiniModel.name} not on disk, downloading on-demand...")
+                val dlResult = downloader.downloadAndInstall(selectedBhashiniModel)
+                if (dlResult.isSuccess) {
+                    Log.i(TAG, "Bhashini ${selectedBhashiniModel.name} downloaded successfully on-demand.")
+                } else {
+                    Log.w(TAG, "On-demand Bhashini download notice: ${dlResult.exceptionOrNull()?.message}")
+                }
+            }
+        }
+
+        // Prioritize Bhashini FastSpeech2-HS + HiFi-GAN ONNX model for state-of-the-art natural Indic voice
         if (bhashiniEngine.isModelReady(isFemale) || bhashiniEngine.isModelReady(!isFemale)) {
             val targetGender = if (bhashiniEngine.isModelReady(isFemale)) isFemale else !isFemale
             try {
@@ -294,9 +310,8 @@ class BanglaTtsEngine(
             }
         }
 
-        val model = ModelCatalog.BANGLA_VOICE_TTS
-        val verification = ModelInstaller.verifyModelOffline(context, model)
-        throw IllegalStateException("Bangla TTS synthesis failed: Model not installed or verified (${verification.failureReason ?: "ONNX session uninitialized"}).")
+        val verification = ModelInstaller.verifyModelOffline(context, selectedBhashiniModel)
+        throw IllegalStateException("Bangla TTS voice synthesis requires ${selectedBhashiniModel.name}: ${verification.failureReason ?: "Model not ready. Tap 'Download' in Settings or Model Manager."}")
     }
 
     private fun synthesizeWithOnnx(text: String, outputFile: File) {

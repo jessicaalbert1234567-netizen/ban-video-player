@@ -387,9 +387,9 @@ object ModelInstaller {
 
         if (!file.exists()) {
             val failureMsg = if (model.type == ModelType.TRANSLATION) {
-                "English → Bangla translation model is not installed."
+                "English → Bangla translation model is not downloaded. It will be downloaded automatically upon first use."
             } else {
-                "Model file not found on disk."
+                "Model is not downloaded yet. Tap 'Download' to install for offline use."
             }
             return ModelVerificationResult(
                 modelId = model.id,
@@ -511,7 +511,7 @@ object ModelInstaller {
                         "Translation tokenizer files are missing."
                     }
                 } else {
-                    "Required companion file(s) missing: ${missingAux.joinToString()}"
+                    "Required companion file(s) not installed: ${missingAux.joinToString()}. Tap 'Download' to install."
                 }
                 return ModelVerificationResult(
                     modelId = model.id,
