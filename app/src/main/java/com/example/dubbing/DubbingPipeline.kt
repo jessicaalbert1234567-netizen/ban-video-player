@@ -199,13 +199,24 @@ class DubbingPipeline(
                 checkCancelled()
                 reportStage(projectId, ProcessingStage.GENERATE_TTS, 0, 65, "Preparing Bangla AI Voice Synthesis...", onProgressUpdate)
 
-                val isFemale = settingsManager.voiceGender.value == com.example.settings.VoiceGender.FEMALE
-                val targetVoiceModel = if (isFemale) com.example.models.ModelCatalog.BHASHINI_BANGLA_FEMALE_TTS else com.example.models.ModelCatalog.BHASHINI_BANGLA_MALE_TTS
-                val isVoiceInstalled = com.example.models.ModelInstaller.isModelInstalled(context, targetVoiceModel)
+                val preferredFemale = settingsManager.voiceGender.value == com.example.settings.VoiceGender.FEMALE
+                val isFemaleInstalled = com.example.models.ModelInstaller.isModelInstalled(context, com.example.models.ModelCatalog.BHASHINI_BANGLA_FEMALE_TTS)
+                val isMaleInstalled = com.example.models.ModelInstaller.isModelInstalled(context, com.example.models.ModelCatalog.BHASHINI_BANGLA_MALE_TTS)
+
+                val effectiveFemale = when {
+                    preferredFemale && isFemaleInstalled -> true
+                    !preferredFemale && isMaleInstalled -> false
+                    isFemaleInstalled -> true
+                    isMaleInstalled -> false
+                    else -> preferredFemale
+                }
+
+                val targetVoiceModel = if (effectiveFemale) com.example.models.ModelCatalog.BHASHINI_BANGLA_FEMALE_TTS else com.example.models.ModelCatalog.BHASHINI_BANGLA_MALE_TTS
+                val isVoiceInstalled = isFemaleInstalled || isMaleInstalled
                 if (!isVoiceInstalled) {
                     val downloader = com.example.models.ModelDownloader(context)
                     if (downloader.isNetworkAvailable()) {
-                        reportStage(projectId, ProcessingStage.GENERATE_TTS, 5, 66, "Downloading Bhashini ${if (isFemale) "Female" else "Male"} voice model (~123 MB)...", onProgressUpdate)
+                        reportStage(projectId, ProcessingStage.GENERATE_TTS, 5, 66, "Downloading Bhashini ${if (effectiveFemale) "Female" else "Male"} voice model...", onProgressUpdate)
                         downloader.downloadAndInstall(targetVoiceModel) { prog ->
                             val p = (prog.progressPercent * 0.15f).toInt()
                             reportStageSync(
@@ -229,7 +240,13 @@ class DubbingPipeline(
                     val textToSpeak = seg.translatedText ?: seg.sourceText
                     val segAudioFile = File(segmentsDir, "tts_seg_${seg.index}.wav")
 
-                    ttsEngine.synthesize(textToSpeak, segAudioFile)
+                    try {
+                        ttsEngine.synthesize(textToSpeak, segAudioFile)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Segment ${seg.index} voice synthesis exception: ${e.message}, falling back to duration-padded audio")
+                        val fallbackDurationMs = (seg.endMs - seg.startMs).coerceAtLeast(300L)
+                        com.example.audio.WavUtils.createSilenceWav(segAudioFile, fallbackDurationMs)
+                    }
                     ttsSegments.add(seg.copy(audioSegmentPath = segAudioFile.absolutePath))
 
                     val stageProg = ((i + 1).toFloat() / segments.size)

@@ -48,6 +48,8 @@ object ModelInstaller {
         } else if (model.type == ModelType.TTS) {
             val alternatives = listOf(
                 model.archiveName,
+                "bengali_encoder_female.onnx",
+                "en_encoder_male.onnx",
                 "bengali_encoder_female_int8.onnx",
                 "en_encoder_male_int8.onnx",
                 "encoder.onnx",

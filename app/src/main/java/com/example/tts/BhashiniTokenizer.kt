@@ -122,11 +122,15 @@ object BhashiniTokenizer {
 
                 when {
                     c == ',' -> {
-                        tokens.add(BhashiniConstants.TOKEN_COMMA_ID)
+                        if (tokens.lastOrNull() != BhashiniConstants.TOKEN_COMMA_ID) {
+                            tokens.add(BhashiniConstants.TOKEN_COMMA_ID)
+                        }
                         i++
                     }
                     c == '.' || c == '।' || c == '!' || c == '?' -> {
-                        tokens.add(BhashiniConstants.TOKEN_END_ID)
+                        if (tokens.lastOrNull() != BhashiniConstants.TOKEN_END_ID) {
+                            tokens.add(BhashiniConstants.TOKEN_END_ID)
+                        }
                         i++
                     }
                     CONSONANTS.contains(c) -> {
@@ -179,7 +183,9 @@ object BhashiniTokenizer {
             }
         }
 
-        tokens.add(BhashiniConstants.TOKEN_END_ID) // "." suffix
+        if (tokens.lastOrNull() != BhashiniConstants.TOKEN_END_ID) {
+            tokens.add(BhashiniConstants.TOKEN_END_ID) // "." suffix
+        }
         return tokens.toLongArray()
     }
 

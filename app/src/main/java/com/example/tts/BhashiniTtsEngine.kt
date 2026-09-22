@@ -55,13 +55,13 @@ class BhashiniTtsEngine(
             closeSessionsInternal()
 
             val dir = ModelInstaller.getModelDirectory(context, targetModel)
-            val encFileName = if (isFemale) "bengali_encoder_female_int8.onnx" else "en_encoder_male_int8.onnx"
-            val decFileName = if (isFemale) "bengali_decoder_female_int8.onnx" else "en_decoder_male_int8.onnx"
-            val vocFileName = if (isFemale) "hifigan_female_int8.onnx" else "hifigan_male_int8.onnx"
+            val encFileName = if (isFemale) "bengali_encoder_female.onnx" else "en_encoder_male.onnx"
+            val decFileName = if (isFemale) "bengali_decoder_female.onnx" else "en_decoder_male.onnx"
+            val vocFileName = if (isFemale) "hifigan_female.onnx" else "hifigan_male.onnx"
 
-            val encFile = File(dir, encFileName)
-            val decFile = File(dir, decFileName)
-            val vocFile = File(dir, vocFileName)
+            val encFile = File(dir, encFileName).let { if (it.exists() && it.length() > 0) it else File(dir, if (isFemale) "bengali_encoder_female_int8.onnx" else "en_encoder_male_int8.onnx") }
+            val decFile = File(dir, decFileName).let { if (it.exists() && it.length() > 0) it else File(dir, if (isFemale) "bengali_decoder_female_int8.onnx" else "en_decoder_male_int8.onnx") }
+            val vocFile = File(dir, vocFileName).let { if (it.exists() && it.length() > 0) it else File(dir, if (isFemale) "hifigan_female_int8.onnx" else "hifigan_male_int8.onnx") }
 
             if (!encFile.exists() || !decFile.exists() || !vocFile.exists()) {
                 throw IllegalStateException("Bhashini ONNX model files missing in ${dir.absolutePath} (needed: $encFileName, $decFileName, $vocFileName)")
@@ -216,7 +216,11 @@ class BhashiniTtsEngine(
                     val abs = Math.abs(s)
                     if (abs > maxVal) maxVal = abs
                 }
-                val scale = if (maxVal > 1e-4f) 32760.0f / maxVal else 32760.0f
+                val scale = if (maxVal > 0.05f) {
+                    (28000.0f / maxVal).coerceIn(12000.0f, 32000.0f)
+                } else {
+                    28000.0f
+                }
 
                 val pcmBuffer = ByteBuffer.allocate(numSamples * 2).order(ByteOrder.LITTLE_ENDIAN)
                 for (s in floatSamples) {

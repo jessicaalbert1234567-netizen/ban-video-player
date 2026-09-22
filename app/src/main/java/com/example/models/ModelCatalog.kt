@@ -83,18 +83,18 @@ object ModelCatalog {
     val BHASHINI_BANGLA_FEMALE_TTS = ModelInfo(
         id = "bhashini_bn_female",
         name = "Bhashini Bangla Voice (Female - ONNX)",
-        version = "1.0.0",
+        version = "1.1.0",
         sourceLanguage = "bn",
         targetLanguage = null,
         type = ModelType.TTS,
-        // Real Bhashini FastSpeech2-HS + HiFi-GAN INT8 quantized ONNX models
-        downloadUrl = "https://media.githubusercontent.com/media/Henil21/Bhashini-TTS/main/Bengali/Bengali_Female/bengali_encoder_female_int8.onnx",
-        sizeBytes = 34_344_652L, // ~34.3 MB Encoder
-        sha256 = "b2851a5be44a338381a999853b9862551cc82a3a32d961bed8c9eb54c6af838b",
+        // High-fidelity Bhashini FastSpeech2-HS + HiFi-GAN ONNX models
+        downloadUrl = "https://media.githubusercontent.com/media/Henil21/Bhashini-TTS/main/Bengali/Bengali_Female/bengali_encoder_female.onnx",
+        sizeBytes = 85_162_896L, // ~85.2 MB Encoder
+        sha256 = "39f65c0ecac51a4efefa87cc709c764fa8254ada1001183b7a1273ff1f332c53",
         format = ModelFormat.ONNX,
-        archiveName = "bengali_encoder_female_int8.onnx",
+        archiveName = "bengali_encoder_female.onnx",
         minimumRamMb = 384,
-        minimumStorageMb = 200,
+        minimumStorageMb = 250,
         onnxMetadata = OnnxMetadata(
             inputTensorName = "text_ids",
             outputTensorName = "waveform",
@@ -104,21 +104,21 @@ object ModelCatalog {
             vocabFileName = "config.yaml",
             decoderType = "BHASHINI_FS2_HIFIGAN"
         ),
-        description = "Bhashini IIT-Madras FastSpeech2-HS + HiFi-GAN INT8 quantized ONNX model for sweet and natural Bengali female voice synthesis.",
+        description = "Bhashini IIT-Madras FastSpeech2-HS + HiFi-GAN ONNX neural model for sweet, clear, and natural Bengali female voice synthesis.",
         licenseSource = "Bhashini / IIT Madras (MIT)",
         runtimeRequirements = "ONNX Runtime Mobile (FastSpeech2-HS Encoder, Decoder + HiFi-GAN 22050Hz)",
         auxiliaryFiles = listOf(
             ModelAuxiliaryFile(
-                fileName = "bengali_decoder_female_int8.onnx",
-                downloadUrl = "https://media.githubusercontent.com/media/Henil21/Bhashini-TTS/main/Bengali/Bengali_Female/bengali_decoder_female_int8.onnx",
-                expectedSizeBytes = 32_795_942L,
-                sha256 = "3e8de190b469041c5f446a155d43031f835a61567c8ce6930052e98ff4d9e01d"
+                fileName = "bengali_decoder_female.onnx",
+                downloadUrl = "https://media.githubusercontent.com/media/Henil21/Bhashini-TTS/main/Bengali/Bengali_Female/bengali_decoder_female.onnx",
+                expectedSizeBytes = 78_776_078L,
+                sha256 = "c03733606fe0697e964e1f29eb963fa607667f8437bcef2157a09236ce452654"
             ),
             ModelAuxiliaryFile(
-                fileName = "hifigan_female_int8.onnx",
-                downloadUrl = "https://media.githubusercontent.com/media/Henil21/Bhashini-TTS/main/Bengali/Bengali_Female/hifigan_female_int8.onnx",
-                expectedSizeBytes = 55_747_307L,
-                sha256 = "22882645e7b8f2523e7a3a73df54b0883143444910120615bd4d4e74c8531afb"
+                fileName = "hifigan_female.onnx",
+                downloadUrl = "https://media.githubusercontent.com/media/Henil21/Bhashini-TTS/main/Bengali/Bengali_Female/hifigan_female.onnx",
+                expectedSizeBytes = 55_736_915L,
+                sha256 = "77807e3cc42da7ecd5a98293f552148350faa430acec669cb5c1af100a72d4db"
             ),
             ModelAuxiliaryFile(
                 fileName = "feats_stats.npz",
@@ -139,18 +139,18 @@ object ModelCatalog {
     val BHASHINI_BANGLA_MALE_TTS = ModelInfo(
         id = "bhashini_bn_male",
         name = "Bhashini Bangla Voice (Male - ONNX)",
-        version = "1.0.0",
+        version = "1.1.0",
         sourceLanguage = "bn",
         targetLanguage = null,
         type = ModelType.TTS,
-        // Real Bhashini FastSpeech2-HS + HiFi-GAN INT8 quantized ONNX models
-        downloadUrl = "https://media.githubusercontent.com/media/Henil21/Bhashini-TTS/main/Bengali/Bengali_Male/en_encoder_male_int8.onnx",
-        sizeBytes = 34_344_652L, // ~34.3 MB Encoder
-        sha256 = "a42aa0887213118ce9871a8568ce26c6b90c523f627edb915b29957217aef948",
+        // High-fidelity Bhashini FastSpeech2-HS + HiFi-GAN ONNX models
+        downloadUrl = "https://media.githubusercontent.com/media/Henil21/Bhashini-TTS/main/Bengali/Bengali_Male/en_encoder_male.onnx",
+        sizeBytes = 85_162_896L, // ~85.2 MB Encoder
+        sha256 = "00c43018bc84d667516a1dc009e7f9da0f4e36d423b901103691678719d8404f",
         format = ModelFormat.ONNX,
-        archiveName = "en_encoder_male_int8.onnx",
+        archiveName = "en_encoder_male.onnx",
         minimumRamMb = 384,
-        minimumStorageMb = 200,
+        minimumStorageMb = 250,
         onnxMetadata = OnnxMetadata(
             inputTensorName = "text_ids",
             outputTensorName = "waveform",
@@ -160,21 +160,21 @@ object ModelCatalog {
             vocabFileName = "config.yaml",
             decoderType = "BHASHINI_FS2_HIFIGAN"
         ),
-        description = "Bhashini IIT-Madras FastSpeech2-HS + HiFi-GAN INT8 quantized ONNX model for deep and natural Bengali male voice synthesis.",
+        description = "Bhashini IIT-Madras FastSpeech2-HS + HiFi-GAN ONNX neural model for deep, articulate, and natural Bengali male voice synthesis.",
         licenseSource = "Bhashini / IIT Madras (MIT)",
         runtimeRequirements = "ONNX Runtime Mobile (FastSpeech2-HS Encoder, Decoder + HiFi-GAN 22050Hz)",
         auxiliaryFiles = listOf(
             ModelAuxiliaryFile(
-                fileName = "en_decoder_male_int8.onnx",
-                downloadUrl = "https://media.githubusercontent.com/media/Henil21/Bhashini-TTS/main/Bengali/Bengali_Male/en_decoder_male_int8.onnx",
-                expectedSizeBytes = 32_795_942L,
-                sha256 = "9ebc5ba592acb93e66e1dffb50a27a56822be850240c12c9e3e9ee1d94336cd9"
+                fileName = "en_decoder_male.onnx",
+                downloadUrl = "https://media.githubusercontent.com/media/Henil21/Bhashini-TTS/main/Bengali/Bengali_Male/en_decoder_male.onnx",
+                expectedSizeBytes = 78_776_078L,
+                sha256 = "57006994c0acbb46af71b49e9be55df15c76a5e4dacac687c6e243fbb454a56a"
             ),
             ModelAuxiliaryFile(
-                fileName = "hifigan_male_int8.onnx",
-                downloadUrl = "https://media.githubusercontent.com/media/Henil21/Bhashini-TTS/main/Bengali/Bengali_Male/hifigan_male_int8.onnx",
-                expectedSizeBytes = 55_747_307L,
-                sha256 = "dd65a0b9fbd0432a6e0c9cab36c308f61410914fc35d73b683c77cedd6b9195b"
+                fileName = "hifigan_male.onnx",
+                downloadUrl = "https://media.githubusercontent.com/media/Henil21/Bhashini-TTS/main/Bengali/Bengali_Male/hifigan_male.onnx",
+                expectedSizeBytes = 55_736_915L,
+                sha256 = "c7317dffc2fb2be2c06b6e4eb72c3aeb936c58318151f157700285c746145ea8"
             ),
             ModelAuxiliaryFile(
                 fileName = "feats_stats.npz",
