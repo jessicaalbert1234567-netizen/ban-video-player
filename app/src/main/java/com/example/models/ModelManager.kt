@@ -76,7 +76,7 @@ class ModelManager(private val context: Context) {
         val threadName = Thread.currentThread().name
         Log.d(TAG, "Refreshing model statuses (deepCheck=$forceDeepCheck) on thread '$threadName'")
 
-        val updatedList = ModelCatalog.REQUIRED_MODELS.map { model ->
+        val updatedList = ModelCatalog.ALL_MODELS.map { model ->
             val verification = if (forceDeepCheck || !verificationCache.containsKey(model.id)) {
                 val v = ModelInstaller.verifyModelOffline(context, model, deepCheck = forceDeepCheck)
                 verificationCache[model.id] = v
@@ -113,7 +113,8 @@ class ModelManager(private val context: Context) {
         }
 
         _modelsState.value = updatedList
-        _isAllRequiredReady.value = updatedList.all { it.isReadyForOfflineUse }
+        val requiredIds = ModelCatalog.REQUIRED_MODELS.map { it.id }.toSet()
+        _isAllRequiredReady.value = updatedList.filter { it.info.id in requiredIds }.all { it.isReadyForOfflineUse }
 
         // Update cached storage summary asynchronously
         val baseDir = File(context.filesDir, "models")

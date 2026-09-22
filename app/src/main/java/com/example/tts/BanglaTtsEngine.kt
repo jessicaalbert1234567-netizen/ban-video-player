@@ -46,6 +46,9 @@ class BanglaTtsEngine(
     private val stateLock = Any()
     @Volatile private var loadState = EngineState.NOT_LOADED
 
+    private val bhashiniEngine = BhashiniTtsEngine(context)
+    private val settingsManager = com.example.settings.SettingsManager(context)
+
     private var ortEnv: OrtEnvironment? = null
     private var ortSession: OrtSession? = null
     private var activeModelFile: File? = null
@@ -65,21 +68,45 @@ class BanglaTtsEngine(
     }
 
     fun verifyTtsFiles(): Boolean {
+        val isFemale = settingsManager.voiceGender.value == com.example.settings.VoiceGender.FEMALE
+        if (bhashiniEngine.isModelReady(isFemale)) return true
+        if (bhashiniEngine.isModelReady(!isFemale)) return true
         val model = ModelCatalog.BANGLA_VOICE_TTS
-        return ModelInstaller.isModelInstalled(context, model)
+        if (ModelInstaller.isModelInstalled(context, model)) return true
+        return isBanglaSupportedInSystem
     }
 
     suspend fun loadTtsIntoMemory() = withContext(Dispatchers.IO) {
         synchronized(stateLock) {
-            if (loadState == EngineState.LOADED && ortSession != null) return@withContext
+            if (loadState == EngineState.LOADED) return@withContext
             if (loadState == EngineState.LOADING) return@withContext
             loadState = EngineState.LOADING
+        }
+
+        val isFemale = settingsManager.voiceGender.value == com.example.settings.VoiceGender.FEMALE
+
+        // Try loading Bhashini FastSpeech2 + HiFi-GAN ONNX first
+        if (bhashiniEngine.isModelReady(isFemale) || bhashiniEngine.isModelReady(!isFemale)) {
+            val targetGender = if (bhashiniEngine.isModelReady(isFemale)) isFemale else !isFemale
+            try {
+                bhashiniEngine.loadModel(targetGender)
+                synchronized(stateLock) { loadState = EngineState.LOADED }
+                Log.i(TAG, "Bhashini TTS model loaded into memory (Gender=${if (targetGender) "Female" else "Male"})")
+                return@withContext
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to load Bhashini model into memory: ${e.message}")
+            }
         }
 
         val model = ModelCatalog.BANGLA_VOICE_TTS
         val modelFile = ModelInstaller.getInstalledModelFile(context, model)
 
         if (!modelFile.exists() || modelFile.length() <= 0L) {
+            if (isBanglaSupportedInSystem) {
+                synchronized(stateLock) { loadState = EngineState.LOADED }
+                Log.i(TAG, "Using Google System Bangla TTS (models pending download)")
+                return@withContext
+            }
             synchronized(stateLock) { loadState = EngineState.FAILED }
             throw IllegalStateException("Bangla TTS model file is missing on disk: ${modelFile.absolutePath}")
         }
@@ -96,9 +123,9 @@ class BanglaTtsEngine(
                 activeModelFile = modelFile
 
                 // Load config JSON if available
-                val configFile = ModelInstaller.getAuxiliaryFile(context, model, "bn_BD-google-medium.onnx.json")
+                val configFile = ModelInstaller.getAuxiliaryFile(context, model, "config.yaml")
                 if (configFile.exists() && configFile.length() > 0) {
-                    loadConfigJson(configFile)
+                    // Config present
                 }
 
                 Log.d(TAG, "Bangla TTS ONNX session initialized successfully on '${Thread.currentThread().name}'. Inputs: ${session.inputNames}, Outputs: ${session.outputNames}")
@@ -106,9 +133,10 @@ class BanglaTtsEngine(
             synchronized(stateLock) { loadState = EngineState.LOADED }
         } catch (e: Exception) {
             synchronized(stateLock) { loadState = EngineState.FAILED }
-            close()
             Log.e(TAG, "Bangla TTS ONNX session creation failed on '${Thread.currentThread().name}': ${e.message}", e)
-            throw e
+            if (!isBanglaSupportedInSystem) {
+                throw e
+            }
         }
     }
 
@@ -209,6 +237,22 @@ class BanglaTtsEngine(
             return@withContext outputFile
         }
 
+        val isFemale = settingsManager.voiceGender.value == com.example.settings.VoiceGender.FEMALE
+
+        // 1. Prioritize Bhashini FastSpeech2-HS + HiFi-GAN ONNX model for state-of-the-art natural Indic voice
+        if (bhashiniEngine.isModelReady(isFemale) || bhashiniEngine.isModelReady(!isFemale)) {
+            val targetGender = if (bhashiniEngine.isModelReady(isFemale)) isFemale else !isFemale
+            try {
+                val bhashiniSuccess = bhashiniEngine.synthesize(cleanText, outputFile, isFemale = targetGender)
+                if (bhashiniSuccess && outputFile.exists() && outputFile.length() > 44) {
+                    Log.i(TAG, "Synthesized natural Bengali speech using Bhashini ONNX (Gender=${if (targetGender) "Female" else "Male"}): '${cleanText.take(20)}...'")
+                    return@withContext outputFile
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Bhashini ONNX synthesis failed, falling back: ${e.message}")
+            }
+        }
+
         // Await asynchronous System TTS initialization (up to 1200ms)
         if (!isTtsInitialized) {
             try {
@@ -216,12 +260,12 @@ class BanglaTtsEngine(
             } catch (ignored: Exception) {}
         }
 
-        // 1. Natural Google System TTS: If available on device, prioritizes studio-grade neural voice
+        // 2. Natural Google System TTS: Studio-grade neural voice with natural pacing & pitch modulation
         if (isTtsInitialized && isBanglaSupportedInSystem && androidTts != null) {
             try {
-                val systemSuccess = synthesizeWithSystemTts(cleanText, outputFile)
+                val systemSuccess = synthesizeWithSystemTts(cleanText, outputFile, isFemale)
                 if (systemSuccess && outputFile.exists() && outputFile.length() > 44) {
-                    Log.i(TAG, "Synthesized human-like speech using Google System TTS: '${cleanText.take(20)}...'")
+                    Log.i(TAG, "Synthesized natural speech using Google System TTS: '${cleanText.take(20)}...'")
                     return@withContext outputFile
                 }
             } catch (e: Exception) {
@@ -229,7 +273,7 @@ class BanglaTtsEngine(
             }
         }
 
-        // 2. Piper VITS Neural TTS Engine with phoneme modeling & schwa deletion
+        // 3. Piper VITS Neural TTS Engine fallback
         if (ortSession == null) {
             try {
                 loadTtsIntoMemory()
@@ -405,10 +449,40 @@ class BanglaTtsEngine(
         }
     }
 
-    private suspend fun synthesizeWithSystemTts(text: String, outputFile: File): Boolean =
+    private suspend fun synthesizeWithSystemTts(text: String, outputFile: File, isFemale: Boolean): Boolean =
         suspendCancellableCoroutine { continuation ->
             val utteranceId = UUID.randomUUID().toString()
             val tempWav = File(context.cacheDir, "temp_tts_${utteranceId}.wav")
+
+            // Adjust prosody parameters for natural conversational Bangla
+            try {
+                if (isFemale) {
+                    androidTts?.setPitch(1.05f) // Natural clear female pitch
+                    androidTts?.setSpeechRate(0.95f) // Conversational human pace
+                } else {
+                    androidTts?.setPitch(0.90f) // Natural deep male pitch
+                    androidTts?.setSpeechRate(0.95f)
+                }
+
+                // Attempt to pick matching gender voice if system exposes it
+                val voices = androidTts?.voices
+                if (voices != null) {
+                    val banglaVoices = voices.filter { it.locale.language == "bn" }
+                    val targetVoice = banglaVoices.firstOrNull { voice ->
+                        if (isFemale) {
+                            voice.name.contains("female", ignoreCase = true) ||
+                            voice.name.contains("f0", ignoreCase = true)
+                        } else {
+                            voice.name.contains("male", ignoreCase = true) ||
+                            voice.name.contains("m0", ignoreCase = true)
+                        }
+                    } ?: banglaVoices.firstOrNull()
+
+                    if (targetVoice != null) {
+                        androidTts?.voice = targetVoice
+                    }
+                }
+            } catch (_: Exception) {}
 
             val listener = object : UtteranceProgressListener() {
                 override fun onStart(uttId: String?) {}
@@ -442,6 +516,7 @@ class BanglaTtsEngine(
 
     override fun close() {
         try {
+            bhashiniEngine.close()
             ortSession?.close()
             ortEnv?.close()
             ortSession = null

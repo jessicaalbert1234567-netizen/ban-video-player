@@ -48,6 +48,11 @@ class DubbingViewModel(application: Application) : AndroidViewModel(application)
     val pipelineState: StateFlow<PipelineProgress?> = pipeline.pipelineState
     val playerState: StateFlow<PlayerState> = playerManager.playerState
     val processingMode: StateFlow<ProcessingMode> = settingsManager.processingMode
+    val voiceGender: StateFlow<com.example.settings.VoiceGender> = settingsManager.voiceGender
+
+    fun setVoiceGender(gender: com.example.settings.VoiceGender) {
+        settingsManager.setVoiceGender(gender)
+    }
 
     // Active project state
     private val _selectedProject = MutableStateFlow<DubbingProject?>(null)

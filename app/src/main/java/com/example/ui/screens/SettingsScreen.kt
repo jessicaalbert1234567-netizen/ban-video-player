@@ -16,6 +16,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.settings.ProcessingMode
+import com.example.settings.VoiceGender
 import com.example.ui.DubbingViewModel
 import com.example.ui.theme.SuccessGreen
 
@@ -26,6 +27,7 @@ fun SettingsScreen(
     onNavigateBack: () -> Unit
 ) {
     val processingMode by viewModel.processingMode.collectAsState()
+    val voiceGender by viewModel.voiceGender.collectAsState()
     var storageBreakdown by remember { mutableStateOf(viewModel.getStorageBreakdown()) }
     var clearedBytesMsg by remember { mutableStateOf<String?>(null) }
 
@@ -57,8 +59,57 @@ fun SettingsScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp),
             contentPadding = PaddingValues(vertical = 12.dp)
         ) {
+            // Bangla Dubbing Voice Section
+            item {
+                Text(
+                    text = "Bangla Dubbing Voice (ভয়েস নির্বাচন)",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                )
+                Text(
+                    text = "Select Bhashini neural voice for natural pronunciation",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            items(VoiceGender.entries) { gender ->
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (voiceGender == gender) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f) else MaterialTheme.colorScheme.surface
+                    ),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(
+                            selected = voiceGender == gender,
+                            onClick = { viewModel.setVoiceGender(gender) },
+                            modifier = Modifier.testTag("voice_${gender.name}")
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Column {
+                            Text(
+                                text = gender.displayName,
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                            )
+                            Text(
+                                text = gender.description,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+
             // Processing Mode Section
             item {
+                Spacer(modifier = Modifier.height(8.dp))
                 Text(
                     text = "Processing Mode (RAM & Speed)",
                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
