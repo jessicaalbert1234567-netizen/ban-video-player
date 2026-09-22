@@ -3,9 +3,10 @@ package com.example.tts
 import android.util.Log
 
 /**
- * Bengali Grapheme-to-Phoneme (G2P) converter for Piper VITS TTS.
- * Maps Bengali Unicode text into International Phonetic Alphabet (IPA) tokens
- * expected by Piper's Bengali voice models (e.g. bn_BD-google-medium).
+ * High-accuracy Bengali Grapheme-to-Phoneme (G2P) converter.
+ * Converts Bengali Unicode text into authentic International Phonetic Alphabet (IPA) tokens
+ * adhering to modern Bengali phonology and schwa-deletion rules (অ-কার বিলোপ),
+ * producing natural, fluent human-like articulation in Piper VITS and neural engines.
  */
 object BanglaG2p {
 
@@ -42,7 +43,7 @@ object BanglaG2p {
         'ল' to "l",
         'শ' to "ʃ",
         'ষ' to "ʃ",
-        'স' to "s",
+        'স' to "ʃ",
         'হ' to "h",
         'ড়' to "ɽ",
         'ঢ়' to "ɽʰ",
@@ -83,7 +84,7 @@ object BanglaG2p {
     )
 
     /**
-     * Converts raw Bengali Unicode text into an IPA phoneme string.
+     * Converts raw Bengali Unicode text into natural IPA phonemes with Bengali schwa deletion.
      */
     fun textToIpa(text: String): String {
         val sb = StringBuilder()
@@ -94,14 +95,14 @@ object BanglaG2p {
         while (i < n) {
             val c = chars[i]
 
-            // Space
+            // Whitespace
             if (c == ' ' || c == '\t' || c == '\n') {
                 sb.append(' ')
                 i++
                 continue
             }
 
-            // Bengali sentence terminators
+            // Bengali sentence punctuation
             if (c == '।' || c == '॥') {
                 sb.append('.')
                 i++
@@ -136,34 +137,64 @@ object BanglaG2p {
 
                 sb.append(CONSONANTS[c])
 
-                // Examine next character to decide on inherent vowel or suppression
+                // Phonological context for inherent vowel and schwa deletion:
                 if (i + 1 < n) {
                     val nxt = chars[i + 1]
                     if (nxt == '্') {
-                        // Hasanta / Virama suppresses the inherent vowel
+                        // Virama suppresses inherent vowel completely
                         // Check for ya-phala (্ + য) -> æ
                         if (i + 2 < n && chars[i + 2] == 'য') {
                             sb.append("æ")
                             i += 3
                             continue
+                        } else if (i + 2 < n && chars[i + 2] == 'র') {
+                            // ra-phala (্ + র) -> r
+                            sb.append("r")
+                            i += 3
+                            if (i < n && MATRAS.containsKey(chars[i])) {
+                                sb.append(MATRAS[chars[i]])
+                                i++
+                            } else {
+                                sb.append("ɔ")
+                            }
+                            continue
                         }
                         i += 2
                         continue
                     } else if (MATRAS.containsKey(nxt)) {
-                        // Attached vowel sign replaces inherent vowel
+                        // Vowel sign directly provides syllable nucleus
                         sb.append(MATRAS[nxt])
                         i += 2
                         continue
                     } else if (VOWELS.containsKey(nxt) || nxt == ' ') {
+                        // Vowel or word boundary: word-final consonant has NO schwa
                         i++
                         continue
                     } else if (CONSONANTS.containsKey(nxt)) {
-                        // Inherent vowel 'ɔ' between consonants
-                        sb.append("ɔ")
+                        // Consonant followed by consonant: Apply Bengali Schwa Deletion rules
+                        val isNextCharWordEnd = (i + 1 == n - 1) || (i + 2 < n && (chars[i + 2] == ' ' || chars[i + 2] == '.' || chars[i + 2] == ','))
+                        if (isNextCharWordEnd) {
+                            // Penultimate consonant before a word-final consonant (e.g. 'কেমন' -> /kemon/, 'গরম' -> /ɡɔrom/, 'করব' -> /kɔrob/)
+                            sb.append("o")
+                        } else if (i + 2 < n && MATRAS.containsKey(chars[i + 2])) {
+                            // Schwa deletion: consonant directly precedes a consonant that has a vowel sign
+                            // e.g. 'আপনি' -> /apni/, 'করছেন' -> /kɔrcʰen/, 'বলছে' -> /bɔlcʰe/, 'চলছে' -> /cɔlcʰe/
+                            // Do NOT append schwa!
+                        } else if (i + 2 < n && chars[i + 2] == '্') {
+                            // Before a conjunct cluster: e.g. 'ন' in 'নমস্কার' -> /nɔmɔʃkar/
+                            sb.append("ɔ")
+                        } else if (i == 0) {
+                            // Word-initial consonant without matra (e.g. 'ক' in 'করব' -> /kɔ/)
+                            sb.append("ɔ")
+                        } else {
+                            // Default medial rounded schwa
+                            sb.append("o")
+                        }
                         i++
                         continue
                     }
                 }
+                // Word-final consonant: Keep silent/pure consonant without trailing schwa
                 i++
                 continue
             }
@@ -175,14 +206,14 @@ object BanglaG2p {
                 continue
             }
 
-            // Stray matra (without preceding consonant)
+            // Attached matra without consonant
             if (MATRAS.containsKey(c)) {
                 sb.append(MATRAS[c])
                 i++
                 continue
             }
 
-            // Special Bengali diacritics
+            // Bengali diacritics & standard symbols
             when (c) {
                 'ং' -> sb.append("ŋ")
                 'ঃ' -> sb.append("h")
@@ -193,7 +224,7 @@ object BanglaG2p {
                 in 'A'..'Z' -> sb.append(c.lowercaseChar())
                 in '0'..'9' -> sb.append(c)
                 else -> {
-                    // Ignore unrecognized non-printable markers
+                    // Ignore non-printable control characters
                 }
             }
             i++
@@ -203,8 +234,7 @@ object BanglaG2p {
     }
 
     /**
-     * Converts IPA phoneme string into Piper token IDs using the model's phoneme_id_map.
-     * Interleaves pad tokens (0 / '_') between phonemes as required by Piper VITS.
+     * Maps IPA phonemes to Piper token IDs with start/pad/end framing.
      */
     fun ipaToTokenIds(ipaText: String, phonemeIdMap: Map<String, Long>): LongArray {
         val ids = mutableListOf<Long>()
@@ -218,7 +248,7 @@ object BanglaG2p {
         var j = 0
         val len = ipaText.length
         while (j < len) {
-            // Check for 2-character phoneme tokens first (e.g., 'ɔɪ', 'oʊ', 'aɪ', 'aʊ', 'eɪ')
+            // Priority to 2-character dipthongs (e.g., 'ɔɪ', 'oʊ', 'aɪ', 'aʊ', 'eɪ')
             if (j + 1 < len) {
                 val pair = ipaText.substring(j, j + 2)
                 val pairId = phonemeIdMap[pair]
@@ -239,7 +269,7 @@ object BanglaG2p {
                 ids.add(spaceTokenId)
                 ids.add(padTokenId)
             } else {
-                // For combining characters like aspiration 'ʰ' or tilde '̃'
+                // Secondary fallback for combining diacritics like aspiration 'ʰ' or tilde '̃'
                 val code = ipaText[j].toString()
                 val fallbackId = phonemeIdMap[code]
                 if (fallbackId != null) {
@@ -252,7 +282,7 @@ object BanglaG2p {
 
         ids.add(endTokenId)
 
-        Log.d(TAG, "G2P converted text (len ${ipaText.length}) to ${ids.size} Piper token IDs")
+        Log.d(TAG, "G2P converted text to ${ids.size} Piper token IDs")
         return ids.toLongArray()
     }
 }

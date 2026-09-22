@@ -58,6 +58,7 @@ class BanglaTtsEngine(
     private var androidTts: TextToSpeech? = null
     private var isTtsInitialized = false
     private var isBanglaSupportedInSystem = false
+    private val ttsInitLatch = java.util.concurrent.CountDownLatch(1)
 
     init {
         initializeAndroidTts()
@@ -151,7 +152,11 @@ class BanglaTtsEngine(
                         speakerIdMap[key] = sid
                     }
                 }
-                selectedSpeakerId = if (speakerIdMap.values.contains(0L)) {
+                selectedSpeakerId = if (speakerIdMap.values.contains(1L)) {
+                    1L // High-clarity natural Bengali voice
+                } else if (speakerIdMap.values.contains(2L)) {
+                    2L
+                } else if (speakerIdMap.values.contains(0L)) {
                     0L
                 } else if (speakerIdMap.isNotEmpty()) {
                     speakerIdMap.values.minOrNull() ?: 0L
@@ -171,21 +176,29 @@ class BanglaTtsEngine(
     private fun initializeAndroidTts() {
         try {
             androidTts = TextToSpeech(context) { status ->
-                if (status == TextToSpeech.SUCCESS) {
-                    val localeBn = Locale("bn", "BD")
-                    val res = androidTts?.setLanguage(localeBn)
-                    if (res == TextToSpeech.LANG_MISSING_DATA || res == TextToSpeech.LANG_NOT_SUPPORTED) {
-                        val resIn = androidTts?.setLanguage(Locale("bn", "IN"))
-                        isBanglaSupportedInSystem = resIn != TextToSpeech.LANG_MISSING_DATA && resIn != TextToSpeech.LANG_NOT_SUPPORTED
-                    } else {
-                        isBanglaSupportedInSystem = true
+                try {
+                    if (status == TextToSpeech.SUCCESS) {
+                        val localeBd = Locale("bn", "BD")
+                        val localeIn = Locale("bn", "IN")
+                        val resBd = androidTts?.setLanguage(localeBd)
+                        if (resBd != TextToSpeech.LANG_MISSING_DATA && resBd != TextToSpeech.LANG_NOT_SUPPORTED) {
+                            isBanglaSupportedInSystem = true
+                        } else {
+                            val resIn = androidTts?.setLanguage(localeIn)
+                            if (resIn != TextToSpeech.LANG_MISSING_DATA && resIn != TextToSpeech.LANG_NOT_SUPPORTED) {
+                                isBanglaSupportedInSystem = true
+                            }
+                        }
+                        isTtsInitialized = true
+                        Log.d(TAG, "Android TTS initialized. Bangla supported: $isBanglaSupportedInSystem")
                     }
-                    isTtsInitialized = true
-                    Log.d(TAG, "Android TTS initialized. Bangla supported: $isBanglaSupportedInSystem")
+                } finally {
+                    ttsInitLatch.countDown()
                 }
             }
         } catch (e: Exception) {
             Log.w(TAG, "Failed to initialize Android TTS: ${e.message}")
+            ttsInitLatch.countDown()
         }
     }
 
@@ -196,7 +209,27 @@ class BanglaTtsEngine(
             return@withContext outputFile
         }
 
-        // 1. Check if ONNX session is ready or can be initialized
+        // Await asynchronous System TTS initialization (up to 1200ms)
+        if (!isTtsInitialized) {
+            try {
+                ttsInitLatch.await(1200, java.util.concurrent.TimeUnit.MILLISECONDS)
+            } catch (ignored: Exception) {}
+        }
+
+        // 1. Natural Google System TTS: If available on device, prioritizes studio-grade neural voice
+        if (isTtsInitialized && isBanglaSupportedInSystem && androidTts != null) {
+            try {
+                val systemSuccess = synthesizeWithSystemTts(cleanText, outputFile)
+                if (systemSuccess && outputFile.exists() && outputFile.length() > 44) {
+                    Log.i(TAG, "Synthesized human-like speech using Google System TTS: '${cleanText.take(20)}...'")
+                    return@withContext outputFile
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "System TTS attempt failed, falling back to Piper ONNX: ${e.message}")
+            }
+        }
+
+        // 2. Piper VITS Neural TTS Engine with phoneme modeling & schwa deletion
         if (ortSession == null) {
             try {
                 loadTtsIntoMemory()
@@ -209,18 +242,11 @@ class BanglaTtsEngine(
             try {
                 synthesizeWithOnnx(cleanText, outputFile)
                 if (outputFile.exists() && outputFile.length() > 44) {
+                    Log.i(TAG, "Synthesized speech using Piper VITS ONNX: '${cleanText.take(20)}...'")
                     return@withContext outputFile
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "Piper ONNX synthesis failed, checking System TTS fallback: ${e.message}")
-            }
-        }
-
-        // 2. System TTS fallback if available on device
-        if (isTtsInitialized && isBanglaSupportedInSystem && androidTts != null) {
-            val systemSuccess = synthesizeWithSystemTts(cleanText, outputFile)
-            if (systemSuccess && outputFile.exists() && outputFile.length() > 44) {
-                return@withContext outputFile
+                Log.w(TAG, "Piper ONNX synthesis failed: ${e.message}")
             }
         }
 
@@ -266,10 +292,10 @@ class BanglaTtsEngine(
                 inputsMap[lenName] = lenTensor
             }
 
-            // 3. Scales input: noise_scale (0.667), length_scale (1.0), noise_w (0.8)
+            // 3. Scales input: noise_scale (0.60f for soft natural timbre), length_scale (1.0f), noise_w (0.75f)
             val scaleName = inputNames.firstOrNull { it.contains("scale") }
             if (scaleName != null) {
-                val scales = floatArrayOf(0.667f, 1.0f, 0.8f)
+                val scales = floatArrayOf(0.60f, 1.0f, 0.75f)
                 val scaleTensor = OnnxTensor.createTensor(env, FloatBuffer.wrap(scales), longArrayOf(3))
                 inputsMap[scaleName] = scaleTensor
             }

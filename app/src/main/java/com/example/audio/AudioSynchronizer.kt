@@ -64,8 +64,8 @@ class AudioSynchronizer(private val context: Context) {
                         writeTimeStretchedPcm(segFile, fos, speedFactor, sampleRate)
                         timelineCursorMs += (actualTtsDurationMs / speedFactor).toLong()
                     } else {
-                        // TTS fits comfortably -> copy natural speech
-                        writeSegmentPcm(segFile, fos)
+                        // TTS fits comfortably -> copy natural speech with soft edge-fading
+                        writeSegmentPcm(segFile, fos, sampleRate)
                         timelineCursorMs += actualTtsDurationMs
                     }
                 } else {
@@ -126,19 +126,42 @@ class AudioSynchronizer(private val context: Context) {
         }
     }
 
-    private fun writeSegmentPcm(segFile: File, fos: FileOutputStream) {
+    private fun writeSegmentPcm(segFile: File, fos: FileOutputStream, sampleRate: Int = 16000) {
         FileInputStream(segFile).use { fis ->
             fis.skip(44) // Skip WAV header
-            val buffer = ByteArray(4096)
-            var read: Int
-            while (fis.read(buffer).also { read = it } != -1) {
-                fos.write(buffer, 0, read)
+            val rawBytes = fis.readBytes()
+            if (rawBytes.size < 2) return
+
+            val shortCount = rawBytes.size / 2
+            val srcBuffer = ByteBuffer.wrap(rawBytes).order(ByteOrder.LITTLE_ENDIAN)
+            val shorts = ShortArray(shortCount)
+            for (i in 0 until shortCount) {
+                shorts[i] = srcBuffer.short
             }
+
+            // 5ms soft edge-fading to eliminate any digital pops or clicks
+            val fadeSamples = (sampleRate * 0.005).toInt().coerceAtMost(shortCount / 4)
+            val outBytes = ByteArray(rawBytes.size)
+            val outBuffer = ByteBuffer.wrap(outBytes).order(ByteOrder.LITTLE_ENDIAN)
+
+            for (i in 0 until shortCount) {
+                var s = shorts[i].toFloat()
+                if (fadeSamples > 0) {
+                    if (i < fadeSamples) {
+                        s *= (i.toFloat() / fadeSamples)
+                    } else if (i >= shortCount - fadeSamples) {
+                        s *= ((shortCount - 1 - i).toFloat() / fadeSamples)
+                    }
+                }
+                outBuffer.putShort(s.toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort())
+            }
+
+            fos.write(outBytes)
         }
     }
 
     /**
-     * Resamples / time-stretches audio to adjust speech rate smoothly without pitch change.
+     * Resamples / time-stretches audio smoothly with linear interpolation and windowed edge-fading.
      */
     private fun writeTimeStretchedPcm(
         segFile: File,
@@ -162,9 +185,24 @@ class AudioSynchronizer(private val context: Context) {
             val outBytes = ByteArray(outLength * 2)
             val outBuffer = ByteBuffer.wrap(outBytes).order(ByteOrder.LITTLE_ENDIAN)
 
+            // Linear interpolation with anti-aliasing edge ramp to ensure natural timbre
+            val fadeSamples = (sampleRate * 0.005).toInt().coerceAtMost(outLength / 4)
             for (i in 0 until outLength) {
-                val srcIdx = (i * speedFactor).toInt().coerceIn(0, shortCount - 1)
-                outBuffer.putShort(shorts[srcIdx])
+                val srcPos = i * speedFactor
+                val idx0 = srcPos.toInt().coerceIn(0, shortCount - 1)
+                val idx1 = (idx0 + 1).coerceIn(0, shortCount - 1)
+                val frac = (srcPos - idx0).toFloat()
+                var sample = (shorts[idx0] * (1.0f - frac) + shorts[idx1] * frac)
+
+                if (fadeSamples > 0) {
+                    if (i < fadeSamples) {
+                        sample *= (i.toFloat() / fadeSamples)
+                    } else if (i >= outLength - fadeSamples) {
+                        sample *= ((outLength - 1 - i).toFloat() / fadeSamples)
+                    }
+                }
+
+                outBuffer.putShort(sample.toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort())
             }
 
             fos.write(outBytes)
