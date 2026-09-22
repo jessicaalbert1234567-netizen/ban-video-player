@@ -13,8 +13,8 @@ enum class ProcessingMode(val displayName: String, val description: String) {
 }
 
 enum class VoiceGender(val displayName: String, val description: String) {
-    FEMALE("Bhashini Female (নারী কণ্ঠ - মিষ্টি ও স্পষ্ট)", "Natural, sweet and expressive Bengali female voice - recommended"),
-    MALE("Bhashini Male (পুরুষ কণ্ঠ - গম্ভীর ও স্পষ্ট)", "Deep and natural Bengali male voice")
+    FEMALE("নারী কণ্ঠ (Woman Voice)", "বাস্তবসম্মত ও মিষ্টি নারী কণ্ঠ (Realistic Bengali Woman Voice)"),
+    MALE("পুরুষ কণ্ঠ (Man Voice)", "বাস্তবসম্মত ও সাবলীল পুরুষ কণ্ঠ (Realistic Bengali Man Voice)")
 }
 
 class SettingsManager(context: Context) {

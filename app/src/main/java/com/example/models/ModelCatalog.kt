@@ -79,136 +79,65 @@ object ModelCatalog {
         auxiliaryFiles = emptyList()
     )
 
-    // Model 3: Bhashini Bangla Neural Voice (Female - ONNX)
-    val BHASHINI_BANGLA_FEMALE_TTS = ModelInfo(
-        id = "bhashini_bn_female",
-        name = "Bhashini Bangla Voice (Female - ONNX)",
-        version = "1.1.0",
+    // Model 3: MMS Bangla Neural Voice (naklitechie/mms-tts-bn-ONNX)
+    val MMS_BANGLA_TTS = ModelInfo(
+        id = "mms_tts_bn",
+        name = "MMS Bangla Voice (ONNX)",
+        version = "1.0.0",
         sourceLanguage = "bn",
         targetLanguage = null,
         type = ModelType.TTS,
-        // High-fidelity Bhashini FastSpeech2-HS + HiFi-GAN ONNX models
-        downloadUrl = "https://media.githubusercontent.com/media/Henil21/Bhashini-TTS/main/Bengali/Bengali_Female/bengali_encoder_female.onnx",
-        sizeBytes = 85_162_896L, // ~85.2 MB Encoder
-        sha256 = "39f65c0ecac51a4efefa87cc709c764fa8254ada1001183b7a1273ff1f332c53",
+        downloadUrl = "https://huggingface.co/naklitechie/mms-tts-bn-ONNX/resolve/main/model.onnx",
+        sizeBytes = 114_314_259L, // ~114 MB
+        sha256 = "476fbc3fe414637ea21d82d2e5ebc743a486fa64c490203f2bf8adbefbf714a7",
         format = ModelFormat.ONNX,
-        archiveName = "bengali_encoder_female.onnx",
+        archiveName = "model.onnx",
         minimumRamMb = 384,
-        minimumStorageMb = 250,
+        minimumStorageMb = 200,
         onnxMetadata = OnnxMetadata(
-            inputTensorName = "text_ids",
+            inputTensorName = "input_ids",
             outputTensorName = "waveform",
             inputShape = listOf(1L, -1L),
             dataType = "INT64",
-            sampleRate = 22050,
-            vocabFileName = "config.yaml",
-            decoderType = "BHASHINI_FS2_HIFIGAN"
+            sampleRate = 16000,
+            vocabFileName = "vocab.json",
+            decoderType = "MMS_VITS"
         ),
-        description = "Bhashini IIT-Madras FastSpeech2-HS + HiFi-GAN ONNX neural model for sweet, clear, and natural Bengali female voice synthesis.",
-        licenseSource = "Bhashini / IIT Madras (MIT)",
-        runtimeRequirements = "ONNX Runtime Mobile (FastSpeech2-HS Encoder, Decoder + HiFi-GAN 22050Hz)",
+        description = "Meta MMS VITS neural text-to-speech model for Bengali (ONNX, ~114 MB) by naklitechie. Supports realistic Man and Woman voices.",
+        licenseSource = "naklitechie / Meta MMS (CC-BY-NC-4.0)",
+        runtimeRequirements = "ONNX Runtime Mobile (MMS VITS End-to-End, 16000Hz)",
         auxiliaryFiles = listOf(
             ModelAuxiliaryFile(
-                fileName = "bengali_decoder_female.onnx",
-                downloadUrl = "https://media.githubusercontent.com/media/Henil21/Bhashini-TTS/main/Bengali/Bengali_Female/bengali_decoder_female.onnx",
-                expectedSizeBytes = 78_776_078L,
-                sha256 = "c03733606fe0697e964e1f29eb963fa607667f8437bcef2157a09236ce452654"
+                fileName = "vocab.json",
+                downloadUrl = "https://huggingface.co/naklitechie/mms-tts-bn-ONNX/raw/main/vocab.json",
+                expectedSizeBytes = 927L,
+                sha256 = ""
             ),
             ModelAuxiliaryFile(
-                fileName = "hifigan_female.onnx",
-                downloadUrl = "https://media.githubusercontent.com/media/Henil21/Bhashini-TTS/main/Bengali/Bengali_Female/hifigan_female.onnx",
-                expectedSizeBytes = 55_736_915L,
-                sha256 = "77807e3cc42da7ecd5a98293f552148350faa430acec669cb5c1af100a72d4db"
-            ),
-            ModelAuxiliaryFile(
-                fileName = "feats_stats.npz",
-                downloadUrl = "https://raw.githubusercontent.com/Henil21/Bhashini-TTS/main/Bengali/Bengali_Female/feats_stats.npz",
-                expectedSizeBytes = 1402L,
-                sha256 = "6299d70bc5b2a185c786cb678d8e526bf41464a32bee9ccf85d7aef27205224b"
-            ),
-            ModelAuxiliaryFile(
-                fileName = "config.yaml",
-                downloadUrl = "https://raw.githubusercontent.com/Henil21/Bhashini-TTS/main/Bengali/Bengali_Female/config.yaml",
-                expectedSizeBytes = 5235L,
-                sha256 = "7bcdb5eec1fb25614e68d53176d71bfaa88476e08bf00d26d1eb21f0f8c1dddf"
+                fileName = "config.json",
+                downloadUrl = "https://huggingface.co/naklitechie/mms-tts-bn-ONNX/raw/main/config.json",
+                expectedSizeBytes = 1630L,
+                sha256 = ""
             )
         )
     )
 
-    // Model 4: Bhashini Bangla Neural Voice (Male - ONNX)
-    val BHASHINI_BANGLA_MALE_TTS = ModelInfo(
-        id = "bhashini_bn_male",
-        name = "Bhashini Bangla Voice (Male - ONNX)",
-        version = "1.1.0",
-        sourceLanguage = "bn",
-        targetLanguage = null,
-        type = ModelType.TTS,
-        // High-fidelity Bhashini FastSpeech2-HS + HiFi-GAN ONNX models
-        downloadUrl = "https://media.githubusercontent.com/media/Henil21/Bhashini-TTS/main/Bengali/Bengali_Male/en_encoder_male.onnx",
-        sizeBytes = 85_162_896L, // ~85.2 MB Encoder
-        sha256 = "00c43018bc84d667516a1dc009e7f9da0f4e36d423b901103691678719d8404f",
-        format = ModelFormat.ONNX,
-        archiveName = "en_encoder_male.onnx",
-        minimumRamMb = 384,
-        minimumStorageMb = 250,
-        onnxMetadata = OnnxMetadata(
-            inputTensorName = "text_ids",
-            outputTensorName = "waveform",
-            inputShape = listOf(1L, -1L),
-            dataType = "INT64",
-            sampleRate = 22050,
-            vocabFileName = "config.yaml",
-            decoderType = "BHASHINI_FS2_HIFIGAN"
-        ),
-        description = "Bhashini IIT-Madras FastSpeech2-HS + HiFi-GAN ONNX neural model for deep, articulate, and natural Bengali male voice synthesis.",
-        licenseSource = "Bhashini / IIT Madras (MIT)",
-        runtimeRequirements = "ONNX Runtime Mobile (FastSpeech2-HS Encoder, Decoder + HiFi-GAN 22050Hz)",
-        auxiliaryFiles = listOf(
-            ModelAuxiliaryFile(
-                fileName = "en_decoder_male.onnx",
-                downloadUrl = "https://media.githubusercontent.com/media/Henil21/Bhashini-TTS/main/Bengali/Bengali_Male/en_decoder_male.onnx",
-                expectedSizeBytes = 78_776_078L,
-                sha256 = "57006994c0acbb46af71b49e9be55df15c76a5e4dacac687c6e243fbb454a56a"
-            ),
-            ModelAuxiliaryFile(
-                fileName = "hifigan_male.onnx",
-                downloadUrl = "https://media.githubusercontent.com/media/Henil21/Bhashini-TTS/main/Bengali/Bengali_Male/hifigan_male.onnx",
-                expectedSizeBytes = 55_736_915L,
-                sha256 = "c7317dffc2fb2be2c06b6e4eb72c3aeb936c58318151f157700285c746145ea8"
-            ),
-            ModelAuxiliaryFile(
-                fileName = "feats_stats.npz",
-                downloadUrl = "https://raw.githubusercontent.com/Henil21/Bhashini-TTS/main/Bengali/Bengali_Male/feats_stats.npz",
-                expectedSizeBytes = 1402L,
-                sha256 = "cc564e7dbf6feb83ce81a81ddf1e5b88b86f7de313c5b864820db0d35a639f3a"
-            ),
-            ModelAuxiliaryFile(
-                fileName = "config.yaml",
-                downloadUrl = "https://raw.githubusercontent.com/Henil21/Bhashini-TTS/main/Bengali/Bengali_Male/config.yaml",
-                expectedSizeBytes = 5180L,
-                sha256 = "09ff407b77cbf3780088481f6837c6d262723f0d1118bd62325c5b32c622989c"
-            )
-        )
-    )
-
-    // Active default Bangla voice TTS model (Bhashini Female)
-    val BANGLA_VOICE_TTS = BHASHINI_BANGLA_FEMALE_TTS
+    // Active default Bangla voice TTS model (MMS VITS)
+    val BANGLA_VOICE_TTS = MMS_BANGLA_TTS
 
     // Required models for the current English -> Bangla Dubbing pipeline
     val REQUIRED_MODELS: List<ModelInfo>
         get() = listOf(
             ENGLISH_ASR,
             ENGLISH_TO_BANGLA_TRANSLATION,
-            BHASHINI_BANGLA_FEMALE_TTS,
-            BHASHINI_BANGLA_MALE_TTS
+            MMS_BANGLA_TTS
         )
 
     val ALL_MODELS: List<ModelInfo>
         get() = listOf(
             ENGLISH_ASR,
             ENGLISH_TO_BANGLA_TRANSLATION,
-            BHASHINI_BANGLA_FEMALE_TTS,
-            BHASHINI_BANGLA_MALE_TTS
+            MMS_BANGLA_TTS
         )
 
     fun configureTranslationReleaseUrl(url: String) {

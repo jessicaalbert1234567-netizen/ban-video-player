@@ -68,14 +68,14 @@ fun SettingsScreen(
                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                 )
                 Text(
-                    text = "Select Bhashini neural voice for natural pronunciation",
+                    text = "Select MMS Bengali neural voice (পুরুষ / নারী কণ্ঠ)",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 
             items(VoiceGender.entries) { gender ->
-                val targetModel = if (gender == VoiceGender.FEMALE) com.example.models.ModelCatalog.BHASHINI_BANGLA_FEMALE_TTS else com.example.models.ModelCatalog.BHASHINI_BANGLA_MALE_TTS
+                val targetModel = com.example.models.ModelCatalog.MMS_BANGLA_TTS
                 val modelItem = modelsState.firstOrNull { it.info.id == targetModel.id }
                 val isInstalled = modelItem?.isReadyForOfflineUse == true
                 val isDownloading = modelItem?.downloadProgress?.status == com.example.models.ModelStatus.DOWNLOADING ||
@@ -158,7 +158,7 @@ fun SettingsScreen(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    text = if (isError) "Download incomplete" else "Not downloaded (~123 MB)",
+                                    text = if (isError) "Download incomplete" else "Not downloaded (~114 MB)",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = if (isError) ErrorRed else MaterialTheme.colorScheme.onSurfaceVariant
                                 )

@@ -92,18 +92,20 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `test onnx model initialization with test file`() {
-        val testFile = File("/tmp/bhashini_test/bengali_encoder_female_int8.onnx.download")
-        if (testFile.exists()) {
-            val res = com.example.models.ModelInstaller.testOnnxInitialization(testFile)
-            println("Bhashini ONNX Test result: $res")
-            // In local Robolectric JVM, onnxruntime native binaries are Android-packaged
-            if (res.isFailure) {
-                val err = res.exceptionOrNull()
-                assertTrue(err is UnsatisfiedLinkError || err is NoClassDefFoundError || err is Exception)
-            } else {
-                assertTrue(res.isSuccess)
-            }
-        }
+    fun `test mms bangla tokenizer`() {
+        val text = "হ্যালো, কেমন আছেন? আমি বাংলায় কথা বলছি।"
+        val tokens = com.example.tts.MmsTokenizer.tokenize(text)
+        assertTrue(tokens.isNotEmpty())
+        assertEquals(com.example.tts.MmsTokenizer.PAD_TOKEN_ID, tokens.first())
+        assertEquals(com.example.tts.MmsTokenizer.PAD_TOKEN_ID, tokens.last())
+    }
+
+    @Test
+    fun `test mms model catalog info`() {
+        val model = com.example.models.ModelCatalog.MMS_BANGLA_TTS
+        assertEquals("mms_tts_bn", model.id)
+        assertEquals("MMS Bangla Voice (ONNX)", model.name)
+        assertEquals(com.example.models.ModelFormat.ONNX, model.format)
+        assertTrue(model.downloadUrl.contains("naklitechie/mms-tts-bn-ONNX"))
     }
 }

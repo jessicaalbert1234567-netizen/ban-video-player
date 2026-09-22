@@ -46,7 +46,7 @@ class BanglaTtsEngine(
     private val stateLock = Any()
     @Volatile private var loadState = EngineState.NOT_LOADED
 
-    private val bhashiniEngine = BhashiniTtsEngine(context)
+    private val mmsEngine = MmsTtsEngine(context)
     private val settingsManager = com.example.settings.SettingsManager(context)
 
     private var ortEnv: OrtEnvironment? = null
@@ -56,7 +56,7 @@ class BanglaTtsEngine(
     private val speakerIdMap = mutableMapOf<String, Long>()
     private var selectedSpeakerId: Long = 0L
     private var numSpeakers: Int = 1
-    private var modelSampleRate = 22050
+    private var modelSampleRate = 16000
 
     private var androidTts: TextToSpeech? = null
     private var isTtsInitialized = false
@@ -68,10 +68,8 @@ class BanglaTtsEngine(
     }
 
     fun verifyTtsFiles(): Boolean {
-        val isFemale = settingsManager.voiceGender.value == com.example.settings.VoiceGender.FEMALE
-        if (bhashiniEngine.isModelReady(isFemale)) return true
-        if (bhashiniEngine.isModelReady(!isFemale)) return true
-        val model = ModelCatalog.BANGLA_VOICE_TTS
+        if (mmsEngine.isModelReady()) return true
+        val model = ModelCatalog.MMS_BANGLA_TTS
         if (ModelInstaller.isModelInstalled(context, model)) return true
         return isBanglaSupportedInSystem
     }
@@ -83,22 +81,14 @@ class BanglaTtsEngine(
             loadState = EngineState.LOADING
         }
 
-        val isFemale = settingsManager.voiceGender.value == com.example.settings.VoiceGender.FEMALE
-
-        // Try loading Bhashini FastSpeech2 + HiFi-GAN ONNX first
-        if (bhashiniEngine.isModelReady(isFemale) || bhashiniEngine.isModelReady(!isFemale)) {
-            val targetGender = if (bhashiniEngine.isModelReady(isFemale)) isFemale else !isFemale
-            try {
-                bhashiniEngine.loadModel(targetGender)
-                synchronized(stateLock) { loadState = EngineState.LOADED }
-                Log.i(TAG, "Bhashini TTS model loaded into memory (Gender=${if (targetGender) "Female" else "Male"})")
-                return@withContext
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to load Bhashini model into memory: ${e.message}")
-            }
+        // Prioritize MMS VITS ONNX model
+        if (mmsEngine.isModelReady()) {
+            synchronized(stateLock) { loadState = EngineState.LOADED }
+            Log.i(TAG, "MMS Bangla TTS model ready for inference")
+            return@withContext
         }
 
-        val model = ModelCatalog.BANGLA_VOICE_TTS
+        val model = ModelCatalog.MMS_BANGLA_TTS
         val modelFile = ModelInstaller.getInstalledModelFile(context, model)
 
         if (!modelFile.exists() || modelFile.length() <= 0L) {
@@ -238,34 +228,32 @@ class BanglaTtsEngine(
         }
 
         val isFemale = settingsManager.voiceGender.value == com.example.settings.VoiceGender.FEMALE
+        val mmsModel = ModelCatalog.MMS_BANGLA_TTS
 
-        val selectedBhashiniModel = if (isFemale) ModelCatalog.BHASHINI_BANGLA_FEMALE_TTS else ModelCatalog.BHASHINI_BANGLA_MALE_TTS
-
-        // 1. Check if chosen Bhashini model is ready, or attempt download if connected to internet
-        if (!bhashiniEngine.isModelReady(isFemale)) {
+        // 1. Check if MMS Bangla model is ready, or download on-demand if connected
+        if (!mmsEngine.isModelReady()) {
             val downloader = com.example.models.ModelDownloader(context)
             if (downloader.isNetworkAvailable()) {
-                Log.i(TAG, "Bhashini ${selectedBhashiniModel.name} not on disk, downloading on-demand...")
-                val dlResult = downloader.downloadAndInstall(selectedBhashiniModel)
+                Log.i(TAG, "MMS ${mmsModel.name} not on disk, downloading on-demand...")
+                val dlResult = downloader.downloadAndInstall(mmsModel)
                 if (dlResult.isSuccess) {
-                    Log.i(TAG, "Bhashini ${selectedBhashiniModel.name} downloaded successfully on-demand.")
+                    Log.i(TAG, "MMS ${mmsModel.name} downloaded successfully on-demand.")
                 } else {
-                    Log.w(TAG, "On-demand Bhashini download notice: ${dlResult.exceptionOrNull()?.message}")
+                    Log.w(TAG, "On-demand MMS download notice: ${dlResult.exceptionOrNull()?.message}")
                 }
             }
         }
 
-        // Prioritize Bhashini FastSpeech2-HS + HiFi-GAN ONNX model for state-of-the-art natural Indic voice
-        if (bhashiniEngine.isModelReady(isFemale) || bhashiniEngine.isModelReady(!isFemale)) {
-            val targetGender = if (bhashiniEngine.isModelReady(isFemale)) isFemale else !isFemale
+        // Prioritize MMS VITS ONNX model (naklitechie/mms-tts-bn-ONNX)
+        if (mmsEngine.isModelReady()) {
             try {
-                val bhashiniSuccess = bhashiniEngine.synthesize(cleanText, outputFile, isFemale = targetGender)
-                if (bhashiniSuccess && outputFile.exists() && outputFile.length() > 44) {
-                    Log.i(TAG, "Synthesized natural Bengali speech using Bhashini ONNX (Gender=${if (targetGender) "Female" else "Male"}): '${cleanText.take(20)}...'")
+                val mmsSuccess = mmsEngine.synthesize(cleanText, outputFile, isFemale = isFemale)
+                if (mmsSuccess && outputFile.exists() && outputFile.length() > 44) {
+                    Log.i(TAG, "Synthesized natural Bengali speech using MMS ONNX (Voice=${if (isFemale) "Woman" else "Man"}): '${cleanText.take(20)}...'")
                     return@withContext outputFile
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "Bhashini ONNX synthesis failed, falling back: ${e.message}")
+                Log.w(TAG, "MMS ONNX synthesis failed, falling back: ${e.message}")
             }
         }
 
@@ -310,8 +298,8 @@ class BanglaTtsEngine(
             }
         }
 
-        val verification = ModelInstaller.verifyModelOffline(context, selectedBhashiniModel)
-        throw IllegalStateException("Bangla TTS voice synthesis requires ${selectedBhashiniModel.name}: ${verification.failureReason ?: "Model not ready. Tap 'Download' in Settings or Model Manager."}")
+        val verification = ModelInstaller.verifyModelOffline(context, mmsModel)
+        throw IllegalStateException("Bangla TTS voice synthesis requires ${mmsModel.name}: ${verification.failureReason ?: "Model not ready. Tap 'Download' in Settings or Model Manager."}")
     }
 
     private fun synthesizeWithOnnx(text: String, outputFile: File) {
@@ -531,7 +519,7 @@ class BanglaTtsEngine(
 
     override fun close() {
         try {
-            bhashiniEngine.close()
+            mmsEngine.close()
             ortSession?.close()
             ortEnv?.close()
             ortSession = null

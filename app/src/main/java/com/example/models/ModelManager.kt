@@ -115,7 +115,7 @@ class ModelManager(private val context: Context) {
         _modelsState.value = updatedList
         val hasAsr = updatedList.any { it.info.id == ModelCatalog.ENGLISH_ASR.id && it.isReadyForOfflineUse }
         val hasTranslation = updatedList.any { it.info.id == ModelCatalog.ENGLISH_TO_BANGLA_TRANSLATION.id && it.isReadyForOfflineUse }
-        val hasVoice = updatedList.any { (it.info.id == ModelCatalog.BHASHINI_BANGLA_FEMALE_TTS.id || it.info.id == ModelCatalog.BHASHINI_BANGLA_MALE_TTS.id) && it.isReadyForOfflineUse }
+        val hasVoice = updatedList.any { it.info.id == ModelCatalog.MMS_BANGLA_TTS.id && it.isReadyForOfflineUse }
         _isAllRequiredReady.value = hasAsr && hasTranslation && hasVoice
 
         // Update cached storage summary asynchronously
@@ -178,7 +178,7 @@ class ModelManager(private val context: Context) {
         _modelsState.value = updated
         val hasAsr = updated.any { it.info.id == ModelCatalog.ENGLISH_ASR.id && it.isReadyForOfflineUse }
         val hasTranslation = updated.any { it.info.id == ModelCatalog.ENGLISH_TO_BANGLA_TRANSLATION.id && it.isReadyForOfflineUse }
-        val hasVoice = updated.any { (it.info.id == ModelCatalog.BHASHINI_BANGLA_FEMALE_TTS.id || it.info.id == ModelCatalog.BHASHINI_BANGLA_MALE_TTS.id) && it.isReadyForOfflineUse }
+        val hasVoice = updated.any { it.info.id == ModelCatalog.MMS_BANGLA_TTS.id && it.isReadyForOfflineUse }
         _isAllRequiredReady.value = hasAsr && hasTranslation && hasVoice
 
         // When a model finishes installation, invalidate its cache and refresh status on Dispatchers.IO

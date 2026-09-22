@@ -199,32 +199,19 @@ class DubbingPipeline(
                 checkCancelled()
                 reportStage(projectId, ProcessingStage.GENERATE_TTS, 0, 65, "Preparing Bangla AI Voice Synthesis...", onProgressUpdate)
 
-                val preferredFemale = settingsManager.voiceGender.value == com.example.settings.VoiceGender.FEMALE
-                val isFemaleInstalled = com.example.models.ModelInstaller.isModelInstalled(context, com.example.models.ModelCatalog.BHASHINI_BANGLA_FEMALE_TTS)
-                val isMaleInstalled = com.example.models.ModelInstaller.isModelInstalled(context, com.example.models.ModelCatalog.BHASHINI_BANGLA_MALE_TTS)
-
-                val effectiveFemale = when {
-                    preferredFemale && isFemaleInstalled -> true
-                    !preferredFemale && isMaleInstalled -> false
-                    isFemaleInstalled -> true
-                    isMaleInstalled -> false
-                    else -> preferredFemale
-                }
-
-                val targetVoiceModel = if (effectiveFemale) com.example.models.ModelCatalog.BHASHINI_BANGLA_FEMALE_TTS else com.example.models.ModelCatalog.BHASHINI_BANGLA_MALE_TTS
-                val isVoiceInstalled = isFemaleInstalled || isMaleInstalled
-                if (!isVoiceInstalled) {
+                val isMmsInstalled = com.example.models.ModelInstaller.isModelInstalled(context, com.example.models.ModelCatalog.MMS_BANGLA_TTS)
+                if (!isMmsInstalled) {
                     val downloader = com.example.models.ModelDownloader(context)
                     if (downloader.isNetworkAvailable()) {
-                        reportStage(projectId, ProcessingStage.GENERATE_TTS, 5, 66, "Downloading Bhashini ${if (effectiveFemale) "Female" else "Male"} voice model...", onProgressUpdate)
-                        downloader.downloadAndInstall(targetVoiceModel) { prog ->
+                        reportStage(projectId, ProcessingStage.GENERATE_TTS, 5, 66, "Downloading MMS Bangla Voice model...", onProgressUpdate)
+                        downloader.downloadAndInstall(com.example.models.ModelCatalog.MMS_BANGLA_TTS) { prog ->
                             val p = (prog.progressPercent * 0.15f).toInt()
                             reportStageSync(
                                 projectId,
                                 ProcessingStage.GENERATE_TTS,
                                 prog.progressPercent,
                                 65 + p,
-                                prog.verificationStatus ?: "Downloading voice model (${prog.progressPercent}%)...",
+                                prog.verificationStatus ?: "Downloading MMS Bangla model (${prog.progressPercent}%)...",
                                 onProgressUpdate
                             )
                         }

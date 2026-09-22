@@ -239,19 +239,19 @@ class DubbingViewModel(application: Application) : AndroidViewModel(application)
                         addTestLog("✓ Translation Stage Test Passed.")
                     }
                     "TTS" -> {
-                        addTestLog("Testing Bhashini Bangla Neural Voice TTS engine...")
+                        addTestLog("Testing MMS Bangla Neural Voice TTS engine (ONNX)...")
                         val isFemale = voiceGender.value == com.example.settings.VoiceGender.FEMALE
-                        val targetVoice = if (isFemale) com.example.models.ModelCatalog.BHASHINI_BANGLA_FEMALE_TTS else com.example.models.ModelCatalog.BHASHINI_BANGLA_MALE_TTS
+                        val targetVoice = com.example.models.ModelCatalog.MMS_BANGLA_TTS
                         val isInstalled = com.example.models.ModelInstaller.isModelInstalled(app, targetVoice)
                         if (!isInstalled) {
-                            addTestLog("Bhashini ${targetVoice.name} not on disk yet. Downloading on-device (~123 MB)...")
+                            addTestLog("MMS ${targetVoice.name} not on disk yet. Downloading on-device (~114 MB)...")
                             val dlResult = modelManager.downloader.downloadAndInstall(targetVoice) { p ->
                                 if (p.progressPercent % 20 == 0 || p.progressPercent == 98) {
                                     addTestLog("Progress: ${p.progressPercent}% - ${p.verificationStatus ?: ""}")
                                 }
                             }
                             if (dlResult.isSuccess) {
-                                addTestLog("✓ Bhashini model downloaded and verified successfully.")
+                                addTestLog("✓ MMS Bangla model downloaded and verified successfully.")
                                 modelManager.refreshModelStatuses()
                             } else {
                                 addTestLog("Notice: ${dlResult.exceptionOrNull()?.message}")
