@@ -75,6 +75,16 @@ class MediaPlayerManager(private val context: Context) {
                     override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
                         _playerState.value = _playerState.value.copy(playbackSpeed = playbackParameters.speed)
                     }
+
+                    override fun onTracksChanged(tracks: Tracks) {
+                        val audioGroups = tracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
+                        Log.i(TAG, "onTracksChanged: found ${audioGroups.size} audio track group(s)")
+                        applyTrackSelection(_playerState.value.audioChoice)
+                    }
+
+                    override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                        Log.e(TAG, "ExoPlayer playback error: ${error.errorCodeName} - ${error.message}", error)
+                    }
                 })
             }
         }
@@ -99,23 +109,33 @@ class MediaPlayerManager(private val context: Context) {
         val videoItem = MediaItem.fromUri(videoUri)
         val videoSource: MediaSource = ProgressiveMediaSource.Factory(dataSourceFactory).createMediaSource(videoItem)
 
-        // 2. Dubbed audio source if available
-        val hasDubbed = dubbedAudioFile != null && dubbedAudioFile.exists() && dubbedAudioFile.length() > 0
+        // 2. Resolve effective dubbed audio file (m4a or fallback wav)
+        val effectiveDubbedFile = when {
+            dubbedAudioFile != null && dubbedAudioFile.exists() && dubbedAudioFile.length() > 44 -> dubbedAudioFile
+            dubbedAudioFile != null -> {
+                val parent = dubbedAudioFile.parentFile
+                val wavFile = if (parent != null) File(parent, "dubbed_bn.wav") else null
+                if (wavFile != null && wavFile.exists() && wavFile.length() > 44) wavFile else null
+            }
+            else -> null
+        }
+
+        val hasDubbed = effectiveDubbedFile != null
         _playerState.value = _playerState.value.copy(hasDubbedAudio = hasDubbed)
 
-        if (hasDubbed) {
-            val audioUri = Uri.fromFile(dubbedAudioFile)
-            val audioItem = MediaItem.Builder()
-                .setUri(audioUri)
-                .setMimeType(MimeTypes.AUDIO_AAC)
-                .build()
+        if (effectiveDubbedFile != null) {
+            val audioUri = Uri.fromFile(effectiveDubbedFile)
+            // Use standard MediaItem without hardcoding AUDIO_AAC so Media3 auto-detects M4A container or WAV
+            val audioItem = MediaItem.fromUri(audioUri)
             val audioSource: MediaSource = ProgressiveMediaSource.Factory(dataSourceFactory).createMediaSource(audioItem)
 
-            // Merge video source and external dubbed audio source
-            val mergedSource = MergingMediaSource(videoSource, audioSource)
+            // Merge video source and external dubbed audio source with duration clipping
+            val mergedSource = MergingMediaSource(true, true, videoSource, audioSource)
             exo.setMediaSource(mergedSource)
+            Log.i(TAG, "Merged video source with dubbed audio file: ${effectiveDubbedFile.absolutePath} (${effectiveDubbedFile.length()} bytes)")
         } else {
             exo.setMediaSource(videoSource)
+            Log.i(TAG, "Loaded video source without dubbed audio (dubbed file unavailable)")
         }
 
         exo.prepare()
@@ -130,23 +150,54 @@ class MediaPlayerManager(private val context: Context) {
     private fun applyTrackSelection(choice: AudioTrackChoice) {
         val exo = player ?: return
         val tracks = exo.currentTracks
+        val audioGroups = tracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
 
-        // If audio choice is ORIGINAL, select the first audio track (track group 0)
-        // If BANGLA_DUB and merged source is present, select track group 1
-        for (group in tracks.groups) {
-            if (group.type == C.TRACK_TYPE_AUDIO) {
-                // Media3 handles track selection
-                val trackCount = group.length
-                if (trackCount > 1) {
-                    val trackIndex = if (choice == AudioTrackChoice.BANGLA_DUB) 1 else 0
-                    exo.trackSelectionParameters = exo.trackSelectionParameters
-                        .buildUpon()
-                        .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, trackIndex))
-                        .build()
-                    break
-                }
+        Log.i(TAG, "applyTrackSelection: requested=$choice, available audio groups=${audioGroups.size}")
+        if (audioGroups.isEmpty()) return
+
+        // Case 1: Multiple audio groups (MergingMediaSource: video audio + external dubbed audio)
+        // audioGroups[0] is original video audio; audioGroups.last() is merged dubbed audio
+        if (audioGroups.size > 1) {
+            val targetGroup = if (choice == AudioTrackChoice.BANGLA_DUB) {
+                audioGroups.last()
+            } else {
+                audioGroups.first()
             }
+            Log.i(TAG, "Applying track override for ${choice.name}: using audio group with format ${targetGroup.getTrackFormat(0)}")
+            val override = TrackSelectionOverride(targetGroup.mediaTrackGroup, 0)
+            exo.trackSelectionParameters = exo.trackSelectionParameters
+                .buildUpon()
+                .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
+                .setOverrideForType(override)
+                .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
+                .build()
+            return
         }
+
+        // Case 2: Single audio group with multiple tracks (container has multi-channel/multi-track audio)
+        val singleGroup = audioGroups[0]
+        if (singleGroup.length > 1) {
+            val trackIdx = if (choice == AudioTrackChoice.BANGLA_DUB) 1 else 0
+            val safeTrackIdx = trackIdx.coerceAtMost(singleGroup.length - 1)
+            Log.i(TAG, "Applying multi-track override in single group: track index $safeTrackIdx")
+            val override = TrackSelectionOverride(singleGroup.mediaTrackGroup, safeTrackIdx)
+            exo.trackSelectionParameters = exo.trackSelectionParameters
+                .buildUpon()
+                .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
+                .setOverrideForType(override)
+                .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
+                .build()
+            return
+        }
+
+        // Case 3: Only 1 single track available
+        val override = TrackSelectionOverride(singleGroup.mediaTrackGroup, 0)
+        exo.trackSelectionParameters = exo.trackSelectionParameters
+            .buildUpon()
+            .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
+            .setOverrideForType(override)
+            .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
+            .build()
     }
 
     fun setSubtitleChoice(choice: SubtitleChoice) {

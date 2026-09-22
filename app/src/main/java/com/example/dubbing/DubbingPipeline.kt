@@ -223,6 +223,7 @@ class DubbingPipeline(
             }
 
             // STAGE 6: Audio Synchronization (85% - 95%)
+            var effectiveDubbedAudioFile = finalDubbedAudioFile
             if (startingStage.ordinal <= ProcessingStage.SYNC_AUDIO.ordinal) {
                 checkCancelled()
                 reportStage(projectId, ProcessingStage.SYNC_AUDIO, 0, 85, "Synchronizing dubbed audio with video...", onProgressUpdate)
@@ -236,6 +237,7 @@ class DubbingPipeline(
                 if (syncResult.isFailure) {
                     throw syncResult.exceptionOrNull() ?: IllegalStateException("Audio synchronization failed")
                 }
+                effectiveDubbedAudioFile = syncResult.getOrThrow()
             }
 
             // STAGE 7: Finalize & Complete (95% - 100%)
@@ -255,8 +257,14 @@ class DubbingPipeline(
                 throw IllegalStateException("Output verification failed: Bangla subtitle SRT file does not contain valid subtitle timestamp blocks.")
             }
 
-            if (!finalDubbedAudioFile.exists() || finalDubbedAudioFile.length() < 1000L) {
-                throw IllegalStateException("Output verification failed: Bangla dubbed audio file is missing or contains insufficient data (${finalDubbedAudioFile.length()} bytes) (Stage: Audio Synchronization).")
+            val dubbedAudioToUse = when {
+                effectiveDubbedAudioFile.exists() && effectiveDubbedAudioFile.length() >= 1000L -> effectiveDubbedAudioFile
+                finalDubbedAudioFile.exists() && finalDubbedAudioFile.length() >= 1000L -> finalDubbedAudioFile
+                else -> {
+                    val fallbackWav = File(projectDir, "dubbed_bn.wav")
+                    if (fallbackWav.exists() && fallbackWav.length() >= 1000L) fallbackWav
+                    else throw IllegalStateException("Output verification failed: Bangla dubbed audio file is missing or contains insufficient data (Stage: Audio Synchronization).")
+                }
             }
 
             project = project.copy(
@@ -266,7 +274,7 @@ class DubbingPipeline(
                 originalAudioPath = rawAudioFile.absolutePath,
                 transcriptJsonPath = transcriptJsonFile.absolutePath,
                 subtitleSrtPath = srtFile.absolutePath,
-                dubbedAudioPath = finalDubbedAudioFile.absolutePath,
+                dubbedAudioPath = dubbedAudioToUse.absolutePath,
                 durationMs = totalDurationMs,
                 updatedAt = System.currentTimeMillis()
             )

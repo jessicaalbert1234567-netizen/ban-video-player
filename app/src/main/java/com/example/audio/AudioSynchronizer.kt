@@ -91,6 +91,10 @@ class AudioSynchronizer(private val context: Context) {
             WavUtils.updateWavHeader(tempAlignedWav)
             onProgress(0.85f)
 
+            // Always save master aligned WAV as robust universal playback fallback
+            val masterWav = File(outputM4aFile.parentFile, "dubbed_bn.wav")
+            tempAlignedWav.copyTo(masterWav, overwrite = true)
+
             // 4. Encode aligned WAV to AAC/M4A (Android standard container)
             val encodeSuccess = encodeWavToAacM4a(tempAlignedWav, outputM4aFile)
             onProgress(1.0f)
@@ -98,10 +102,8 @@ class AudioSynchronizer(private val context: Context) {
             if (encodeSuccess && outputM4aFile.exists() && outputM4aFile.length() > 0) {
                 Result.success(outputM4aFile)
             } else {
-                // If AAC muxer encountered hardware constraint, fall back to master WAV
-                val fallbackWav = File(outputM4aFile.parentFile, "dubbed_bn.wav")
-                tempAlignedWav.copyTo(fallbackWav, overwrite = true)
-                Result.success(fallbackWav)
+                Log.w(TAG, "M4A encode failed or empty, falling back to master WAV")
+                Result.success(masterWav)
             }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to synchronize audio", e)
