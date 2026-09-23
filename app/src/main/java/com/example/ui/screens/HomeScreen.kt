@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.database.DubbingProject
 import com.example.dubbing.ProcessingStage
+import com.example.tts.BengaliTtsStatus
 import com.example.ui.DubbingViewModel
 import com.example.ui.theme.ErrorRed
 import com.example.ui.theme.SuccessGreen
@@ -41,6 +42,7 @@ fun HomeScreen(
     onNavigateToTest: () -> Unit
 ) {
     val isAllModelsReady by viewModel.isAllModelsReady.collectAsState()
+    val ttsStatus by viewModel.ttsStatus.collectAsState()
     val projects by viewModel.allProjects.collectAsState()
 
     val videoPickerLauncher = rememberLauncherForActivityResult(
@@ -214,6 +216,104 @@ fun HomeScreen(
                                     color = Color.Black,
                                     fontWeight = FontWeight.Bold
                                 )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 1b. Bengali Voice Status Card
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = when (ttsStatus) {
+                            is BengaliTtsStatus.Available -> SuccessGreen.copy(alpha = 0.08f)
+                            is BengaliTtsStatus.NotInstalled -> WarningAmber.copy(alpha = 0.08f)
+                            else -> MaterialTheme.colorScheme.surfaceVariant
+                        }
+                    ),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.fillMaxWidth().testTag("home_tts_status_card")
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "বাংলা ভয়েস",
+                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                                )
+                                Text(
+                                    text = "Android TTS",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                when (val status = ttsStatus) {
+                                    is BengaliTtsStatus.Checking -> {
+                                        Text(
+                                            text = "Checking Bengali voice support...",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    is BengaliTtsStatus.Available -> {
+                                        Text(
+                                            text = "✓ Bengali voice available",
+                                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                                            color = SuccessGreen
+                                        )
+                                        Text(
+                                            text = "Engine: ${status.engineName ?: "System Default"} • ${status.localeDisplayName}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    is BengaliTtsStatus.NotInstalled -> {
+                                        Text(
+                                            text = "⚠ Bengali voice not installed",
+                                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                                            color = WarningAmber
+                                        )
+                                        Text(
+                                            text = status.message,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
+
+                            IconButton(
+                                onClick = { viewModel.checkBengaliTts() },
+                                modifier = Modifier.testTag("refresh_home_tts_btn")
+                            ) {
+                                Icon(
+                                    Icons.Default.Refresh,
+                                    contentDescription = "Refresh TTS status",
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+
+                        if (ttsStatus is BengaliTtsStatus.NotInstalled) {
+                            Button(
+                                onClick = { viewModel.openTtsSettings() },
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier.fillMaxWidth().testTag("install_bengali_voice_home_btn")
+                            ) {
+                                Icon(Icons.Default.SettingsVoice, contentDescription = null)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Install Bengali voice", fontWeight = FontWeight.Bold)
                             }
                         }
                     }

@@ -133,8 +133,64 @@ fun DubbingProgressScreen(
                                     .fillMaxWidth()
                                     .height(8.dp)
                                     .clip(RoundedCornerShape(4.dp)),
-                                color = if (isComplete) SuccessGreen else MaterialTheme.colorScheme.primary
+                                color = when {
+                                    isComplete -> SuccessGreen
+                                    isFailed -> ErrorRed
+                                    else -> MaterialTheme.colorScheme.primary
+                                }
                             )
+                        }
+                    }
+                }
+            }
+
+            if (isFailed) {
+                item {
+                    val statusMsg = progressState?.statusMessage ?: project?.statusMessage ?: "Dubbing failed."
+                    val isTtsRelated = statusMsg.contains("Bengali", ignoreCase = true) ||
+                                       statusMsg.contains("TTS", ignoreCase = true) ||
+                                       statusMsg.contains("voice", ignoreCase = true)
+
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = ErrorRed.copy(alpha = 0.12f)),
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.fillMaxWidth().testTag("dubbing_failed_card")
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Icon(Icons.Default.Error, contentDescription = null, tint = ErrorRed)
+                                Text(
+                                    text = "ডাবিং ব্যর্থ হয়েছে (Dubbing Failed)",
+                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                    color = ErrorRed
+                                )
+                            }
+                            Text(
+                                text = statusMsg,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+
+                            if (isTtsRelated) {
+                                Button(
+                                    onClick = { viewModel.openTtsSettings() },
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                                    shape = RoundedCornerShape(10.dp),
+                                    modifier = Modifier.fillMaxWidth().testTag("tts_settings_from_error_btn")
+                                ) {
+                                    Icon(Icons.Default.SettingsVoice, contentDescription = null)
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("Install Bengali voice", fontWeight = FontWeight.Bold)
+                                }
+                            }
                         }
                     }
                 }
@@ -266,6 +322,19 @@ fun DubbingProgressScreen(
                         Icon(Icons.Default.PlayArrow, contentDescription = null)
                         Spacer(modifier = Modifier.width(8.dp))
                         Text("Play Dubbed Video", fontWeight = FontWeight.Bold)
+                    }
+                } else if (isFailed) {
+                    Button(
+                        onClick = onNavigateBack,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(50.dp)
+                            .testTag("failed_back_button")
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Back to Home", fontWeight = FontWeight.Bold)
                     }
                 } else {
                     Row(

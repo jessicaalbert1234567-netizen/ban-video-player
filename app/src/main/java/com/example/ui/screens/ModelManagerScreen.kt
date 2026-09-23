@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.sp
 import com.example.models.ModelCatalog
 import com.example.models.ModelItemUiState
 import com.example.models.ModelStatus
+import com.example.tts.BengaliTtsStatus
 import com.example.ui.DubbingViewModel
 import com.example.ui.theme.ErrorRed
 import com.example.ui.theme.SuccessGreen
@@ -34,6 +35,7 @@ fun ModelManagerScreen(
 ) {
     val models by viewModel.modelsState.collectAsState()
     val isAllReady by viewModel.isAllModelsReady.collectAsState()
+    val ttsStatus by viewModel.ttsStatus.collectAsState()
     val probeResults by viewModel.probeResults.collectAsState()
     val storageSummary by viewModel.storageSummary.collectAsState()
     val requiredMb = storageSummary.first / (1024 * 1024)
@@ -241,6 +243,123 @@ fun ModelManagerScreen(
                     },
                     onOpenDiagnostics = { diagnosticsModelItem = item }
                 )
+            }
+
+            // Section: Bengali Speech Synthesis (Native Android TTS)
+            item {
+                Text(
+                    text = "Speech Synthesis (বাঙালি কণ্ঠ)",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                )
+            }
+
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.fillMaxWidth().testTag("model_mgr_tts_card")
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.Top
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "বাংলা ভয়েস",
+                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                                )
+                                Text(
+                                    text = "Android TTS",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+
+                            when (val status = ttsStatus) {
+                                is BengaliTtsStatus.Available -> {
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = SuccessGreen.copy(alpha = 0.15f)
+                                    ) {
+                                        Text(
+                                            text = "✓ Ready",
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                            color = SuccessGreen
+                                        )
+                                    }
+                                }
+                                is BengaliTtsStatus.NotInstalled -> {
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = WarningAmber.copy(alpha = 0.15f)
+                                    ) {
+                                        Text(
+                                            text = "⚠ Not Installed",
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                            color = WarningAmber
+                                        )
+                                    }
+                                }
+                                is BengaliTtsStatus.Checking -> {
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                                    ) {
+                                        Text(
+                                            text = "Checking...",
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        when (val status = ttsStatus) {
+                            is BengaliTtsStatus.Available -> {
+                                Text(
+                                    text = "Native Android Text-to-Speech is ready with Bengali voice data (${status.engineName ?: "System Default"} • ${status.localeDisplayName}).",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            is BengaliTtsStatus.NotInstalled -> {
+                                Text(
+                                    text = status.message,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = WarningAmber
+                                )
+                                Button(
+                                    onClick = { viewModel.openTtsSettings() },
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                                    shape = RoundedCornerShape(10.dp),
+                                    modifier = Modifier.fillMaxWidth().testTag("install_bengali_voice_models_btn")
+                                ) {
+                                    Icon(Icons.Default.SettingsVoice, contentDescription = null)
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("Install Bengali voice", fontWeight = FontWeight.Bold)
+                                }
+                            }
+                            is BengaliTtsStatus.Checking -> {
+                                Text(
+                                    text = "Checking device for installed offline Bengali voices...",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
     }
