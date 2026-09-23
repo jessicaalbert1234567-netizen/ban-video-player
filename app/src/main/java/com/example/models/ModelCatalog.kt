@@ -79,65 +79,17 @@ object ModelCatalog {
         auxiliaryFiles = emptyList()
     )
 
-    // Model 3: MMS Bangla Neural Voice (naklitechie/mms-tts-bn-ONNX)
-    val MMS_BANGLA_TTS = ModelInfo(
-        id = "mms_tts_bn",
-        name = "MMS Bangla Voice (ONNX)",
-        version = "1.0.0",
-        sourceLanguage = "bn",
-        targetLanguage = null,
-        type = ModelType.TTS,
-        downloadUrl = "https://huggingface.co/naklitechie/mms-tts-bn-ONNX/resolve/main/model.onnx",
-        sizeBytes = 114_314_259L, // ~114 MB
-        sha256 = "476fbc3fe414637ea21d82d2e5ebc743a486fa64c490203f2bf8adbefbf714a7",
-        format = ModelFormat.ONNX,
-        archiveName = "model.onnx",
-        minimumRamMb = 384,
-        minimumStorageMb = 200,
-        onnxMetadata = OnnxMetadata(
-            inputTensorName = "input_ids",
-            outputTensorName = "waveform",
-            inputShape = listOf(1L, -1L),
-            dataType = "INT64",
-            sampleRate = 16000,
-            vocabFileName = "vocab.json",
-            decoderType = "MMS_VITS"
-        ),
-        description = "Meta MMS VITS neural text-to-speech model for Bengali (ONNX, ~114 MB) by naklitechie. Supports realistic Man and Woman voices.",
-        licenseSource = "naklitechie / Meta MMS (CC-BY-NC-4.0)",
-        runtimeRequirements = "ONNX Runtime Mobile (MMS VITS End-to-End, 16000Hz)",
-        auxiliaryFiles = listOf(
-            ModelAuxiliaryFile(
-                fileName = "vocab.json",
-                downloadUrl = "https://huggingface.co/naklitechie/mms-tts-bn-ONNX/raw/main/vocab.json",
-                expectedSizeBytes = 927L,
-                sha256 = ""
-            ),
-            ModelAuxiliaryFile(
-                fileName = "config.json",
-                downloadUrl = "https://huggingface.co/naklitechie/mms-tts-bn-ONNX/raw/main/config.json",
-                expectedSizeBytes = 1630L,
-                sha256 = ""
-            )
-        )
-    )
-
-    // Active default Bangla voice TTS model (MMS VITS)
-    val BANGLA_VOICE_TTS = MMS_BANGLA_TTS
-
     // Required models for the current English -> Bangla Dubbing pipeline
     val REQUIRED_MODELS: List<ModelInfo>
         get() = listOf(
             ENGLISH_ASR,
-            ENGLISH_TO_BANGLA_TRANSLATION,
-            MMS_BANGLA_TTS
+            ENGLISH_TO_BANGLA_TRANSLATION
         )
 
     val ALL_MODELS: List<ModelInfo>
         get() = listOf(
             ENGLISH_ASR,
-            ENGLISH_TO_BANGLA_TRANSLATION,
-            MMS_BANGLA_TTS
+            ENGLISH_TO_BANGLA_TRANSLATION
         )
 
     fun configureTranslationReleaseUrl(url: String) {

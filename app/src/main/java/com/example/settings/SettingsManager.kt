@@ -12,11 +12,6 @@ enum class ProcessingMode(val displayName: String, val description: String) {
     MEMORY_SAVER("Memory Saver", "Designed for 3-4 GB RAM phones. Uses smaller chunks and unloads models between stages.")
 }
 
-enum class VoiceGender(val displayName: String, val description: String) {
-    FEMALE("নারী কণ্ঠ (Woman Voice)", "বাস্তবসম্মত ও মিষ্টি নারী কণ্ঠ (Realistic Bengali Woman Voice)"),
-    MALE("পুরুষ কণ্ঠ (Man Voice)", "বাস্তবসম্মত ও সাবলীল পুরুষ কণ্ঠ (Realistic Bengali Man Voice)")
-}
-
 class SettingsManager(context: Context) {
 
     private val prefs: SharedPreferences = context.getSharedPreferences("dubbing_settings", Context.MODE_PRIVATE)
@@ -24,20 +19,12 @@ class SettingsManager(context: Context) {
     private val _processingMode = MutableStateFlow(loadProcessingMode())
     val processingMode: StateFlow<ProcessingMode> = _processingMode.asStateFlow()
 
-    private val _voiceGender = MutableStateFlow(loadVoiceGender())
-    val voiceGender: StateFlow<VoiceGender> = _voiceGender.asStateFlow()
-
     private val _autoCleanTempFiles = MutableStateFlow(prefs.getBoolean(KEY_AUTO_CLEAN, true))
     val autoCleanTempFiles: StateFlow<Boolean> = _autoCleanTempFiles.asStateFlow()
 
     fun setProcessingMode(mode: ProcessingMode) {
         prefs.edit().putString(KEY_PROCESSING_MODE, mode.name).apply()
         _processingMode.value = mode
-    }
-
-    fun setVoiceGender(gender: VoiceGender) {
-        prefs.edit().putString(KEY_VOICE_GENDER, gender.name).apply()
-        _voiceGender.value = gender
     }
 
     fun setAutoCleanTempFiles(enabled: Boolean) {
@@ -54,18 +41,8 @@ class SettingsManager(context: Context) {
         }
     }
 
-    private fun loadVoiceGender(): VoiceGender {
-        val name = prefs.getString(KEY_VOICE_GENDER, VoiceGender.FEMALE.name) ?: VoiceGender.FEMALE.name
-        return try {
-            VoiceGender.valueOf(name)
-        } catch (e: Exception) {
-            VoiceGender.FEMALE
-        }
-    }
-
     companion object {
         private const val KEY_PROCESSING_MODE = "key_processing_mode"
-        private const val KEY_VOICE_GENDER = "key_voice_gender"
         private const val KEY_AUTO_CLEAN = "key_auto_clean"
     }
 }

@@ -48,10 +48,44 @@ class DubbingViewModel(application: Application) : AndroidViewModel(application)
     val pipelineState: StateFlow<PipelineProgress?> = pipeline.pipelineState
     val playerState: StateFlow<PlayerState> = playerManager.playerState
     val processingMode: StateFlow<ProcessingMode> = settingsManager.processingMode
-    val voiceGender: StateFlow<com.example.settings.VoiceGender> = settingsManager.voiceGender
 
-    fun setVoiceGender(gender: com.example.settings.VoiceGender) {
-        settingsManager.setVoiceGender(gender)
+    private val _ttsStatus = MutableStateFlow<com.example.tts.BengaliTtsStatus>(com.example.tts.BengaliTtsStatus.Checking)
+    val ttsStatus: StateFlow<com.example.tts.BengaliTtsStatus> = _ttsStatus.asStateFlow()
+
+    init {
+        checkBengaliTts()
+    }
+
+    fun checkBengaliTts() {
+        viewModelScope.launch(Dispatchers.IO) {
+            _ttsStatus.value = com.example.tts.BengaliTtsStatus.Checking
+            val ttsEngine = com.example.tts.BanglaTtsEngine(app)
+            try {
+                val res = ttsEngine.ensureInitialized()
+                if (res.isSuccess) {
+                    val loc = res.getOrThrow()
+                    val engineName = ttsEngine.getEngineName()
+                    _ttsStatus.value = com.example.tts.BengaliTtsStatus.Available(
+                        engineName = engineName,
+                        localeDisplayName = "${loc.displayLanguage} (${loc.displayCountry})"
+                    )
+                } else {
+                    _ttsStatus.value = com.example.tts.BengaliTtsStatus.NotInstalled(
+                        message = res.exceptionOrNull()?.message ?: com.example.tts.BanglaTtsEngine.ERROR_VOICE_NOT_INSTALLED
+                    )
+                }
+            } catch (e: Exception) {
+                _ttsStatus.value = com.example.tts.BengaliTtsStatus.NotInstalled(
+                    message = e.message ?: com.example.tts.BanglaTtsEngine.ERROR_VOICE_NOT_INSTALLED
+                )
+            } finally {
+                ttsEngine.close()
+            }
+        }
+    }
+
+    fun openTtsSettings() {
+        com.example.tts.BanglaTtsEngine.openTtsSettings(app)
     }
 
     // Active project state
@@ -239,29 +273,36 @@ class DubbingViewModel(application: Application) : AndroidViewModel(application)
                         addTestLog("✓ Translation Stage Test Passed.")
                     }
                     "TTS" -> {
-                        addTestLog("Testing MMS Bangla Neural Voice TTS engine (ONNX)...")
-                        val isFemale = voiceGender.value == com.example.settings.VoiceGender.FEMALE
-                        val targetVoice = com.example.models.ModelCatalog.MMS_BANGLA_TTS
-                        val isInstalled = com.example.models.ModelInstaller.isModelInstalled(app, targetVoice)
-                        if (!isInstalled) {
-                            addTestLog("MMS ${targetVoice.name} not on disk yet. Downloading on-device (~114 MB)...")
-                            val dlResult = modelManager.downloader.downloadAndInstall(targetVoice) { p ->
-                                if (p.progressPercent % 20 == 0 || p.progressPercent == 98) {
-                                    addTestLog("Progress: ${p.progressPercent}% - ${p.verificationStatus ?: ""}")
-                                }
-                            }
-                            if (dlResult.isSuccess) {
-                                addTestLog("✓ MMS Bangla model downloaded and verified successfully.")
-                                modelManager.refreshModelStatuses()
-                            } else {
-                                addTestLog("Notice: ${dlResult.exceptionOrNull()?.message}")
-                            }
-                        }
+                        addTestLog("Testing Android Native Bengali TextToSpeech Engine...")
                         val tts = com.example.tts.BanglaTtsEngine(app)
-                        val outWav = File(app.cacheDir, "test_bangla_tts.wav")
-                        tts.synthesize("স্বাগতম। কেমন আছেন? এটি অফলাইন বাংলা ডাবিং টেস্ট।", outWav)
-                        addTestLog("TTS Generated file size: ${outWav.length()} bytes, duration: ${com.example.audio.WavUtils.getWavDurationMs(outWav)}ms")
-                        addTestLog("✓ Bangla TTS Stage Test Passed.")
+                        try {
+                            val initResult = tts.ensureInitialized()
+                            if (initResult.isFailure) {
+                                val reason = initResult.exceptionOrNull()?.message ?: com.example.tts.BanglaTtsEngine.ERROR_VOICE_NOT_INSTALLED
+                                addTestLog("❌ Bengali TTS not available: $reason")
+                                return@launch
+                            }
+                            val loc = initResult.getOrThrow()
+                            addTestLog("✓ Bengali TTS Engine initialized: ${tts.getEngineName() ?: "System Default"} [Locale: $loc]")
+
+                            // Test phrase 1:
+                            val phrase1 = "আজ আমরা অফলাইন এআই ভিডিও ডাবিং প্রদর্শন করছি।"
+                            val outWav1 = File(app.cacheDir, "test_bangla_tts_1.wav")
+                            tts.synthesize(phrase1, outWav1)
+                            addTestLog("Phrase 1: \"$phrase1\"")
+                            addTestLog("  -> Generated file: ${outWav1.length()} bytes, duration: ${com.example.audio.WavUtils.getWavDurationMs(outWav1)}ms, playable: ${com.example.audio.WavUtils.isAudioPlayable(outWav1)}")
+
+                            // Test phrase 2:
+                            val phrase2 = "বাংলাদেশ একটি সুন্দর দেশ। এখানে অনেক মানুষ বাংলা ভাষায় কথা বলে।"
+                            val outWav2 = File(app.cacheDir, "test_bangla_tts_2.wav")
+                            tts.synthesize(phrase2, outWav2)
+                            addTestLog("Phrase 2: \"$phrase2\"")
+                            addTestLog("  -> Generated file: ${outWav2.length()} bytes, duration: ${com.example.audio.WavUtils.getWavDurationMs(outWav2)}ms, playable: ${com.example.audio.WavUtils.isAudioPlayable(outWav2)}")
+
+                            addTestLog("✓ Bangla Native TTS Stage Test Passed.")
+                        } finally {
+                            tts.close()
+                        }
                     }
                     "AUDIO_SYNC" -> {
                         addTestLog("Testing Audio Synchronizer with time-stretching...")

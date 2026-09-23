@@ -92,20 +92,51 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `test mms bangla tokenizer`() {
-        val text = "হ্যালো, কেমন আছেন? আমি বাংলায় কথা বলছি।"
-        val tokens = com.example.tts.MmsTokenizer.tokenize(text)
-        assertTrue(tokens.isNotEmpty())
-        assertEquals(com.example.tts.MmsTokenizer.PAD_TOKEN_ID, tokens.first())
-        assertEquals(com.example.tts.MmsTokenizer.PAD_TOKEN_ID, tokens.last())
+    fun `test native bangla tts engine initialization and text chunking`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val ttsEngine = com.example.tts.BanglaTtsEngine(context)
+        try {
+            // Verify engine chunking and safety on the required sentences
+            val phrase1 = "আজ আমরা অফলাইন এআই ভিডিও ডাবিং প্রদর্শন করছি।"
+            val phrase2 = "বাংলাদেশ একটি সুন্দর দেশ। এখানে অনেক মানুষ বাংলা ভাষায় কথা বলে।"
+
+            val out1 = File(context.cacheDir, "test_phrase1.wav")
+            val out2 = File(context.cacheDir, "test_phrase2.wav")
+
+            runBlocking {
+                ttsEngine.synthesize(phrase1, out1)
+                ttsEngine.synthesize(phrase2, out2)
+            }
+
+            assertTrue(out1.exists())
+            assertTrue(out1.length() > 44L)
+            assertTrue(out2.exists())
+            assertTrue(out2.length() > 44L)
+
+            out1.delete()
+            out2.delete()
+        } finally {
+            ttsEngine.close()
+        }
     }
 
     @Test
-    fun `test mms model catalog info`() {
-        val model = com.example.models.ModelCatalog.MMS_BANGLA_TTS
-        assertEquals("mms_tts_bn", model.id)
-        assertEquals("MMS Bangla Voice (ONNX)", model.name)
-        assertEquals(com.example.models.ModelFormat.ONNX, model.format)
-        assertTrue(model.downloadUrl.contains("naklitechie/mms-tts-bn-ONNX"))
+    fun `test wav utils concatenation and silence generator`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val wav1 = File(context.cacheDir, "test_part1.wav")
+        val wav2 = File(context.cacheDir, "test_part2.wav")
+        val combined = File(context.cacheDir, "test_combined.wav")
+
+        com.example.audio.WavUtils.createSilenceWav(wav1, 500L)
+        com.example.audio.WavUtils.createSilenceWav(wav2, 700L)
+        com.example.audio.WavUtils.concatenateWavFiles(listOf(wav1, wav2), combined)
+
+        assertTrue(combined.exists())
+        val combinedDuration = com.example.audio.WavUtils.getWavDurationMs(combined)
+        assertTrue(combinedDuration >= 1150L)
+
+        wav1.delete()
+        wav2.delete()
+        combined.delete()
     }
 }

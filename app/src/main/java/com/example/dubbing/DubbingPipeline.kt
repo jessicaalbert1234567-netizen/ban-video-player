@@ -197,55 +197,45 @@ class DubbingPipeline(
             // STAGE 5: Bangla Voice Synthesis (TTS) (65% - 85%)
             if (startingStage.ordinal <= ProcessingStage.GENERATE_TTS.ordinal) {
                 checkCancelled()
-                reportStage(projectId, ProcessingStage.GENERATE_TTS, 0, 65, "Preparing Bangla AI Voice Synthesis...", onProgressUpdate)
-
-                val isMmsInstalled = com.example.models.ModelInstaller.isModelInstalled(context, com.example.models.ModelCatalog.MMS_BANGLA_TTS)
-                if (!isMmsInstalled) {
-                    val downloader = com.example.models.ModelDownloader(context)
-                    if (downloader.isNetworkAvailable()) {
-                        reportStage(projectId, ProcessingStage.GENERATE_TTS, 5, 66, "Downloading MMS Bangla Voice model...", onProgressUpdate)
-                        downloader.downloadAndInstall(com.example.models.ModelCatalog.MMS_BANGLA_TTS) { prog ->
-                            val p = (prog.progressPercent * 0.15f).toInt()
-                            reportStageSync(
-                                projectId,
-                                ProcessingStage.GENERATE_TTS,
-                                prog.progressPercent,
-                                65 + p,
-                                prog.verificationStatus ?: "Downloading MMS Bangla model (${prog.progressPercent}%)...",
-                                onProgressUpdate
-                            )
-                        }
-                    }
-                }
+                reportStage(projectId, ProcessingStage.GENERATE_TTS, 0, 65, "Preparing Android Bengali TextToSpeech...", onProgressUpdate)
 
                 val ttsEngine = BanglaTtsEngine(context)
-                ttsEngine.loadTtsIntoMemory()
-                val ttsSegments = mutableListOf<TranscriptSegmentEntity>()
-
-                for (i in segments.indices) {
-                    checkCancelled()
-                    val seg = segments[i]
-                    val textToSpeak = seg.translatedText ?: seg.sourceText
-                    val segAudioFile = File(segmentsDir, "tts_seg_${seg.index}.wav")
-
-                    val startSegTime = System.currentTimeMillis()
-                    try {
-                        ttsEngine.synthesize(textToSpeak, segAudioFile)
-                        Log.i(TAG, "Segment ${seg.index + 1}/${segments.size} synthesized in ${System.currentTimeMillis() - startSegTime} ms")
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Segment ${seg.index} voice synthesis exception: ${e.message}, falling back to duration-padded audio")
-                        val fallbackDurationMs = (seg.endMs - seg.startMs).coerceAtLeast(300L)
-                        com.example.audio.WavUtils.createSilenceWav(segAudioFile, fallbackDurationMs)
+                try {
+                    val initResult = ttsEngine.ensureInitialized()
+                    if (initResult.isFailure) {
+                        val reason = initResult.exceptionOrNull()?.message ?: BanglaTtsEngine.ERROR_VOICE_NOT_INSTALLED
+                        reportStage(projectId, ProcessingStage.GENERATE_TTS, 0, 65, "Failed: $reason", onProgressUpdate)
+                        throw IllegalStateException(reason)
                     }
-                    ttsSegments.add(seg.copy(audioSegmentPath = segAudioFile.absolutePath))
 
-                    val stageProg = ((i + 1).toFloat() / segments.size)
-                    val overall = 65 + (stageProg * 20).toInt()
-                    reportStage(projectId, ProcessingStage.GENERATE_TTS, (stageProg * 100).toInt(), overall, "Synthesizing segment ${i + 1}/${segments.size}", onProgressUpdate)
+                    val ttsSegments = mutableListOf<TranscriptSegmentEntity>()
+
+                    for (i in segments.indices) {
+                        checkCancelled()
+                        val seg = segments[i]
+                        val textToSpeak = seg.translatedText ?: seg.sourceText
+                        val segAudioFile = File(segmentsDir, "tts_seg_${seg.index}.wav")
+
+                        val startSegTime = System.currentTimeMillis()
+                        try {
+                            ttsEngine.synthesize(textToSpeak, segAudioFile)
+                            Log.i(TAG, "Segment ${seg.index + 1}/${segments.size} synthesized in ${System.currentTimeMillis() - startSegTime} ms")
+                        } catch (e: Exception) {
+                            val failMsg = "Bangla TTS failed for segment ${seg.index + 1}: ${e.message}"
+                            Log.e(TAG, failMsg, e)
+                            throw IllegalStateException(failMsg)
+                        }
+                        ttsSegments.add(seg.copy(audioSegmentPath = segAudioFile.absolutePath))
+
+                        val stageProg = ((i + 1).toFloat() / segments.size)
+                        val overall = 65 + (stageProg * 20).toInt()
+                        reportStage(projectId, ProcessingStage.GENERATE_TTS, (stageProg * 100).toInt(), overall, "Synthesizing segment ${i + 1}/${segments.size}", onProgressUpdate)
+                    }
+                    segments = ttsSegments
+                    repository.saveSegments(segments)
+                } finally {
+                    ttsEngine.close()
                 }
-                segments = ttsSegments
-                repository.saveSegments(segments)
-                ttsEngine.close()
                 com.example.models.MemoryDiagnostics.logHeapSnapshot("PIPELINE", "TTS Stage Complete, released TTS session")
                 System.gc()
             }

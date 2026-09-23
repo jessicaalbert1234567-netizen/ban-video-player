@@ -204,5 +204,67 @@ object WavUtils {
         }
     }
 
+    /**
+     * Concatenates multiple WAV audio files into a single WAV file sequentially.
+     */
+    fun concatenateWavFiles(inputFiles: List<File>, outputFile: File) {
+        val validFiles = inputFiles.filter { it.exists() && it.length() > 44 }
+        if (validFiles.isEmpty()) {
+            createSilenceWav(outputFile, 300L)
+            return
+        }
+        if (validFiles.size == 1) {
+            validFiles[0].copyTo(outputFile, overwrite = true)
+            return
+        }
+
+        // Read sample rate and channels from first file
+        var sampleRate = DEFAULT_SAMPLE_RATE
+        var channels = DEFAULT_CHANNELS
+        var bitsPerSample = DEFAULT_BITS_PER_SAMPLE
+        try {
+            FileInputStream(validFiles[0]).use { fis ->
+                val header = ByteArray(44)
+                val read = fis.read(header)
+                if (read >= 44) {
+                    val bb = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN)
+                    channels = bb.getShort(22).toInt()
+                    sampleRate = bb.getInt(24)
+                    bitsPerSample = bb.getShort(34).toInt()
+                }
+            }
+        } catch (_: Exception) {}
+
+        var totalPcmBytes = 0L
+        for (f in validFiles) {
+            totalPcmBytes += (f.length() - 44).coerceAtLeast(0L)
+        }
+
+        FileOutputStream(outputFile).use { fos ->
+            writeWavHeader(fos, totalPcmBytes, totalPcmBytes + 36, sampleRate, channels, bitsPerSample)
+            val buffer = ByteArray(4096)
+            for (f in validFiles) {
+                FileInputStream(f).use { fis ->
+                    fis.skip(44)
+                    var read: Int
+                    while (fis.read(buffer).also { read = it } != -1) {
+                        fos.write(buffer, 0, read)
+                    }
+                }
+            }
+        }
+        updateWavHeader(outputFile)
+    }
+
+    /**
+     * Checks if a WAV file exists, has a valid header and contains non-silent audio.
+     */
+    fun isAudioPlayable(wavFile: File, minDurationMs: Long = 100L): Boolean {
+        if (!wavFile.exists() || wavFile.length() <= 44) return false
+        val durationMs = getWavDurationMs(wavFile)
+        if (durationMs < minDurationMs) return false
+        return !isSegmentSilent(wavFile, 0L, durationMs.coerceAtMost(2000L), thresholdRms = 10.0)
+    }
+
     private fun bufferSize(remaining: Long): Int = remaining.coerceAtMost(4096).toInt()
 }

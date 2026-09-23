@@ -115,8 +115,7 @@ class ModelManager(private val context: Context) {
         _modelsState.value = updatedList
         val hasAsr = updatedList.any { it.info.id == ModelCatalog.ENGLISH_ASR.id && it.isReadyForOfflineUse }
         val hasTranslation = updatedList.any { it.info.id == ModelCatalog.ENGLISH_TO_BANGLA_TRANSLATION.id && it.isReadyForOfflineUse }
-        val hasVoice = updatedList.any { it.info.id == ModelCatalog.MMS_BANGLA_TTS.id && it.isReadyForOfflineUse }
-        _isAllRequiredReady.value = hasAsr && hasTranslation && hasVoice
+        _isAllRequiredReady.value = hasAsr && hasTranslation
 
         // Update cached storage summary asynchronously
         val baseDir = File(context.filesDir, "models")
@@ -178,8 +177,7 @@ class ModelManager(private val context: Context) {
         _modelsState.value = updated
         val hasAsr = updated.any { it.info.id == ModelCatalog.ENGLISH_ASR.id && it.isReadyForOfflineUse }
         val hasTranslation = updated.any { it.info.id == ModelCatalog.ENGLISH_TO_BANGLA_TRANSLATION.id && it.isReadyForOfflineUse }
-        val hasVoice = updated.any { it.info.id == ModelCatalog.MMS_BANGLA_TTS.id && it.isReadyForOfflineUse }
-        _isAllRequiredReady.value = hasAsr && hasTranslation && hasVoice
+        _isAllRequiredReady.value = hasAsr && hasTranslation
 
         // When a model finishes installation, invalidate its cache and refresh status on Dispatchers.IO
         if (anyCompleted) {

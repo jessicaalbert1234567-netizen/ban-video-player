@@ -48,11 +48,11 @@ class ModelInitializationTest {
 
     @Test
     fun testBanglaTtsEngineDefaultStateIsUnloaded() {
-        val states = BanglaTtsEngine.EngineState.values()
-        assertTrue(states.contains(BanglaTtsEngine.EngineState.NOT_LOADED))
-        assertTrue(states.contains(BanglaTtsEngine.EngineState.LOADING))
-        assertTrue(states.contains(BanglaTtsEngine.EngineState.LOADED))
-        assertTrue(states.contains(BanglaTtsEngine.EngineState.FAILED))
+        assertEquals("Bengali TTS voice is not installed on this device.", BanglaTtsEngine.ERROR_VOICE_NOT_INSTALLED)
+        assertEquals("bn", BanglaTtsEngine.LOCALE_BD.language)
+        assertEquals("BD", BanglaTtsEngine.LOCALE_BD.country)
+        assertEquals("bn", BanglaTtsEngine.LOCALE_IN.language)
+        assertEquals("IN", BanglaTtsEngine.LOCALE_IN.country)
     }
 
     @Test

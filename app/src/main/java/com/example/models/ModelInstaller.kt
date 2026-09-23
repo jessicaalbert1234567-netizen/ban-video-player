@@ -45,28 +45,6 @@ object ModelInstaller {
                     return candidate
                 }
             }
-        } else if (model.type == ModelType.TTS) {
-            val alternatives = listOf(
-                model.archiveName,
-                "bengali_encoder_female.onnx",
-                "en_encoder_male.onnx",
-                "bengali_encoder_female_int8.onnx",
-                "en_encoder_male_int8.onnx",
-                "encoder.onnx",
-                "bn_BD-google-medium.onnx",
-                "model.onnx"
-            )
-            for (alt in alternatives) {
-                val candidate = File(dir, alt)
-                if (candidate.exists() && candidate.isFile && candidate.length() > 0 && candidate.canRead()) {
-                    return candidate
-                }
-            }
-            // Check legacy tts/bn directory
-            val legacyCandidate = File(File(context.filesDir, "models/tts/${model.sourceLanguage}"), model.archiveName)
-            if (legacyCandidate.exists() && legacyCandidate.isFile && legacyCandidate.length() > 0) {
-                return legacyCandidate
-            }
         }
         return defaultFile
     }

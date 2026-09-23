@@ -16,10 +16,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.settings.ProcessingMode
-import com.example.settings.VoiceGender
+import com.example.tts.BengaliTtsStatus
 import com.example.ui.DubbingViewModel
 import com.example.ui.theme.ErrorRed
 import com.example.ui.theme.SuccessGreen
+import com.example.ui.theme.WarningAmber
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -28,7 +29,7 @@ fun SettingsScreen(
     onNavigateBack: () -> Unit
 ) {
     val processingMode by viewModel.processingMode.collectAsState()
-    val voiceGender by viewModel.voiceGender.collectAsState()
+    val ttsStatus by viewModel.ttsStatus.collectAsState()
     val modelsState by viewModel.modelsState.collectAsState()
     var storageBreakdown by remember { mutableStateOf(viewModel.getStorageBreakdown()) }
     var clearedBytesMsg by remember { mutableStateOf<String?>(null) }
@@ -64,116 +65,107 @@ fun SettingsScreen(
             // Bangla Dubbing Voice Section
             item {
                 Text(
-                    text = "Bangla Dubbing Voice (ভয়েস নির্বাচন)",
+                    text = "বাংলা ভয়েস",
                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                 )
                 Text(
-                    text = "Select MMS Bengali neural voice (পুরুষ / নারী কণ্ঠ)",
+                    text = "Android TTS",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-            }
-
-            items(VoiceGender.entries) { gender ->
-                val targetModel = com.example.models.ModelCatalog.MMS_BANGLA_TTS
-                val modelItem = modelsState.firstOrNull { it.info.id == targetModel.id }
-                val isInstalled = modelItem?.isReadyForOfflineUse == true
-                val isDownloading = modelItem?.downloadProgress?.status == com.example.models.ModelStatus.DOWNLOADING ||
-                        modelItem?.downloadProgress?.status == com.example.models.ModelStatus.INSTALLING ||
-                        modelItem?.downloadProgress?.status == com.example.models.ModelStatus.VERIFYING
-                val isError = modelItem?.downloadProgress?.status == com.example.models.ModelStatus.ERROR
-                val errorMessage = modelItem?.downloadProgress?.errorMessage
-                val progressPercent = modelItem?.downloadProgress?.progressPercent ?: 0
-                val progressStatus = modelItem?.downloadProgress?.verificationStatus
+                Spacer(modifier = Modifier.height(6.dp))
 
                 Card(
                     colors = CardDefaults.cardColors(
-                        containerColor = if (voiceGender == gender) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f) else MaterialTheme.colorScheme.surface
+                        containerColor = when (ttsStatus) {
+                            is BengaliTtsStatus.Available -> SuccessGreen.copy(alpha = 0.08f)
+                            is BengaliTtsStatus.NotInstalled -> WarningAmber.copy(alpha = 0.08f)
+                            else -> MaterialTheme.colorScheme.surface
+                        }
                     ),
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Column(modifier = Modifier.padding(14.dp)) {
+                    Column(modifier = Modifier.padding(16.dp)) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            RadioButton(
-                                selected = voiceGender == gender,
-                                onClick = { viewModel.setVoiceGender(gender) },
-                                modifier = Modifier.testTag("voice_${gender.name}")
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
                             Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = gender.displayName,
-                                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
-                                )
-                                Text(
-                                    text = gender.description,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            if (isInstalled) {
-                                Surface(
-                                    color = SuccessGreen.copy(alpha = 0.15f),
-                                    shape = RoundedCornerShape(8.dp)
-                                ) {
-                                    Text(
-                                        text = "✓ Ready",
-                                        color = SuccessGreen,
-                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                                    )
+                                when (val status = ttsStatus) {
+                                    is BengaliTtsStatus.Checking -> {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(16.dp),
+                                                strokeWidth = 2.dp
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text(
+                                                text = "Checking Bengali voice support...",
+                                                style = MaterialTheme.typography.bodyMedium
+                                            )
+                                        }
+                                    }
+                                    is BengaliTtsStatus.Available -> {
+                                        Text(
+                                            text = "✓ Bengali voice available",
+                                            color = SuccessGreen,
+                                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                                        )
+                                        Spacer(modifier = Modifier.height(2.dp))
+                                        Text(
+                                            text = "Engine: ${status.engineName ?: "System Default"} • ${status.localeDisplayName}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    is BengaliTtsStatus.NotInstalled -> {
+                                        Text(
+                                            text = "⚠ Bengali voice not installed",
+                                            color = WarningAmber,
+                                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                                        )
+                                        Spacer(modifier = Modifier.height(2.dp))
+                                        Text(
+                                            text = status.message,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
                                 }
+                            }
+
+                            IconButton(
+                                onClick = { viewModel.checkBengaliTts() },
+                                modifier = Modifier.testTag("refresh_tts_button")
+                            ) {
+                                Icon(
+                                    Icons.Default.Refresh,
+                                    contentDescription = "Refresh TTS status",
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
                             }
                         }
 
-                        if (isDownloading) {
-                            Spacer(modifier = Modifier.height(8.dp))
-                            LinearProgressIndicator(
-                                progress = { progressPercent / 100f },
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = progressStatus ?: "Downloading: $progressPercent%",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        } else if (!isInstalled) {
-                            Spacer(modifier = Modifier.height(8.dp))
-                            if (isError && !errorMessage.isNullOrBlank()) {
-                                Text(
-                                    text = errorMessage,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = ErrorRed
-                                )
-                                Spacer(modifier = Modifier.height(4.dp))
-                            }
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
+                        if (ttsStatus is BengaliTtsStatus.NotInstalled) {
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Button(
+                                onClick = { viewModel.openTtsSettings() },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.primary
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("install_bengali_voice_button")
                             ) {
-                                Text(
-                                    text = if (isError) "Download incomplete" else "Not downloaded (~114 MB)",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = if (isError) ErrorRed else MaterialTheme.colorScheme.onSurfaceVariant
+                                Icon(
+                                    Icons.Default.Settings,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
                                 )
-                                OutlinedButton(
-                                    onClick = { viewModel.downloadModel(targetModel) },
-                                    modifier = Modifier.testTag("download_voice_${gender.name}")
-                                ) {
-                                    Icon(
-                                        Icons.Default.Download,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(if (isError) "Retry Download" else "Download Voice", style = MaterialTheme.typography.labelMedium)
-                                }
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Install Bengali voice")
                             }
                         }
                     }
