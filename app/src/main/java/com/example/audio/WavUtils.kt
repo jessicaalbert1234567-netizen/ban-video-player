@@ -105,14 +105,88 @@ object WavUtils {
         }
     }
 
+    data class WavMetadata(
+        val sampleRate: Int,
+        val channels: Int,
+        val bitsPerSample: Int,
+        val dataOffset: Int,
+        val dataSize: Long
+    )
+
+    /**
+     * Accurately parses the RIFF WAV header and finds the exact fmt and data chunks.
+     */
+    fun readWavMetadata(file: File): WavMetadata? {
+        if (!file.exists() || file.length() < 44) return null
+        return try {
+            FileInputStream(file).use { fis ->
+                val header = ByteArray(12)
+                if (fis.read(header) < 12) return null
+                if (header[0] != 'R'.code.toByte() || header[1] != 'I'.code.toByte() ||
+                    header[2] != 'F'.code.toByte() || header[3] != 'F'.code.toByte() ||
+                    header[8] != 'W'.code.toByte() || header[9] != 'A'.code.toByte() ||
+                    header[10] != 'V'.code.toByte() || header[11] != 'E'.code.toByte()
+                ) {
+                    return null
+                }
+
+                var sampleRate = DEFAULT_SAMPLE_RATE
+                var channels = DEFAULT_CHANNELS
+                var bitsPerSample = DEFAULT_BITS_PER_SAMPLE
+                var dataOffset = 44
+                var dataSize = (file.length() - 44).coerceAtLeast(0L)
+                var currentOffset = 12
+
+                val chunkHeader = ByteArray(8)
+                while (fis.read(chunkHeader) == 8) {
+                    currentOffset += 8
+                    val chunkId = String(chunkHeader, 0, 4)
+                    val bb = ByteBuffer.wrap(chunkHeader, 4, 4).order(ByteOrder.LITTLE_ENDIAN)
+                    val chunkSize = bb.getInt().toLong() and 0xFFFFFFFFL
+
+                    if (chunkId == "fmt ") {
+                        val fmtData = ByteArray(chunkSize.toInt().coerceAtMost(40))
+                        val readFmt = fis.read(fmtData)
+                        currentOffset += readFmt
+                        val skipRemaining = chunkSize - readFmt
+                        if (skipRemaining > 0) fis.skip(skipRemaining)
+                        currentOffset += skipRemaining.toInt()
+
+                        val fmtBb = ByteBuffer.wrap(fmtData).order(ByteOrder.LITTLE_ENDIAN)
+                        if (fmtData.size >= 16) {
+                            channels = fmtBb.getShort(2).toInt()
+                            sampleRate = fmtBb.getInt(4)
+                            bitsPerSample = fmtBb.getShort(14).toInt()
+                        }
+                    } else if (chunkId == "data") {
+                        dataOffset = currentOffset
+                        dataSize = chunkSize
+                        break
+                    } else {
+                        fis.skip(chunkSize)
+                        currentOffset += chunkSize.toInt()
+                    }
+                }
+
+                WavMetadata(sampleRate, channels, bitsPerSample, dataOffset, dataSize)
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     /**
      * Gets duration of a 16-bit mono 16kHz WAV file in milliseconds.
      */
     fun getWavDurationMs(wavFile: File, sampleRate: Int = DEFAULT_SAMPLE_RATE): Long {
         if (!wavFile.exists() || wavFile.length() <= 44) return 0L
-        val audioBytes = wavFile.length() - 44
-        val bytesPerMs = (sampleRate * 2) / 1000.0 // 16-bit = 2 bytes
-        return (audioBytes / bytesPerMs).toLong()
+        val meta = readWavMetadata(wavFile)
+        val effSampleRate = meta?.sampleRate ?: sampleRate
+        val effChannels = meta?.channels ?: 1
+        val effBits = meta?.bitsPerSample ?: 16
+        val dataBytes = meta?.dataSize ?: (wavFile.length() - 44)
+        val bytesPerMs = (effSampleRate * effChannels * (effBits / 8)) / 1000.0
+        return if (bytesPerMs > 0) (dataBytes / bytesPerMs).toLong() else 0L
     }
 
     /**

@@ -79,6 +79,10 @@ class MediaPlayerManager(private val context: Context) {
                     override fun onTracksChanged(tracks: Tracks) {
                         val audioGroups = tracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
                         Log.i(TAG, "onTracksChanged: found ${audioGroups.size} audio track group(s)")
+                        for (i in audioGroups.indices) {
+                            val g = audioGroups[i]
+                            Log.i(TAG, "Track group $i: isSelected=${g.isSelected}, isSupported=${g.isSupported}, format=${g.getTrackFormat(0)}")
+                        }
                         applyTrackSelection(_playerState.value.audioChoice)
                     }
 
@@ -121,16 +125,23 @@ class MediaPlayerManager(private val context: Context) {
         }
 
         val hasDubbed = effectiveDubbedFile != null
-        _playerState.value = _playerState.value.copy(hasDubbedAudio = hasDubbed)
+        val initialChoice = if (hasDubbed) AudioTrackChoice.BANGLA_DUB else AudioTrackChoice.ORIGINAL
+        _playerState.value = _playerState.value.copy(hasDubbedAudio = hasDubbed, audioChoice = initialChoice)
 
         if (effectiveDubbedFile != null) {
             val audioUri = Uri.fromFile(effectiveDubbedFile)
-            // Use standard MediaItem without hardcoding AUDIO_AAC so Media3 auto-detects M4A container or WAV
-            val audioItem = MediaItem.fromUri(audioUri)
+            val audioItem = MediaItem.Builder()
+                .setUri(audioUri)
+                .setMediaMetadata(
+                    androidx.media3.common.MediaMetadata.Builder()
+                        .setTitle("বাংলা AI Dub")
+                        .build()
+                )
+                .build()
             val audioSource: MediaSource = ProgressiveMediaSource.Factory(dataSourceFactory).createMediaSource(audioItem)
 
-            // Merge video source and external dubbed audio source with duration clipping
-            val mergedSource = MergingMediaSource(true, true, videoSource, audioSource)
+            // Merge video source and external dubbed audio source without clipping video duration
+            val mergedSource = MergingMediaSource(true, false, videoSource, audioSource)
             exo.setMediaSource(mergedSource)
             Log.i(TAG, "Merged video source with dubbed audio file: ${effectiveDubbedFile.absolutePath} (${effectiveDubbedFile.length()} bytes)")
         } else {
@@ -139,7 +150,8 @@ class MediaPlayerManager(private val context: Context) {
         }
 
         exo.prepare()
-        applyTrackSelection(_playerState.value.audioChoice)
+        exo.volume = 1.0f
+        applyTrackSelection(initialChoice)
     }
 
     fun setAudioChoice(choice: AudioTrackChoice) {

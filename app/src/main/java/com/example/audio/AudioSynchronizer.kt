@@ -33,8 +33,13 @@ class AudioSynchronizer(private val context: Context) {
         val tempAlignedWav = File(context.cacheDir, "temp_aligned_dub_${System.currentTimeMillis()}.wav")
 
         try {
-            val sampleRate = WavUtils.DEFAULT_SAMPLE_RATE // 16000
-            val bytesPerMs = (sampleRate * 2) / 1000L      // 32 bytes/ms
+            val firstValidSeg = segments.mapNotNull { it.audioSegmentPath?.let { path -> File(path) } }
+                .firstOrNull { it.exists() && it.length() > 44 }
+            val detectedMeta = firstValidSeg?.let { WavUtils.readWavMetadata(it) }
+            val sampleRate = detectedMeta?.sampleRate ?: WavUtils.DEFAULT_SAMPLE_RATE
+            val bytesPerMs = (sampleRate * 2) / 1000L      // e.g. 32 bytes/ms for 16k, 48 bytes/ms for 24k
+
+            Log.i(TAG, "Audio synchronization using sampleRate: $sampleRate Hz")
 
             val targetTotalBytes = totalDurationMs * bytesPerMs
             val fos = FileOutputStream(tempAlignedWav)
@@ -96,7 +101,7 @@ class AudioSynchronizer(private val context: Context) {
             tempAlignedWav.copyTo(masterWav, overwrite = true)
 
             // 4. Encode aligned WAV to AAC/M4A (Android standard container)
-            val encodeSuccess = encodeWavToAacM4a(tempAlignedWav, outputM4aFile)
+            val encodeSuccess = encodeWavToAacM4a(tempAlignedWav, outputM4aFile, sampleRate)
             onProgress(1.0f)
 
             if (encodeSuccess && outputM4aFile.exists() && outputM4aFile.length() > 0) {
@@ -127,8 +132,10 @@ class AudioSynchronizer(private val context: Context) {
     }
 
     private fun writeSegmentPcm(segFile: File, fos: FileOutputStream, sampleRate: Int = 16000) {
+        val meta = WavUtils.readWavMetadata(segFile)
+        val dataOffset = meta?.dataOffset ?: 44
         FileInputStream(segFile).use { fis ->
-            fis.skip(44) // Skip WAV header
+            if (dataOffset > 0) fis.skip(dataOffset.toLong())
             val rawBytes = fis.readBytes()
             if (rawBytes.size < 2) return
 
@@ -169,8 +176,10 @@ class AudioSynchronizer(private val context: Context) {
         speedFactor: Double,
         sampleRate: Int
     ) {
+        val meta = WavUtils.readWavMetadata(segFile)
+        val dataOffset = meta?.dataOffset ?: 44
         FileInputStream(segFile).use { fis ->
-            fis.skip(44)
+            if (dataOffset > 0) fis.skip(dataOffset.toLong())
             val rawBytes = fis.readBytes()
             if (rawBytes.size < 2) return
 
@@ -210,18 +219,20 @@ class AudioSynchronizer(private val context: Context) {
     }
 
     /**
-     * Encodes 16kHz Mono PCM WAV to AAC M4A using Android MediaCodec + MediaMuxer.
+     * Encodes PCM WAV to AAC M4A using Android MediaCodec + MediaMuxer.
      */
-    private fun encodeWavToAacM4a(wavFile: File, m4aFile: File): Boolean {
+    private fun encodeWavToAacM4a(wavFile: File, m4aFile: File, sampleRate: Int = WavUtils.DEFAULT_SAMPLE_RATE): Boolean {
         var codec: MediaCodec? = null
         var muxer: MediaMuxer? = null
 
         return try {
-            val sampleRate = WavUtils.DEFAULT_SAMPLE_RATE
-            val channelCount = 1
+            val meta = WavUtils.readWavMetadata(wavFile)
+            val effSampleRate = meta?.sampleRate ?: sampleRate
+            val channelCount = meta?.channels ?: 1
             val bitRate = 64000 // 64 kbps AAC
+            val dataOffset = meta?.dataOffset ?: 44
 
-            val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, channelCount)
+            val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, effSampleRate, channelCount)
             format.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
             format.setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
             format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16384)
@@ -236,7 +247,7 @@ class AudioSynchronizer(private val context: Context) {
 
             val bufferInfo = MediaCodec.BufferInfo()
             val fis = FileInputStream(wavFile)
-            fis.skip(44)
+            if (dataOffset > 0) fis.skip(dataOffset.toLong())
 
             val inputBuffer = ByteArray(4096)
             var isInputEos = false

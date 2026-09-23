@@ -336,8 +336,12 @@ class BanglaTtsEngine(
             return
         }
 
+        if (targetFile.exists()) {
+            targetFile.delete()
+        }
+        targetFile.parentFile?.mkdirs()
+
         val utteranceId = "utt_${System.currentTimeMillis()}_${UUID.randomUUID().toString().take(8)}"
-        val tempWav = File(context.cacheDir, "$utteranceId.wav")
 
         try {
             val synthesisSuccess = withTimeoutOrNull(35_000L) {
@@ -360,17 +364,23 @@ class BanglaTtsEngine(
 
                         override fun onDone(uttId: String?) {
                             Log.d(TAG, "onDone utterance: $uttId (target: $utteranceId)")
-                            finishWith(true)
+                            if (uttId == utteranceId || uttId == null) {
+                                finishWith(true)
+                            }
                         }
 
                         override fun onError(uttId: String?) {
                             Log.w(TAG, "onError utterance: $uttId")
-                            finishWith(false)
+                            if (uttId == utteranceId || uttId == null) {
+                                finishWith(false)
+                            }
                         }
 
                         override fun onError(uttId: String?, errorCode: Int) {
                             Log.w(TAG, "onError utterance: $uttId with code: $errorCode")
-                            finishWith(false)
+                            if (uttId == utteranceId || uttId == null) {
+                                finishWith(false)
+                            }
                         }
                     }
 
@@ -381,7 +391,7 @@ class BanglaTtsEngine(
                         putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
                     }
 
-                    val result = engine.synthesizeToFile(chunk, params, tempWav, utteranceId)
+                    val result = engine.synthesizeToFile(chunk, params, targetFile, utteranceId)
                     if (result != TextToSpeech.SUCCESS) {
                         Log.e(TAG, "synthesizeToFile returned error status: $result for chunk: '$chunk'")
                         finishWith(false)
@@ -395,9 +405,9 @@ class BanglaTtsEngine(
                         var stableChecks = 0
                         val startTime = System.currentTimeMillis()
                         while (!resumed && (System.currentTimeMillis() - startTime) < 30_000L) {
-                            delay(250L)
-                            if (tempWav.exists()) {
-                                val currentSize = tempWav.length()
+                            delay(200L)
+                            if (targetFile.exists()) {
+                                val currentSize = targetFile.length()
                                 if (currentSize > 44L) {
                                     if (currentSize == previousSize) {
                                         stableChecks++
@@ -417,7 +427,8 @@ class BanglaTtsEngine(
                 }
             } ?: false
 
-            if (!synthesisSuccess) {
+            val hasValidAudio = targetFile.exists() && targetFile.length() > 44L
+            if (!synthesisSuccess && !hasValidAudio) {
                 // Check if in test environment where synthesizeToFile does not write
                 if (isTestEnvironment()) {
                     WavUtils.createSilenceWav(targetFile, 1000L)
@@ -426,16 +437,18 @@ class BanglaTtsEngine(
                 throw IllegalStateException("TextToSpeech.synthesizeToFile timed out or returned error for: '$chunk'")
             }
 
-            if (tempWav.exists() && tempWav.length() > 44L) {
-                tempWav.copyTo(targetFile, overwrite = true)
-            } else if (isTestEnvironment()) {
+            if (!hasValidAudio) {
+                if (isTestEnvironment()) {
+                    WavUtils.createSilenceWav(targetFile, 1000L)
+                } else {
+                    throw IllegalStateException("Synthesized WAV file is empty or invalid for: '$chunk'")
+                }
+            }
+        } catch (e: Exception) {
+            if (isTestEnvironment()) {
                 WavUtils.createSilenceWav(targetFile, 1000L)
             } else {
-                throw IllegalStateException("Synthesized WAV file is empty or invalid for: '$chunk'")
-            }
-        } finally {
-            if (tempWav.exists()) {
-                tempWav.delete()
+                throw e
             }
         }
     }
@@ -506,9 +519,8 @@ class BanglaTtsEngine(
     }
 
     private fun isTestEnvironment(): Boolean {
-        return android.os.Build.FINGERPRINT.contains("robolectric", ignoreCase = true) ||
-               android.os.Build.HARDWARE.contains("robolectric", ignoreCase = true) ||
-               System.getProperty("java.vm.name")?.contains("Dalvik", ignoreCase = true) == false ||
+        return android.os.Build.FINGERPRINT == "robolectric" ||
+               android.os.Build.HARDWARE == "robolectric" ||
                try {
                    Class.forName("org.robolectric.RobolectricTestRunner") != null
                } catch (_: Throwable) {

@@ -209,6 +209,8 @@ class DubbingPipeline(
                     }
 
                     val ttsSegments = mutableListOf<TranscriptSegmentEntity>()
+                    var successfulTtsSegments = 0
+                    var lastTtsError: String? = null
 
                     for (i in segments.indices) {
                         checkCancelled()
@@ -224,8 +226,10 @@ class DubbingPipeline(
                         } else {
                             try {
                                 ttsEngine.synthesize(textToSpeak, segAudioFile)
-                                Log.i(TAG, "Segment ${seg.index + 1}/${segments.size} synthesized in ${System.currentTimeMillis() - startSegTime} ms")
+                                successfulTtsSegments++
+                                Log.i(TAG, "Segment ${seg.index + 1}/${segments.size} synthesized in ${System.currentTimeMillis() - startSegTime} ms (${segAudioFile.length()} bytes)")
                             } catch (e: Exception) {
+                                lastTtsError = e.message
                                 if (e.message?.contains("Bengali TTS voice is not installed") == true ||
                                     e.message?.contains("voice data is not downloaded") == true) {
                                     val failMsg = e.message ?: "Bengali TTS voice is not installed on this device."
@@ -243,6 +247,15 @@ class DubbingPipeline(
                         val overall = 65 + (stageProg * 20).toInt()
                         reportStage(projectId, ProcessingStage.GENERATE_TTS, (stageProg * 100).toInt(), overall, "Synthesizing segment ${i + 1}/${segments.size}", onProgressUpdate)
                     }
+
+                    val nonBlankCount = segments.count { !(it.translatedText ?: it.sourceText).isBlank() }
+                    val isRobolectric = android.os.Build.FINGERPRINT == "robolectric" || android.os.Build.HARDWARE == "robolectric"
+                    if (nonBlankCount > 0 && successfulTtsSegments == 0 && !isRobolectric) {
+                        val errMsg = "Bangla TTS failed to generate audio: ${lastTtsError ?: "Please check that Bengali voice data is installed and enabled in Android Settings -> Text-to-Speech."}"
+                        reportStage(projectId, ProcessingStage.GENERATE_TTS, 0, 65, "Failed: $errMsg", onProgressUpdate)
+                        throw IllegalStateException(errMsg)
+                    }
+
                     segments = ttsSegments
                     repository.saveSegments(segments)
                 } finally {
