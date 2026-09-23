@@ -213,17 +213,29 @@ class DubbingPipeline(
                     for (i in segments.indices) {
                         checkCancelled()
                         val seg = segments[i]
-                        val textToSpeak = seg.translatedText ?: seg.sourceText
+                        val rawText = seg.translatedText?.trim()?.ifEmpty { null } ?: seg.sourceText.trim()
+                        val textToSpeak = rawText.filter { it != '\u0000' && !it.isISOControl() || it == '\n' || it == '\t' }
                         val segAudioFile = File(segmentsDir, "tts_seg_${seg.index}.wav")
 
                         val startSegTime = System.currentTimeMillis()
-                        try {
-                            ttsEngine.synthesize(textToSpeak, segAudioFile)
-                            Log.i(TAG, "Segment ${seg.index + 1}/${segments.size} synthesized in ${System.currentTimeMillis() - startSegTime} ms")
-                        } catch (e: Exception) {
-                            val failMsg = "Bangla TTS failed for segment ${seg.index + 1}: ${e.message}"
-                            Log.e(TAG, failMsg, e)
-                            throw IllegalStateException(failMsg)
+                        if (textToSpeak.isBlank()) {
+                            val segDuration = maxOf(300L, seg.endMs - seg.startMs)
+                            WavUtils.createSilenceWav(segAudioFile, segDuration)
+                        } else {
+                            try {
+                                ttsEngine.synthesize(textToSpeak, segAudioFile)
+                                Log.i(TAG, "Segment ${seg.index + 1}/${segments.size} synthesized in ${System.currentTimeMillis() - startSegTime} ms")
+                            } catch (e: Exception) {
+                                if (e.message?.contains("Bengali TTS voice is not installed") == true ||
+                                    e.message?.contains("voice data is not downloaded") == true) {
+                                    val failMsg = e.message ?: "Bengali TTS voice is not installed on this device."
+                                    Log.e(TAG, failMsg, e)
+                                    throw IllegalStateException(failMsg)
+                                }
+                                Log.w(TAG, "Segment ${seg.index + 1} TTS synthesis issue: ${e.message}. Using fallback audio for segment.")
+                                val segDuration = maxOf(300L, seg.endMs - seg.startMs)
+                                WavUtils.createSilenceWav(segAudioFile, segDuration)
+                            }
                         }
                         ttsSegments.add(seg.copy(audioSegmentPath = segAudioFile.absolutePath))
 

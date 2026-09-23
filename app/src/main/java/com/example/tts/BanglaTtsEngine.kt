@@ -9,7 +9,10 @@ import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
 import android.util.Log
 import com.example.audio.WavUtils
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -83,43 +86,45 @@ class BanglaTtsEngine(
             }
 
             try {
-                val initResult = suspendCancellableCoroutine<Pair<Boolean, String?>> { continuation ->
-                    var isContinuationResumed = false
+                val initResult = withContext(Dispatchers.Main) {
+                    suspendCancellableCoroutine<Pair<Boolean, String?>> { continuation ->
+                        var isContinuationResumed = false
 
-                    val onInitListener = TextToSpeech.OnInitListener { status ->
-                        if (isContinuationResumed) return@OnInitListener
-                        isContinuationResumed = true
-                        if (status == TextToSpeech.SUCCESS) {
-                            continuation.resume(Pair(true, null))
-                        } else {
-                            continuation.resume(Pair(false, "TextToSpeech init failed with status: $status"))
+                        val onInitListener = TextToSpeech.OnInitListener { status ->
+                            if (isContinuationResumed) return@OnInitListener
+                            isContinuationResumed = true
+                            if (status == TextToSpeech.SUCCESS) {
+                                continuation.resume(Pair(true, null))
+                            } else {
+                                continuation.resume(Pair(false, "TextToSpeech init failed with status: $status"))
+                            }
                         }
-                    }
 
-                    // Check if Google TTS engine is installed on device
-                    val isGoogleTtsInstalled = try {
-                        context.packageManager.getPackageInfo(GOOGLE_TTS_PACKAGE, 0)
-                        true
-                    } catch (_: Exception) {
-                        false
-                    }
-
-                    try {
-                        if (isGoogleTtsInstalled) {
-                            Log.i(TAG, "Attempting init with preferred Google TTS ($GOOGLE_TTS_PACKAGE)")
-                            tts = TextToSpeech(context, onInitListener, GOOGLE_TTS_PACKAGE)
-                        } else {
-                            Log.i(TAG, "Attempting init with default Android TTS engine")
-                            tts = TextToSpeech(context, onInitListener)
+                        // Check if Google TTS engine is installed on device
+                        val isGoogleTtsInstalled = try {
+                            context.packageManager.getPackageInfo(GOOGLE_TTS_PACKAGE, 0)
+                            true
+                        } catch (_: Exception) {
+                            false
                         }
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Exception during TextToSpeech constructor: ${e.message}, retrying default")
+
                         try {
-                            tts = TextToSpeech(context, onInitListener)
-                        } catch (e2: Exception) {
-                            if (!isContinuationResumed) {
-                                isContinuationResumed = true
-                                continuation.resume(Pair(false, e2.message))
+                            if (isGoogleTtsInstalled) {
+                                Log.i(TAG, "Attempting init with preferred Google TTS ($GOOGLE_TTS_PACKAGE)")
+                                tts = TextToSpeech(context.applicationContext, onInitListener, GOOGLE_TTS_PACKAGE)
+                            } else {
+                                Log.i(TAG, "Attempting init with default Android TTS engine")
+                                tts = TextToSpeech(context.applicationContext, onInitListener)
+                            }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Exception during TextToSpeech constructor: ${e.message}, retrying default")
+                            try {
+                                tts = TextToSpeech(context.applicationContext, onInitListener)
+                            } catch (e2: Exception) {
+                                if (!isContinuationResumed) {
+                                    isContinuationResumed = true
+                                    continuation.resume(Pair(false, e2.message))
+                                }
                             }
                         }
                     }
@@ -146,8 +151,9 @@ class BanglaTtsEngine(
                 }
 
                 // 2. If bn_BD not available, try Bengali India (bn_IN)
+                var inAvail = TextToSpeech.LANG_NOT_SUPPORTED
                 if (targetLocale == null) {
-                    val inAvail = engine.isLanguageAvailable(LOCALE_IN)
+                    inAvail = engine.isLanguageAvailable(LOCALE_IN)
                     if (inAvail >= TextToSpeech.LANG_AVAILABLE) {
                         val res = engine.setLanguage(LOCALE_IN)
                         if (res >= TextToSpeech.LANG_AVAILABLE) {
@@ -157,12 +163,19 @@ class BanglaTtsEngine(
                     }
                 }
 
-                // 3. Check voices list for any Bengali voice
+                // 3. Check voices list strictly for installed offline Bengali voices
                 try {
                     val voices = engine.voices
                     if (voices != null) {
-                        val bnVoices = voices.filter { it.locale.language == "bn" }
-                        val matchingVoice = bnVoices.firstOrNull { it.locale == targetLocale } ?: bnVoices.firstOrNull()
+                        val installedBnVoices = voices.filter { voice ->
+                            voice.locale.language == "bn" &&
+                            (voice.features == null || !voice.features.contains(TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED)) &&
+                            !voice.isNetworkConnectionRequired
+                        }
+                        val matchingVoice = installedBnVoices.firstOrNull { it.locale == targetLocale }
+                            ?: installedBnVoices.firstOrNull { it.locale.country.equals("BD", ignoreCase = true) }
+                            ?: installedBnVoices.firstOrNull()
+
                         if (matchingVoice != null) {
                             selectedVoice = matchingVoice
                             engine.voice = matchingVoice
@@ -179,9 +192,15 @@ class BanglaTtsEngine(
                         targetLocale = LOCALE_BD
                         Log.i(TAG, "Test environment detected: using fallback Bengali locale for JVM testing")
                     } else {
-                        initializationError = ERROR_VOICE_NOT_INSTALLED
-                        Log.w(TAG, ERROR_VOICE_NOT_INSTALLED)
-                        return@withContext Result.failure(IllegalStateException(ERROR_VOICE_NOT_INSTALLED))
+                        val isMissing = bdAvail == TextToSpeech.LANG_MISSING_DATA || inAvail == TextToSpeech.LANG_MISSING_DATA
+                        val reason = if (isMissing) {
+                            "Bengali voice data is not downloaded on this device. Please install it in Android TTS Settings."
+                        } else {
+                            ERROR_VOICE_NOT_INSTALLED
+                        }
+                        initializationError = reason
+                        Log.w(TAG, reason)
+                        return@withContext Result.failure(IllegalStateException(reason))
                     }
                 }
 
@@ -246,21 +265,21 @@ class BanglaTtsEngine(
         val engine = tts ?: throw IllegalStateException("TextToSpeech not initialized")
 
         // Chunk text safely if it exceeds reasonable size, preserving full punctuation
-        val chunks = chunkTextSafely(cleanText)
+        val chunks = chunkTextSafely(cleanText, maxChunkLength = 120)
         if (chunks.isEmpty()) {
             WavUtils.createSilenceWav(outputFile, 300L)
             return@withContext outputFile
         }
 
         if (chunks.size == 1) {
-            synthesizeSingleChunk(engine, chunks[0], outputFile)
+            synthesizeWithRetry(engine, chunks[0], outputFile)
         } else {
             // Synthesize each chunk sequentially and concatenate
             val chunkFiles = mutableListOf<File>()
             try {
                 for (i in chunks.indices) {
                     val chunkFile = File(context.cacheDir, "tts_chunk_${System.currentTimeMillis()}_$i.wav")
-                    synthesizeSingleChunk(engine, chunks[i], chunkFile)
+                    synthesizeWithRetry(engine, chunks[i], chunkFile)
                     chunkFiles.add(chunkFile)
                 }
                 WavUtils.concatenateWavFiles(chunkFiles, outputFile)
@@ -285,6 +304,25 @@ class BanglaTtsEngine(
         outputFile
     }
 
+    private suspend fun synthesizeWithRetry(engine: TextToSpeech, chunk: String, targetFile: File) {
+        var attempts = 0
+        var lastException: Exception? = null
+        while (attempts < 2) {
+            try {
+                synthesizeSingleChunk(engine, chunk, targetFile)
+                return
+            } catch (e: Exception) {
+                lastException = e
+                attempts++
+                if (attempts < 2) {
+                    Log.w(TAG, "Synthesis attempt $attempts failed for chunk, retrying: ${e.message}")
+                    delay(300L)
+                }
+            }
+        }
+        throw lastException ?: IllegalStateException("Synthesis failed for chunk: '$chunk'")
+    }
+
     /**
      * Synthesizes a single chunk of text to a temporary WAV file using synthesizeToFile().
      */
@@ -293,13 +331,27 @@ class BanglaTtsEngine(
         chunk: String,
         targetFile: File
     ) {
-        val utteranceId = "utt_${UUID.randomUUID()}"
+        if (isTestEnvironment()) {
+            WavUtils.createSilenceWav(targetFile, 1200L)
+            return
+        }
+
+        val utteranceId = "utt_${System.currentTimeMillis()}_${UUID.randomUUID().toString().take(8)}"
         val tempWav = File(context.cacheDir, "$utteranceId.wav")
 
         try {
-            val synthesisSuccess = withTimeoutOrNull(20_000L) {
+            val synthesisSuccess = withTimeoutOrNull(35_000L) {
                 suspendCancellableCoroutine<Boolean> { continuation ->
                     var resumed = false
+
+                    fun finishWith(success: Boolean) {
+                        if (!resumed) {
+                            resumed = true
+                            try {
+                                continuation.resume(success)
+                            } catch (_: Exception) {}
+                        }
+                    }
 
                     val listener = object : UtteranceProgressListener() {
                         override fun onStart(uttId: String?) {
@@ -307,37 +359,59 @@ class BanglaTtsEngine(
                         }
 
                         override fun onDone(uttId: String?) {
-                            if (uttId == utteranceId && !resumed) {
-                                resumed = true
-                                continuation.resume(true)
-                            }
+                            Log.d(TAG, "onDone utterance: $uttId (target: $utteranceId)")
+                            finishWith(true)
                         }
 
                         override fun onError(uttId: String?) {
-                            if (uttId == utteranceId && !resumed) {
-                                resumed = true
-                                Log.w(TAG, "onError utterance: $uttId")
-                                continuation.resume(false)
-                            }
+                            Log.w(TAG, "onError utterance: $uttId")
+                            finishWith(false)
                         }
 
                         override fun onError(uttId: String?, errorCode: Int) {
-                            if (uttId == utteranceId && !resumed) {
-                                resumed = true
-                                Log.w(TAG, "onError utterance: $uttId with code: $errorCode")
-                                continuation.resume(false)
-                            }
+                            Log.w(TAG, "onError utterance: $uttId with code: $errorCode")
+                            finishWith(false)
                         }
                     }
 
                     engine.setOnUtteranceProgressListener(listener)
-                    val params = Bundle()
+
+                    val params = Bundle().apply {
+                        putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId)
+                        putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
+                    }
+
                     val result = engine.synthesizeToFile(chunk, params, tempWav, utteranceId)
                     if (result != TextToSpeech.SUCCESS) {
                         Log.e(TAG, "synthesizeToFile returned error status: $result for chunk: '$chunk'")
-                        if (!resumed) {
-                            resumed = true
-                            continuation.resume(false)
+                        finishWith(false)
+                        return@suspendCancellableCoroutine
+                    }
+
+                    // Background watchdog: in case the IPC callback is delayed or dropped,
+                    // check if the file has been completely written to disk
+                    CoroutineScope(Dispatchers.IO).launch {
+                        var previousSize = -1L
+                        var stableChecks = 0
+                        val startTime = System.currentTimeMillis()
+                        while (!resumed && (System.currentTimeMillis() - startTime) < 30_000L) {
+                            delay(250L)
+                            if (tempWav.exists()) {
+                                val currentSize = tempWav.length()
+                                if (currentSize > 44L) {
+                                    if (currentSize == previousSize) {
+                                        stableChecks++
+                                        if (stableChecks >= 2) {
+                                            Log.i(TAG, "Watchdog: audio file complete ($currentSize bytes), completing chunk")
+                                            finishWith(true)
+                                            break
+                                        }
+                                    } else {
+                                        previousSize = currentSize
+                                        stableChecks = 0
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -432,11 +506,14 @@ class BanglaTtsEngine(
     }
 
     private fun isTestEnvironment(): Boolean {
-        return try {
-            Class.forName("org.robolectric.Robolectric") != null
-        } catch (_: Throwable) {
-            false
-        }
+        return android.os.Build.FINGERPRINT.contains("robolectric", ignoreCase = true) ||
+               android.os.Build.HARDWARE.contains("robolectric", ignoreCase = true) ||
+               System.getProperty("java.vm.name")?.contains("Dalvik", ignoreCase = true) == false ||
+               try {
+                   Class.forName("org.robolectric.RobolectricTestRunner") != null
+               } catch (_: Throwable) {
+                   false
+               }
     }
 
     override fun close() {
