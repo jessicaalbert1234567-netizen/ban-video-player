@@ -219,6 +219,7 @@ class DubbingPipeline(
                 }
 
                 val ttsEngine = BanglaTtsEngine(context)
+                ttsEngine.loadTtsIntoMemory()
                 val ttsSegments = mutableListOf<TranscriptSegmentEntity>()
 
                 for (i in segments.indices) {
@@ -227,8 +228,10 @@ class DubbingPipeline(
                     val textToSpeak = seg.translatedText ?: seg.sourceText
                     val segAudioFile = File(segmentsDir, "tts_seg_${seg.index}.wav")
 
+                    val startSegTime = System.currentTimeMillis()
                     try {
                         ttsEngine.synthesize(textToSpeak, segAudioFile)
+                        Log.i(TAG, "Segment ${seg.index + 1}/${segments.size} synthesized in ${System.currentTimeMillis() - startSegTime} ms")
                     } catch (e: Exception) {
                         Log.w(TAG, "Segment ${seg.index} voice synthesis exception: ${e.message}, falling back to duration-padded audio")
                         val fallbackDurationMs = (seg.endMs - seg.startMs).coerceAtLeast(300L)

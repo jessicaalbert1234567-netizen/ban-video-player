@@ -83,6 +83,11 @@ class BanglaTtsEngine(
 
         // Prioritize MMS VITS ONNX model
         if (mmsEngine.isModelReady()) {
+            try {
+                mmsEngine.loadModel()
+            } catch (e: Exception) {
+                Log.w(TAG, "MMS load model pre-initialization notice: ${e.message}")
+            }
             synchronized(stateLock) { loadState = EngineState.LOADED }
             Log.i(TAG, "MMS Bangla TTS model ready for inference")
             return@withContext
@@ -229,20 +234,6 @@ class BanglaTtsEngine(
 
         val isFemale = settingsManager.voiceGender.value == com.example.settings.VoiceGender.FEMALE
         val mmsModel = ModelCatalog.MMS_BANGLA_TTS
-
-        // 1. Check if MMS Bangla model is ready, or download on-demand if connected
-        if (!mmsEngine.isModelReady()) {
-            val downloader = com.example.models.ModelDownloader(context)
-            if (downloader.isNetworkAvailable()) {
-                Log.i(TAG, "MMS ${mmsModel.name} not on disk, downloading on-demand...")
-                val dlResult = downloader.downloadAndInstall(mmsModel)
-                if (dlResult.isSuccess) {
-                    Log.i(TAG, "MMS ${mmsModel.name} downloaded successfully on-demand.")
-                } else {
-                    Log.w(TAG, "On-demand MMS download notice: ${dlResult.exceptionOrNull()?.message}")
-                }
-            }
-        }
 
         // Prioritize MMS VITS ONNX model (naklitechie/mms-tts-bn-ONNX)
         if (mmsEngine.isModelReady()) {
