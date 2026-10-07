@@ -228,6 +228,7 @@ class DubbingPipeline(
 
                 val batchTranslator = com.example.translation.SubtitleBatchTranslator(context)
                 try {
+                    batchTranslator.prepareModel()
                     var lastReportedOverall = 40
                     val translatedSegments = batchTranslator.translateSegments(segments) { current, total, sampleText ->
                         checkCancelled()
@@ -246,6 +247,14 @@ class DubbingPipeline(
                     }
                     segments = translatedSegments
                     repository.saveSegments(segments)
+                    reportStage(
+                        projectId,
+                        ProcessingStage.TRANSLATE,
+                        100,
+                        55,
+                        "✓ Translation Complete: ${segments.size} dialogue cues in Bengali",
+                        onProgressUpdate
+                    )
                 } finally {
                     batchTranslator.close()
                 }

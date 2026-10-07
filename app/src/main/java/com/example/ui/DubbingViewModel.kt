@@ -54,6 +54,20 @@ class DubbingViewModel(application: Application) : AndroidViewModel(application)
 
     init {
         checkBengaliTts()
+        viewModelScope.launch {
+            pipeline.pipelineState.collect { progress ->
+                if (progress != null) {
+                    val current = _selectedProject.value
+                    if (current != null && current.id == progress.projectId) {
+                        _selectedProject.value = current.copy(
+                            currentStage = progress.stage,
+                            progressPercent = progress.overallProgressPercent,
+                            statusMessage = progress.statusMessage
+                        )
+                    }
+                }
+            }
+        }
     }
 
     fun checkBengaliTts() {
@@ -277,6 +291,152 @@ class DubbingViewModel(application: Application) : AndroidViewModel(application)
             )
             val pathNotice = if (downloadFile != null) " (Saved to Downloads/BanglaDubbing)" else ""
             _extractedSrtExportMessage.value = "✓ Subtitle saved: ${outputFile.name}$pathNotice (${cues.size} dialogue cues)"
+        }
+    }
+
+    // Fast Direct Subtitle Translation (File Translator framework)
+    private val _isTranslatingSrt = MutableStateFlow(false)
+    val isTranslatingSrt: StateFlow<Boolean> = _isTranslatingSrt.asStateFlow()
+
+    private val _srtTranslationStatus = MutableStateFlow<String?>(null)
+    val srtTranslationStatus: StateFlow<String?> = _srtTranslationStatus.asStateFlow()
+
+    fun translateAndExportMkvSubtitleToBangla(
+        videoUri: Uri,
+        trackIndex: Int
+    ) {
+        viewModelScope.launch {
+            val fileName = queryFileName(videoUri) ?: "video_${System.currentTimeMillis()}"
+            val baseName = fileName.substringBeforeLast(".")
+
+            _isTranslatingSrt.value = true
+            _srtTranslationStatus.value = "MKV থেকে সাবটাইটেল এক্সট্র্যাক্ট করা হচ্ছে..."
+
+            val cues = withContext(Dispatchers.IO) {
+                com.example.subtitle.SubtitleExtractor.extractCues(app, videoUri, trackIndex)
+            }
+
+            if (cues.isEmpty()) {
+                _isTranslatingSrt.value = false
+                _srtTranslationStatus.value = null
+                _extractedSrtExportMessage.value = "সাবটাইটেল ট্র্যাক থেকে কোনো ডায়লগ পাওয়া যায়নি।"
+                return@launch
+            }
+
+            _srtTranslationStatus.value = "বাংলায় অনুবাদ হচ্ছে (0/${cues.size} cues)..."
+            val translator = com.example.translation.SubtitleBatchTranslator(app)
+            try {
+                translator.prepareModel()
+                val segments = cues.mapIndexed { idx, cue ->
+                    TranscriptSegmentEntity(
+                        projectId = "standalone_mkv_sub",
+                        index = idx,
+                        startMs = cue.startMs,
+                        endMs = cue.endMs,
+                        sourceText = cue.text
+                    )
+                }
+
+                val translatedSegments = translator.translateSegments(segments) { current, total, _ ->
+                    _srtTranslationStatus.value = "বাংলায় অনুবাদ হচ্ছে ($current/$total cues)..."
+                }
+
+                val bnCues = translatedSegments.map {
+                    com.example.subtitle.SubtitleCue(
+                        index = it.index,
+                        startMs = it.startMs,
+                        endMs = it.endMs,
+                        text = it.translatedText ?: it.sourceText
+                    )
+                }
+
+                val exportDir = File(app.filesDir, "ExtractedSubtitles").apply { if (!exists()) mkdirs() }
+                val localFile = File(exportDir, "${baseName}_Bangla.srt")
+                com.example.subtitle.SubtitleExtractor.exportToSrt(bnCues, localFile)
+
+                val downloadFile = com.example.subtitle.SubtitleExtractor.saveSrtToPublicDownloads(
+                    app,
+                    "${baseName}_Bangla",
+                    localFile.readText()
+                )
+
+                val pathNotice = if (downloadFile != null) " (Saved to Downloads/BanglaDubbing/${downloadFile.name})" else ""
+                _extractedSrtExportMessage.value = "✓ বাংলা সাবটাইটেল অনুবাদ সম্পন্ন!${pathNotice} • মোট ${bnCues.size} ডায়লগ"
+            } catch (e: Exception) {
+                _extractedSrtExportMessage.value = "অনুবাদ ত্রুটি: ${e.localizedMessage}"
+            } finally {
+                translator.close()
+                _isTranslatingSrt.value = false
+                _srtTranslationStatus.value = null
+            }
+        }
+    }
+
+    fun translateAndExportExternalSrtToBangla(subtitleUri: Uri) {
+        viewModelScope.launch {
+            val fileName = queryFileName(subtitleUri) ?: "subtitle_${System.currentTimeMillis()}.srt"
+            val baseName = fileName.substringBeforeLast(".")
+
+            _isTranslatingSrt.value = true
+            _srtTranslationStatus.value = "SRT ফাইল রিড করা হচ্ছে..."
+
+            val cues = withContext(Dispatchers.IO) {
+                com.example.subtitle.SubtitleExtractor.parseSubtitleUri(app, subtitleUri)
+            }
+
+            if (cues.isEmpty()) {
+                _isTranslatingSrt.value = false
+                _srtTranslationStatus.value = null
+                _extractedSrtExportMessage.value = "SRT ফাইলে কোনো ভ্যালিড সাবটাইটেল পাওয়া যায়নি।"
+                return@launch
+            }
+
+            _srtTranslationStatus.value = "বাংলায় অনুবাদ হচ্ছে (0/${cues.size} cues)..."
+            val translator = com.example.translation.SubtitleBatchTranslator(app)
+            try {
+                translator.prepareModel()
+                val segments = cues.mapIndexed { idx, cue ->
+                    TranscriptSegmentEntity(
+                        projectId = "standalone_ext_sub",
+                        index = idx,
+                        startMs = cue.startMs,
+                        endMs = cue.endMs,
+                        sourceText = cue.text
+                    )
+                }
+
+                val translatedSegments = translator.translateSegments(segments) { current, total, _ ->
+                    _srtTranslationStatus.value = "বাংলায় অনুবাদ হচ্ছে ($current/$total cues)..."
+                }
+
+                val bnCues = translatedSegments.map {
+                    com.example.subtitle.SubtitleCue(
+                        index = it.index,
+                        startMs = it.startMs,
+                        endMs = it.endMs,
+                        text = it.translatedText ?: it.sourceText
+                    )
+                }
+
+                val exportDir = File(app.filesDir, "ExtractedSubtitles").apply { if (!exists()) mkdirs() }
+                val localFile = File(exportDir, "${baseName}_Bangla.srt")
+                com.example.subtitle.SubtitleExtractor.exportToSrt(bnCues, localFile)
+
+                val downloadFile = com.example.subtitle.SubtitleExtractor.saveSrtToPublicDownloads(
+                    app,
+                    "${baseName}_Bangla",
+                    localFile.readText()
+                )
+
+                val pathNotice = if (downloadFile != null) " (Saved to Downloads/BanglaDubbing/${downloadFile.name})" else ""
+                _extractedSrtExportMessage.value = "✓ বাংলা সাবটাইটেল তৈরি হয়েছে!${pathNotice} • মোট ${bnCues.size} ডায়লগ"
+            } catch (e: Exception) {
+                _extractedSrtExportMessage.value = "অনুবাদ ত্রুটি: ${e.localizedMessage}"
+            } finally {
+                translator.close()
+                _isTranslatingSrt.value = false
+                _srtTranslationStatus.value = null
+            }
         }
     }
 

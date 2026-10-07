@@ -47,9 +47,20 @@ fun HomeScreen(
     val projects by viewModel.allProjects.collectAsState()
     val subtitleInspection by viewModel.subtitleInspectionState.collectAsState()
     val exportMessage by viewModel.extractedSrtExportMessage.collectAsState()
+    val isTranslatingSrt by viewModel.isTranslatingSrt.collectAsState()
+    val srtTranslationStatus by viewModel.srtTranslationStatus.collectAsState()
 
     var pendingVideoForExternalSubtitle by remember { mutableStateOf<Uri?>(null) }
     var selectedTrackIndex by remember { mutableIntStateOf(0) }
+
+    // Direct SRT file translator launcher (File Translator framework)
+    val directSrtTranslatorLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { srtUri: Uri? ->
+        if (srtUri != null) {
+            viewModel.translateAndExportExternalSrtToBangla(srtUri)
+        }
+    }
 
     // External subtitle picker launcher
     val externalSubtitlePickerLauncher = rememberLauncherForActivityResult(
@@ -448,6 +459,19 @@ fun HomeScreen(
                                 Text("Dub with .SRT", style = MaterialTheme.typography.labelLarge)
                             }
                         }
+
+                        FilledTonalButton(
+                            onClick = { directSrtTranslatorLauncher.launch("*/*") },
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(44.dp)
+                                .testTag("direct_translate_srt_button")
+                        ) {
+                            Icon(Icons.Default.Translate, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Translate .SRT to Bangla (File Translator Mode)", style = MaterialTheme.typography.labelMedium)
+                        }
                     }
                 }
             }
@@ -739,6 +763,23 @@ fun HomeScreen(
                             Text("⚡ Start Fast Dubbing (No ASR)")
                         }
 
+                        FilledTonalButton(
+                            onClick = {
+                                viewModel.translateAndExportMkvSubtitleToBangla(
+                                    inspection.videoUri,
+                                    selectedTrackIndex
+                                )
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("translate_mkv_srt_button"),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Icon(Icons.Default.Translate, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("🌐 Translate to Bangla .SRT (File Translator)")
+                        }
+
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -840,6 +881,38 @@ fun HomeScreen(
                     Text("OK")
                 }
             }
+        )
+    }
+
+    // Direct SRT Translation Progress Dialog
+    if (isTranslatingSrt) {
+        AlertDialog(
+            onDismissRequest = { /* Modal while translation is executing */ },
+            icon = {
+                CircularProgressIndicator(modifier = Modifier.size(36.dp))
+            },
+            title = {
+                Text("Translating Subtitle to Bangla", fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = srtTranslationStatus ?: "বাংলায় অনুবাদ হচ্ছে...",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Text(
+                        text = "গুগল ট্রান্সলেট ও ফাইল ট্রান্সলেটর ফ্রেমওয়ার্ক অনুযায়ী অতি দ্রুত ব্যাচে অনুবাদ সম্পন্ন হচ্ছে এবং স্বয়ংক্রিয়ভাবে ডাউনলোড ফোল্ডারে সেভ হবে।",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            },
+            confirmButton = {}
         )
     }
 }

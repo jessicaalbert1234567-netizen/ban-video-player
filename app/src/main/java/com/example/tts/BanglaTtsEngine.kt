@@ -283,7 +283,7 @@ class BanglaTtsEngine(
             }
         }
 
-        engineInstance.setSpeechRate(1.0f)
+        engineInstance.setSpeechRate(1.1f)
         engineInstance.setPitch(1.0f)
 
         // Perform probe synthesis test to verify offline synthesis to file works
@@ -373,7 +373,7 @@ class BanglaTtsEngine(
         val engine = tts ?: throw IllegalStateException("TextToSpeech not initialized")
 
         // Chunk text safely if it exceeds reasonable size, preserving full punctuation
-        val chunks = chunkTextSafely(cleanText, maxChunkLength = 120)
+        val chunks = chunkTextSafely(cleanText, maxChunkLength = 2000)
         if (chunks.isEmpty()) {
             WavUtils.createSilenceWav(outputFile, 300L)
             return@withContext outputFile

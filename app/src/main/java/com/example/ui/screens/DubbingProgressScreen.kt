@@ -36,10 +36,21 @@ fun DubbingProgressScreen(
     val project by viewModel.selectedProject.collectAsState()
 
     val currentStage = progressState?.stage ?: project?.currentStage ?: ProcessingStage.EXTRACT_AUDIO
-    val overallPercent = progressState?.overallProgressPercent ?: project?.progressPercent ?: 0
     val isComplete = currentStage == ProcessingStage.COMPLETE
     val isFailed = currentStage == ProcessingStage.FAILED
     val isCancelled = currentStage == ProcessingStage.CANCELLED
+
+    var maxObservedPercent by remember { mutableIntStateOf(0) }
+    val overallPercent = maxOf(
+        maxObservedPercent,
+        progressState?.overallProgressPercent ?: 0,
+        project?.progressPercent ?: 0
+    )
+    LaunchedEffect(overallPercent) {
+        if (overallPercent > maxObservedPercent && !isFailed && !isCancelled) {
+            maxObservedPercent = overallPercent
+        }
+    }
 
     val allStages = listOf(
         ProcessingStage.EXTRACT_AUDIO,
