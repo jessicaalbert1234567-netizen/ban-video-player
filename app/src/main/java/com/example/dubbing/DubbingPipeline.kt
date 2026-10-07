@@ -224,32 +224,31 @@ class DubbingPipeline(
             // STAGE 3: Translate to Bangla (40% - 55%)
             if (startingStage.ordinal <= ProcessingStage.TRANSLATE.ordinal) {
                 checkCancelled()
-                reportStage(projectId, ProcessingStage.TRANSLATE, 0, 40, "Preparing on-device English → Bangla translation...", onProgressUpdate)
+                reportStage(projectId, ProcessingStage.TRANSLATE, 0, 40, "Preparing resilient English → Bangla translation...", onProgressUpdate)
 
-                val isModelDownloaded = EnglishToBanglaTranslator.isModelDownloaded()
-                if (!isModelDownloaded) {
-                    reportStage(projectId, ProcessingStage.TRANSLATE, 5, 41, "Downloading Google ML Kit English → Bangla model...", onProgressUpdate)
-                    val dlTranslator = EnglishToBanglaTranslator(context)
-                    dlTranslator.downloadModel(requireWifi = false)
-                    dlTranslator.close()
+                val batchTranslator = com.example.translation.SubtitleBatchTranslator(context)
+                try {
+                    var lastReportedOverall = 40
+                    val translatedSegments = batchTranslator.translateSegments(segments) { current, total, sampleText ->
+                        checkCancelled()
+                        val stageProg = (current.toFloat() / total.toFloat())
+                        val overall = maxOf(lastReportedOverall, 40 + (stageProg * 15).toInt())
+                        lastReportedOverall = overall
+                        val cleanSample = sampleText.take(24).replace("\n", " ")
+                        reportStage(
+                            projectId,
+                            ProcessingStage.TRANSLATE,
+                            (stageProg * 100).toInt(),
+                            overall,
+                            "Translating ($current/$total): \"$cleanSample...\"",
+                            onProgressUpdate
+                        )
+                    }
+                    segments = translatedSegments
+                    repository.saveSegments(segments)
+                } finally {
+                    batchTranslator.close()
                 }
-
-                val translator = EnglishToBanglaTranslator(context)
-                val translatedSegments = mutableListOf<TranscriptSegmentEntity>()
-
-                for (i in segments.indices) {
-                    checkCancelled()
-                    val seg = segments[i]
-                    val bnText = translator.translate(seg.sourceText)
-                    translatedSegments.add(seg.copy(translatedText = bnText))
-
-                    val stageProg = ((i + 1).toFloat() / segments.size)
-                    val overall = 40 + (stageProg * 15).toInt()
-                    reportStage(projectId, ProcessingStage.TRANSLATE, (stageProg * 100).toInt(), overall, "Translating segment ${i + 1}/${segments.size}", onProgressUpdate)
-                }
-                segments = translatedSegments
-                repository.saveSegments(segments)
-                translator.close()
                 com.example.models.MemoryDiagnostics.logHeapSnapshot("PIPELINE", "Translation Stage Complete, released translation sessions")
                 System.gc()
             }
@@ -430,13 +429,22 @@ class DubbingPipeline(
         }
     }
 
-    private fun determineResumeStage(
+    private suspend fun determineResumeStage(
         project: DubbingProject,
         rawAudio: File,
         transcriptJson: File,
         srtFile: File,
         dubbedAudio: File
     ): ProcessingStage {
+        val existingSegments = repository.findSegments(project.id)
+        if (existingSegments.isNotEmpty()) {
+            val allTranslated = existingSegments.all { !it.translatedText.isNullOrBlank() }
+            if (dubbedAudio.exists() && dubbedAudio.length() > 1000) return ProcessingStage.COMPLETE
+            if (srtFile.exists() && srtFile.length() > 0) return ProcessingStage.GENERATE_TTS
+            if (allTranslated) return ProcessingStage.GENERATE_SUBTITLE
+            return ProcessingStage.TRANSLATE
+        }
+
         return when {
             dubbedAudio.exists() && dubbedAudio.length() > 1000 -> ProcessingStage.COMPLETE
             srtFile.exists() && srtFile.length() > 0 -> ProcessingStage.GENERATE_TTS
@@ -460,11 +468,17 @@ class DubbingPipeline(
         message: String,
         callback: ((PipelineProgress) -> Unit)?
     ) {
+        val safeOverall = if (stage == ProcessingStage.FAILED || stage == ProcessingStage.CANCELLED) {
+            overallProg
+        } else {
+            maxOf(_pipelineState.value?.overallProgressPercent ?: 0, overallProg)
+        }
+
         val progress = PipelineProgress(
             projectId = projectId,
             stage = stage,
             stageProgressPercent = stageProg,
-            overallProgressPercent = overallProg,
+            overallProgressPercent = safeOverall,
             statusMessage = message,
             isRunning = stage != ProcessingStage.COMPLETE && stage != ProcessingStage.FAILED && stage != ProcessingStage.CANCELLED
         )

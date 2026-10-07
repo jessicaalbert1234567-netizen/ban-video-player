@@ -139,4 +139,19 @@ class ExampleRobolectricTest {
         wav2.delete()
         combined.delete()
     }
+
+    @Test
+    fun testSubtitleBatchTranslatorCacheAndFallback() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val translator = com.example.translation.SubtitleBatchTranslator(context)
+        val texts = listOf("Hello", "Thank you", "Yes", "Let's go")
+        val translated = translator.translateBatch(texts)
+
+        assertEquals(4, translated.size)
+        assertEquals("হ্যালো", translated[0])
+        assertEquals("ধন্যবাদ", translated[1])
+        assertEquals("হ্যাঁ", translated[2])
+        assertEquals("চলো যাই", translated[3])
+        translator.close()
+    }
 }
