@@ -627,7 +627,7 @@ fun PlayerScreen(
                                 FilterChip(
                                     selected = playerState.audioChoice == AudioTrackChoice.BANGLA_DUB,
                                     onClick = { playerManager.setAudioChoice(AudioTrackChoice.BANGLA_DUB) },
-                                    label = { Text("বাংলা AI Dub") },
+                                    label = { Text("স্মার্ট অটো ডাব") },
                                     modifier = Modifier.testTag("audio_choice_bangla")
                                 )
                                 FilterChip(
@@ -635,6 +635,12 @@ fun PlayerScreen(
                                     onClick = { playerManager.setAudioChoice(AudioTrackChoice.ORIGINAL) },
                                     label = { Text("Original") },
                                     modifier = Modifier.testTag("audio_choice_original")
+                                )
+                                FilterChip(
+                                    selected = playerState.audioChoice == AudioTrackChoice.BANGLA_ONLY,
+                                    onClick = { playerManager.setAudioChoice(AudioTrackChoice.BANGLA_ONLY) },
+                                    label = { Text("শুধু ডাবিং") },
+                                    modifier = Modifier.testTag("audio_choice_bangla_only")
                                 )
                             }
                         }
@@ -752,12 +758,46 @@ fun PlayerScreen(
                             Column(modifier = Modifier.weight(1f)) {
                                 Text("Original Audio", fontWeight = FontWeight.Bold)
                                 Text(
-                                    "মূল ভিডিও সাউন্ডট্র্যাক",
+                                    "মূল ভিডিও সাউন্ডট্র্যাক (কোনো ডাবিং ছাড়া)",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
                             if (playerState.audioChoice == AudioTrackChoice.ORIGINAL) {
+                                Icon(Icons.Default.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                            }
+                        }
+                    }
+
+                    // Pure Bangla Dub Only
+                    Card(
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (playerState.audioChoice == AudioTrackChoice.BANGLA_ONLY)
+                                MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                playerManager.setAudioChoice(AudioTrackChoice.BANGLA_ONLY)
+                                showAudioTrackDialog = false
+                            }
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("শুধু বাংলা ডাবিং (Solo Voice)", fontWeight = FontWeight.Bold)
+                                Text(
+                                    "শুধুমাত্র অনূদিত বাংলা কণ্ঠ (মূল ভিডিওর অডিও মিউট)",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            if (playerState.audioChoice == AudioTrackChoice.BANGLA_ONLY) {
                                 Icon(Icons.Default.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                             }
                         }

@@ -141,18 +141,20 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun testSubtitleBatchTranslatorCacheAndFallback() = runBlocking {
-        val context = ApplicationProvider.getApplicationContext<Context>()
-        val translator = com.example.translation.SubtitleBatchTranslator(context)
-        val texts = listOf("Hello", "Thank you", "Yes", "Let's go")
-        val translated = translator.translateBatch(texts)
+    fun testSubtitleBatchTranslatorCacheAndFallback() {
+        runBlocking {
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            val translator = com.example.translation.SubtitleBatchTranslator(context)
+            val texts = listOf("Hello", "Thank you", "Yes", "Let's go")
+            val translated = translator.translateBatch(texts)
 
-        assertEquals(4, translated.size)
-        assertEquals("হ্যালো", translated[0])
-        assertEquals("ধন্যবাদ", translated[1])
-        assertEquals("হ্যাঁ", translated[2])
-        assertEquals("চলো যাই", translated[3])
-        translator.close()
+            assertEquals(4, translated.size)
+            assertEquals("হ্যালো", translated[0])
+            assertEquals("ধন্যবাদ", translated[1])
+            assertEquals("হ্যাঁ", translated[2])
+            assertEquals("চলো যাই", translated[3])
+            translator.close()
+        }
     }
 
     @Test
@@ -172,46 +174,48 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun testAudioSynchronizerPreservesBackgroundAmbience() = runBlocking {
-        val context = ApplicationProvider.getApplicationContext<Context>()
-        val bgAudio = File(context.cacheDir, "test_bg.wav")
-        val segAudio = File(context.cacheDir, "test_seg.wav")
-        val outAudio = File(context.cacheDir, "test_synced.wav")
+    fun testAudioSynchronizerPreservesBackgroundAmbience() {
+        runBlocking {
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            val bgAudio = File(context.cacheDir, "test_bg.wav")
+            val segAudio = File(context.cacheDir, "test_seg.wav")
+            val outAudio = File(context.cacheDir, "test_synced.wav")
 
-        com.example.audio.WavUtils.createSilenceWav(bgAudio, 3000L)
-        com.example.audio.WavUtils.createSilenceWav(segAudio, 800L)
+            com.example.audio.WavUtils.createSilenceWav(bgAudio, 3000L)
+            com.example.audio.WavUtils.createSilenceWav(segAudio, 800L)
 
-        val segments = listOf(
-            TranscriptSegmentEntity(
-                projectId = "p1",
-                index = 0,
-                startMs = 500L,
-                endMs = 1500L,
-                sourceText = "Hello",
-                translatedText = "হ্যালো",
-                audioSegmentPath = segAudio.absolutePath
+            val segments = listOf(
+                TranscriptSegmentEntity(
+                    projectId = "p1",
+                    index = 0,
+                    startMs = 500L,
+                    endMs = 1500L,
+                    sourceText = "Hello",
+                    translatedText = "হ্যালো",
+                    audioSegmentPath = segAudio.absolutePath
+                )
             )
-        )
 
-        val synchronizer = com.example.audio.AudioSynchronizer(context)
-        var reportedProgress = 0f
-        val result = synchronizer.synchronizeAndMux(
-            segments = segments,
-            totalDurationMs = 3000L,
-            outputFile = outAudio,
-            backgroundAudioFile = bgAudio
-        ) { prog ->
-            reportedProgress = prog
+            val synchronizer = com.example.audio.AudioSynchronizer(context)
+            var reportedProgress = 0f
+            val result = synchronizer.synchronizeAndMux(
+                segments = segments,
+                totalDurationMs = 3000L,
+                outputFile = outAudio,
+                backgroundAudioFile = bgAudio
+            ) { prog ->
+                reportedProgress = prog
+            }
+
+            assertTrue(result.isSuccess)
+            assertTrue(outAudio.exists())
+            assertTrue(outAudio.length() > 44)
+            assertEquals(1.0f, reportedProgress, 0.01f)
+
+            bgAudio.delete()
+            segAudio.delete()
+            outAudio.delete()
         }
-
-        assertTrue(result.isSuccess)
-        assertTrue(outAudio.exists())
-        assertTrue(outAudio.length() > 44)
-        assertEquals(1.0f, reportedProgress, 0.01f)
-
-        bgAudio.delete()
-        segAudio.delete()
-        outAudio.delete()
     }
 
     @Test
@@ -225,6 +229,9 @@ class ExampleRobolectricTest {
 
         playerManager.setAudioChoice(com.example.player.AudioTrackChoice.BANGLA_DUB)
         assertEquals(com.example.player.AudioTrackChoice.BANGLA_DUB, playerManager.playerState.value.audioChoice)
+
+        playerManager.setAudioChoice(com.example.player.AudioTrackChoice.BANGLA_ONLY)
+        assertEquals(com.example.player.AudioTrackChoice.BANGLA_ONLY, playerManager.playerState.value.audioChoice)
 
         playerManager.setSubtitleChoice(com.example.player.SubtitleChoice.BANGLA)
         assertEquals(com.example.player.SubtitleChoice.BANGLA, playerManager.playerState.value.subtitleChoice)

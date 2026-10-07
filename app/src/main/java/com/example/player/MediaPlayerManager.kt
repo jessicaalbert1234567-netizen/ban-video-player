@@ -3,26 +3,23 @@ package com.example.player
 import android.content.Context
 import android.net.Uri
 import android.util.Log
-import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
-import androidx.media3.common.TrackSelectionOverride
-import androidx.media3.common.Tracks
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.source.MediaSource
-import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.ui.AspectRatioFrameLayout
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
+import kotlin.math.abs
 
 enum class AudioTrackChoice(val label: String, val description: String) {
-    BANGLA_DUB("বাংলা AI Dub", "বাংলা কণ্ঠ + পারিপার্শ্বিক সাউন্ড (কার, ঝড়, হাঁটাচলা)"),
-    ORIGINAL("Original Video", "ভিডিওর মূল সাউন্ড ও কণ্ঠ")
+    BANGLA_DUB("স্মার্ট অটো ডাব", "কথার সময় ডাবিং, কথার বাইরে অরিজিনাল অডিও (অটোমেটিক)"),
+    ORIGINAL("Original Video", "শুধুমাত্র মূল ভিডিওর অডিও"),
+    BANGLA_ONLY("শুধু বাংলা ডাবিং", "শুধুমাত্র অনূদিত বাংলা কণ্ঠ (মূল অডিও মিউট)")
 }
 
 enum class SubtitleChoice(val label: String) {
@@ -50,15 +47,20 @@ data class PlayerState(
     val hasDubbedAudio: Boolean = false,
     val hasBanglaSubtitles: Boolean = false,
     val hasEnglishSubtitles: Boolean = false,
-    val dubbedAudioFile: File? = null
+    val dubbedAudioFile: File? = null,
+    val isSpeechActive: Boolean = false
 )
 
 class MediaPlayerManager(private val context: Context) {
 
     private val TAG = "MediaPlayerManager"
 
+    // Primary player: plays video and original video soundtrack natively
     var player: ExoPlayer? = null
         private set
+
+    // Secondary player: plays synchronized dubbed speech audio track
+    private var dubbedAudioPlayer: ExoPlayer? = null
 
     private val _playerState = MutableStateFlow(PlayerState())
     val playerState: StateFlow<PlayerState> = _playerState.asStateFlow()
@@ -67,7 +69,7 @@ class MediaPlayerManager(private val context: Context) {
     private var currentDubbedAudioFile: File? = null
     private var currentSrtFile: File? = null
 
-    // Parsed subtitles for instant on-screen rendering
+    // Parsed subtitles for instant on-screen rendering and dialogue presence detection
     private val bnSubtitleEntries = mutableListOf<ParsedSubtitle>()
     private val enSubtitleEntries = mutableListOf<ParsedSubtitle>()
 
@@ -81,16 +83,16 @@ class MediaPlayerManager(private val context: Context) {
                 addListener(object : Player.Listener {
                     override fun onIsPlayingChanged(isPlaying: Boolean) {
                         _playerState.value = _playerState.value.copy(isPlaying = isPlaying)
+                        if (isPlaying) {
+                            dubbedAudioPlayer?.play()
+                        } else {
+                            dubbedAudioPlayer?.pause()
+                        }
                     }
 
                     override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
                         _playerState.value = _playerState.value.copy(playbackSpeed = playbackParameters.speed)
-                    }
-
-                    override fun onTracksChanged(tracks: Tracks) {
-                        val audioGroups = tracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
-                        Log.i(TAG, "onTracksChanged: found ${audioGroups.size} audio track group(s)")
-                        applyTrackSelection(_playerState.value.audioChoice)
+                        dubbedAudioPlayer?.setPlaybackSpeed(playbackParameters.speed)
                     }
 
                     override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
@@ -100,6 +102,16 @@ class MediaPlayerManager(private val context: Context) {
             }
         }
         return player!!
+    }
+
+    private fun initializeDubbedPlayer(): ExoPlayer {
+        if (dubbedAudioPlayer == null) {
+            dubbedAudioPlayer = ExoPlayer.Builder(context).build().apply {
+                repeatMode = Player.REPEAT_MODE_OFF
+                playWhenReady = player?.isPlaying ?: false
+            }
+        }
+        return dubbedAudioPlayer!!
     }
 
     fun setupMedia(
@@ -117,11 +129,13 @@ class MediaPlayerManager(private val context: Context) {
         val exo = initializePlayer()
         val dataSourceFactory = DefaultDataSource.Factory(context)
 
-        // 1. Video source
+        // 1. Setup Video with Original Audio
         val videoItem = MediaItem.fromUri(videoUri)
-        val videoSource: MediaSource = ProgressiveMediaSource.Factory(dataSourceFactory).createMediaSource(videoItem)
+        val videoSource = ProgressiveMediaSource.Factory(dataSourceFactory).createMediaSource(videoItem)
+        exo.setMediaSource(videoSource)
+        exo.prepare()
 
-        // 2. Resolve effective dubbed audio file (m4a or fallback wav)
+        // 2. Setup Dubbed Audio Player if file exists
         val effectiveDubbedFile = when {
             dubbedAudioFile != null && dubbedAudioFile.exists() && dubbedAudioFile.length() > 44 -> dubbedAudioFile
             dubbedAudioFile != null -> {
@@ -133,6 +147,20 @@ class MediaPlayerManager(private val context: Context) {
         }
 
         val hasDubbed = effectiveDubbedFile != null
+        if (hasDubbed) {
+            val dPlayer = initializeDubbedPlayer()
+            val audioItem = MediaItem.fromUri(Uri.fromFile(effectiveDubbedFile!!))
+            val audioSource = ProgressiveMediaSource.Factory(dataSourceFactory).createMediaSource(audioItem)
+            dPlayer.setMediaSource(audioSource)
+            dPlayer.prepare()
+            dPlayer.seekTo(exo.currentPosition)
+            Log.i(TAG, "Initialized secondary dubbed player for real-time dynamic track switching: ${effectiveDubbedFile.absolutePath}")
+        } else {
+            dubbedAudioPlayer?.stop()
+            dubbedAudioPlayer?.release()
+            dubbedAudioPlayer = null
+        }
+
         val initialAudioChoice = if (hasDubbed) AudioTrackChoice.BANGLA_DUB else AudioTrackChoice.ORIGINAL
         val initialSubChoice = when {
             bnSubtitleEntries.isNotEmpty() -> SubtitleChoice.BANGLA
@@ -149,87 +177,63 @@ class MediaPlayerManager(private val context: Context) {
             dubbedAudioFile = effectiveDubbedFile
         )
 
-        if (effectiveDubbedFile != null) {
-            val audioUri = Uri.fromFile(effectiveDubbedFile)
-            val audioItem = MediaItem.Builder()
-                .setUri(audioUri)
-                .setMediaMetadata(
-                    androidx.media3.common.MediaMetadata.Builder()
-                        .setTitle("বাংলা AI Dub")
-                        .build()
-                )
-                .build()
-            val audioSource: MediaSource = ProgressiveMediaSource.Factory(dataSourceFactory).createMediaSource(audioItem)
-
-            // Merge video source and external dubbed audio source without clipping video duration
-            val mergedSource = MergingMediaSource(true, false, videoSource, audioSource)
-            exo.setMediaSource(mergedSource)
-            Log.i(TAG, "Merged video source with dubbed audio file: ${effectiveDubbedFile.absolutePath} (${effectiveDubbedFile.length()} bytes)")
-        } else {
-            exo.setMediaSource(videoSource)
-            Log.i(TAG, "Loaded video source without dubbed audio (dubbed file unavailable)")
-        }
-
-        exo.prepare()
-        exo.volume = 1.0f
-        applyTrackSelection(initialAudioChoice)
+        updateAudioVolumes(exo.currentPosition)
     }
 
     fun setAudioChoice(choice: AudioTrackChoice) {
         _playerState.value = _playerState.value.copy(audioChoice = choice)
-        applyTrackSelection(choice)
+        player?.let { updateAudioVolumes(it.currentPosition) }
     }
 
-    private fun applyTrackSelection(choice: AudioTrackChoice) {
+    /**
+     * Dynamic Alternative Audio Track System:
+     * When dialogue is active -> Dubbed Bangla speech plays, original video audio is ducked (or muted).
+     * When dialogue is NOT active -> Original video audio (cars, storms, engines, footsteps, music) plays at 100% volume!
+     */
+    private fun updateAudioVolumes(currentPosMs: Long) {
         val exo = player ?: return
-        val tracks = exo.currentTracks
-        val audioGroups = tracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
+        val dPlayer = dubbedAudioPlayer
 
-        Log.i(TAG, "applyTrackSelection: requested=$choice, available audio groups=${audioGroups.size}")
-        if (audioGroups.isEmpty()) return
+        val choice = _playerState.value.audioChoice
+        val hasDubbed = _playerState.value.hasDubbedAudio && dPlayer != null
 
-        // Case 1: Multiple audio groups (MergingMediaSource: video audio + external dubbed audio)
-        // audioGroups[0] is original video audio; audioGroups.last() is merged dubbed audio
-        if (audioGroups.size > 1) {
-            val targetGroup = if (choice == AudioTrackChoice.BANGLA_DUB) {
-                audioGroups.last()
-            } else {
-                audioGroups.first()
+        if (!hasDubbed) {
+            exo.volume = 1.0f
+            return
+        }
+
+        val isSpeaking = isDialogueActive(currentPosMs)
+        if (_playerState.value.isSpeechActive != isSpeaking) {
+            _playerState.value = _playerState.value.copy(isSpeechActive = isSpeaking)
+        }
+
+        when (choice) {
+            AudioTrackChoice.BANGLA_DUB -> {
+                if (isSpeaking) {
+                    // Speech present -> Dubbed speech at 100%, original audio ducked to 12% so background SFX is subtle
+                    exo.volume = 0.12f
+                    dPlayer?.volume = 1.0f
+                } else {
+                    // No speech -> Original video audio automatically switches to 100% (cars, storms, footsteps, ambience)
+                    exo.volume = 1.0f
+                    dPlayer?.volume = 0.0f
+                }
             }
-            Log.i(TAG, "Applying track override for ${choice.name}: using audio group format ${targetGroup.getTrackFormat(0)}")
-            val override = TrackSelectionOverride(targetGroup.mediaTrackGroup, 0)
-            exo.trackSelectionParameters = exo.trackSelectionParameters
-                .buildUpon()
-                .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
-                .setOverrideForType(override)
-                .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
-                .build()
-            return
+            AudioTrackChoice.ORIGINAL -> {
+                exo.volume = 1.0f
+                dPlayer?.volume = 0.0f
+            }
+            AudioTrackChoice.BANGLA_ONLY -> {
+                exo.volume = 0.0f
+                dPlayer?.volume = 1.0f
+            }
         }
+    }
 
-        // Case 2: Single audio group with multiple tracks
-        val singleGroup = audioGroups[0]
-        if (singleGroup.length > 1) {
-            val trackIdx = if (choice == AudioTrackChoice.BANGLA_DUB) 1 else 0
-            val safeTrackIdx = trackIdx.coerceAtMost(singleGroup.length - 1)
-            val override = TrackSelectionOverride(singleGroup.mediaTrackGroup, safeTrackIdx)
-            exo.trackSelectionParameters = exo.trackSelectionParameters
-                .buildUpon()
-                .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
-                .setOverrideForType(override)
-                .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
-                .build()
-            return
-        }
-
-        // Case 3: Only 1 track available
-        val override = TrackSelectionOverride(singleGroup.mediaTrackGroup, 0)
-        exo.trackSelectionParameters = exo.trackSelectionParameters
-            .buildUpon()
-            .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
-            .setOverrideForType(override)
-            .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
-            .build()
+    private fun isDialogueActive(posMs: Long): Boolean {
+        if (bnSubtitleEntries.isEmpty()) return false
+        // Include small 40ms lead-in/lead-out for natural speech pacing
+        return bnSubtitleEntries.any { posMs in (it.startMs - 40L)..(it.endMs + 80L) }
     }
 
     fun setSubtitleChoice(choice: SubtitleChoice) {
@@ -251,6 +255,7 @@ class MediaPlayerManager(private val context: Context) {
 
     fun setPlaybackSpeed(speed: Float) {
         player?.setPlaybackSpeed(speed)
+        dubbedAudioPlayer?.setPlaybackSpeed(speed)
         _playerState.value = _playerState.value.copy(playbackSpeed = speed)
     }
 
@@ -258,19 +263,23 @@ class MediaPlayerManager(private val context: Context) {
         val exo = player ?: return
         val current = exo.currentPosition
         val target = (current + deltaMs).coerceIn(0L, exo.duration.coerceAtLeast(0L))
-        exo.seekTo(target)
+        seekTo(target)
     }
 
     fun seekTo(positionMs: Long) {
         player?.seekTo(positionMs)
+        dubbedAudioPlayer?.seekTo(positionMs)
+        updateAudioVolumes(positionMs)
     }
 
     fun togglePlayPause() {
         val exo = player ?: return
         if (exo.isPlaying) {
             exo.pause()
+            dubbedAudioPlayer?.pause()
         } else {
             exo.play()
+            dubbedAudioPlayer?.play()
         }
     }
 
@@ -286,7 +295,18 @@ class MediaPlayerManager(private val context: Context) {
             currentPositionMs = pos,
             durationMs = dur
         )
+
+        // Resync secondary player if clock drift exceeds threshold
+        val dPlayer = dubbedAudioPlayer
+        if (dPlayer != null && exo.isPlaying) {
+            val drift = abs(pos - dPlayer.currentPosition)
+            if (drift > 120L) {
+                dPlayer.seekTo(pos)
+            }
+        }
+
         updateCurrentSubtitleText(pos)
+        updateAudioVolumes(pos)
     }
 
     private fun updateCurrentSubtitleText(currentPositionMs: Long) {
@@ -376,5 +396,7 @@ class MediaPlayerManager(private val context: Context) {
     fun release() {
         player?.release()
         player = null
+        dubbedAudioPlayer?.release()
+        dubbedAudioPlayer = null
     }
 }

@@ -97,30 +97,12 @@ class DubbingPipeline(
             val hasProvidedSubtitles = providedSubtitleCues != null && providedSubtitleCues.isNotEmpty()
             if (hasProvidedSubtitles) {
                 checkCancelled()
-                // Fast check: extract background audio so ambient audio (cars, storms, engine, footsteps, foley) is preserved
-                if (!rawAudioFile.exists() || rawAudioFile.length() <= 44) {
-                    reportStage(
-                        projectId,
-                        ProcessingStage.EXTRACT_AUDIO,
-                        50,
-                        5,
-                        "Extracting video audio for background ambience...",
-                        onProgressUpdate
-                    )
-                    try {
-                        val extractor = MediaCodecAudioExtractor(context)
-                        extractor.extractAudio(videoUri, rawAudioFile) { /* non-blocking */ }
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Could not extract background audio: ${e.message}")
-                    }
-                }
-
                 reportStage(
                     projectId,
                     ProcessingStage.EXTRACT_AUDIO,
                     100,
                     15,
-                    "⚡ MKV Subtitle Track Ready",
+                    "⚡ MKV Subtitle Track Ready (Instant)",
                     onProgressUpdate
                 )
 
