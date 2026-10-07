@@ -329,21 +329,38 @@ fun DubbingProgressScreen(
             item {
                 Spacer(modifier = Modifier.height(12.dp))
                 if (isComplete) {
-                    Button(
-                        onClick = {
-                            project?.let { viewModel.selectProjectForPlayback(it) }
-                            onNavigateToPlayer()
-                        },
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(52.dp)
-                            .testTag("play_dubbed_video_button")
-                    ) {
-                        Icon(Icons.Default.PlayArrow, contentDescription = null)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Play Dubbed Video", fontWeight = FontWeight.Bold)
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = {
+                                project?.let { viewModel.selectProjectForPlayback(it) }
+                                onNavigateToPlayer()
+                            },
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(52.dp)
+                                .testTag("play_dubbed_video_button")
+                        ) {
+                            Icon(Icons.Default.PlayArrow, contentDescription = null)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Play Dubbed Video", fontWeight = FontWeight.Bold)
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                project?.let { viewModel.exportDubbedAudioToDownloads(it) }
+                            },
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp)
+                                .testTag("save_dubbed_audio_button")
+                        ) {
+                            Icon(Icons.Default.Download, contentDescription = null)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Save Dubbed Audio Track (Downloads)", fontWeight = FontWeight.SemiBold)
+                        }
                     }
                 } else if (isFailed) {
                     Button(

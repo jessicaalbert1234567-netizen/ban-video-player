@@ -92,7 +92,17 @@ fun HomeScreen(
         }
     }
 
+    val audioExportStatus by viewModel.audioExportStatus.collectAsState()
+    val homeSnackbarHostState = remember { SnackbarHostState() }
+    LaunchedEffect(audioExportStatus) {
+        audioExportStatus?.let { msg ->
+            homeSnackbarHostState.showSnackbar(msg)
+            viewModel.clearAudioExportStatus()
+        }
+    }
+
     Scaffold(
+        snackbarHost = { SnackbarHost(hostState = homeSnackbarHostState) },
         topBar = {
             TopAppBar(
                 title = {
@@ -606,6 +616,9 @@ fun HomeScreen(
                         onReDub = {
                             viewModel.reDubProject(project, onNavigateToProgress)
                         },
+                        onSaveAudio = {
+                            viewModel.exportDubbedAudioToDownloads(project)
+                        },
                         onDelete = {
                             viewModel.deleteProject(project)
                         }
@@ -922,6 +935,7 @@ fun ProjectCard(
     project: DubbingProject,
     onPlay: () -> Unit,
     onReDub: () -> Unit,
+    onSaveAudio: () -> Unit = {},
     onDelete: () -> Unit
 ) {
     val isComplete = project.currentStage == ProcessingStage.COMPLETE
@@ -1025,6 +1039,17 @@ fun ProjectCard(
                             Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(4.dp))
                             Text("Play")
+                        }
+
+                        IconButton(
+                            onClick = onSaveAudio,
+                            modifier = Modifier.testTag("save_audio_button_${project.id}")
+                        ) {
+                            Icon(
+                                Icons.Default.Download,
+                                contentDescription = "Save Dubbed Audio",
+                                tint = MaterialTheme.colorScheme.primary
+                            )
                         }
                     }
 

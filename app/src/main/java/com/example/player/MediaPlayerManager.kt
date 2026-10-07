@@ -5,31 +5,36 @@ import android.net.Uri
 import android.util.Log
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
-import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
+import androidx.media3.ui.AspectRatioFrameLayout
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
 
-enum class AudioTrackChoice(val label: String) {
-    ORIGINAL("Original"),
-    BANGLA_DUB("বাংলা AI Dub")
+enum class AudioTrackChoice(val label: String, val description: String) {
+    BANGLA_DUB("বাংলা AI Dub", "বাংলা কণ্ঠ + পারিপার্শ্বিক সাউন্ড (কার, ঝড়, হাঁটাচলা)"),
+    ORIGINAL("Original Video", "ভিডিওর মূল সাউন্ড ও কণ্ঠ")
 }
 
 enum class SubtitleChoice(val label: String) {
-    OFF("Off"),
-    BANGLA("বাংলা"),
-    ENGLISH("English")
+    OFF("Off (বন্ধ)"),
+    BANGLA("বাংলা (Bangla)"),
+    ENGLISH("English (ইংরেজি)")
+}
+
+enum class ResizeModeChoice(val label: String, val mode: Int) {
+    FIT("Fit (ফিট)", AspectRatioFrameLayout.RESIZE_MODE_FIT),
+    ZOOM_CROP("Full Zoom (ফুউল জুম)", AspectRatioFrameLayout.RESIZE_MODE_ZOOM),
+    STRETCH("Stretch (টেনে পূর্ণ)", AspectRatioFrameLayout.RESIZE_MODE_FILL)
 }
 
 data class PlayerState(
@@ -38,10 +43,14 @@ data class PlayerState(
     val durationMs: Long = 0L,
     val audioChoice: AudioTrackChoice = AudioTrackChoice.BANGLA_DUB,
     val subtitleChoice: SubtitleChoice = SubtitleChoice.BANGLA,
+    val resizeMode: ResizeModeChoice = ResizeModeChoice.FIT,
     val playbackSpeed: Float = 1.0f,
     val isLocked: Boolean = false,
     val activeSubtitleText: String? = null,
-    val hasDubbedAudio: Boolean = false
+    val hasDubbedAudio: Boolean = false,
+    val hasBanglaSubtitles: Boolean = false,
+    val hasEnglishSubtitles: Boolean = false,
+    val dubbedAudioFile: File? = null
 )
 
 class MediaPlayerManager(private val context: Context) {
@@ -81,10 +90,6 @@ class MediaPlayerManager(private val context: Context) {
                     override fun onTracksChanged(tracks: Tracks) {
                         val audioGroups = tracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
                         Log.i(TAG, "onTracksChanged: found ${audioGroups.size} audio track group(s)")
-                        for (i in audioGroups.indices) {
-                            val g = audioGroups[i]
-                            Log.i(TAG, "Track group $i: isSelected=${g.isSelected}, isSupported=${g.isSupported}, format=${g.getTrackFormat(0)}")
-                        }
                         applyTrackSelection(_playerState.value.audioChoice)
                     }
 
@@ -128,8 +133,21 @@ class MediaPlayerManager(private val context: Context) {
         }
 
         val hasDubbed = effectiveDubbedFile != null
-        val initialChoice = if (hasDubbed) AudioTrackChoice.BANGLA_DUB else AudioTrackChoice.ORIGINAL
-        _playerState.value = _playerState.value.copy(hasDubbedAudio = hasDubbed, audioChoice = initialChoice)
+        val initialAudioChoice = if (hasDubbed) AudioTrackChoice.BANGLA_DUB else AudioTrackChoice.ORIGINAL
+        val initialSubChoice = when {
+            bnSubtitleEntries.isNotEmpty() -> SubtitleChoice.BANGLA
+            enSubtitleEntries.isNotEmpty() -> SubtitleChoice.ENGLISH
+            else -> SubtitleChoice.OFF
+        }
+
+        _playerState.value = _playerState.value.copy(
+            hasDubbedAudio = hasDubbed,
+            audioChoice = initialAudioChoice,
+            subtitleChoice = initialSubChoice,
+            hasBanglaSubtitles = bnSubtitleEntries.isNotEmpty(),
+            hasEnglishSubtitles = enSubtitleEntries.isNotEmpty(),
+            dubbedAudioFile = effectiveDubbedFile
+        )
 
         if (effectiveDubbedFile != null) {
             val audioUri = Uri.fromFile(effectiveDubbedFile)
@@ -154,7 +172,7 @@ class MediaPlayerManager(private val context: Context) {
 
         exo.prepare()
         exo.volume = 1.0f
-        applyTrackSelection(initialChoice)
+        applyTrackSelection(initialAudioChoice)
     }
 
     fun setAudioChoice(choice: AudioTrackChoice) {
@@ -178,7 +196,7 @@ class MediaPlayerManager(private val context: Context) {
             } else {
                 audioGroups.first()
             }
-            Log.i(TAG, "Applying track override for ${choice.name}: using audio group with format ${targetGroup.getTrackFormat(0)}")
+            Log.i(TAG, "Applying track override for ${choice.name}: using audio group format ${targetGroup.getTrackFormat(0)}")
             val override = TrackSelectionOverride(targetGroup.mediaTrackGroup, 0)
             exo.trackSelectionParameters = exo.trackSelectionParameters
                 .buildUpon()
@@ -189,12 +207,11 @@ class MediaPlayerManager(private val context: Context) {
             return
         }
 
-        // Case 2: Single audio group with multiple tracks (container has multi-channel/multi-track audio)
+        // Case 2: Single audio group with multiple tracks
         val singleGroup = audioGroups[0]
         if (singleGroup.length > 1) {
             val trackIdx = if (choice == AudioTrackChoice.BANGLA_DUB) 1 else 0
             val safeTrackIdx = trackIdx.coerceAtMost(singleGroup.length - 1)
-            Log.i(TAG, "Applying multi-track override in single group: track index $safeTrackIdx")
             val override = TrackSelectionOverride(singleGroup.mediaTrackGroup, safeTrackIdx)
             exo.trackSelectionParameters = exo.trackSelectionParameters
                 .buildUpon()
@@ -205,7 +222,7 @@ class MediaPlayerManager(private val context: Context) {
             return
         }
 
-        // Case 3: Only 1 single track available
+        // Case 3: Only 1 track available
         val override = TrackSelectionOverride(singleGroup.mediaTrackGroup, 0)
         exo.trackSelectionParameters = exo.trackSelectionParameters
             .buildUpon()
@@ -218,6 +235,18 @@ class MediaPlayerManager(private val context: Context) {
     fun setSubtitleChoice(choice: SubtitleChoice) {
         _playerState.value = _playerState.value.copy(subtitleChoice = choice)
         updateCurrentSubtitleText(_playerState.value.currentPositionMs)
+    }
+
+    fun setResizeMode(mode: ResizeModeChoice) {
+        _playerState.value = _playerState.value.copy(resizeMode = mode)
+    }
+
+    fun cycleResizeMode(): ResizeModeChoice {
+        val modes = ResizeModeChoice.values()
+        val currentIdx = modes.indexOf(_playerState.value.resizeMode)
+        val nextMode = modes[(currentIdx + 1) % modes.size]
+        _playerState.value = _playerState.value.copy(resizeMode = nextMode)
+        return nextMode
     }
 
     fun setPlaybackSpeed(speed: Float) {

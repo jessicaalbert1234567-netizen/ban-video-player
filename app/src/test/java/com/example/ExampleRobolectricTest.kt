@@ -154,4 +154,79 @@ class ExampleRobolectricTest {
         assertEquals("চলো যাই", translated[3])
         translator.close()
     }
+
+    @Test
+    fun testAudioExporterSavesAudioToDownloads() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val testAudio = File(context.cacheDir, "sample_audio.wav")
+        com.example.audio.WavUtils.createSilenceWav(testAudio, 600L)
+        assertTrue(testAudio.exists())
+
+        val saved = com.example.audio.AudioExporter.saveAudioToPublicDownloads(context, "my_video_bangla_dub", testAudio)
+        assertTrue(saved != null)
+        assertTrue(saved!!.exists())
+        assertTrue(saved.length() > 44)
+
+        testAudio.delete()
+        saved.delete()
+    }
+
+    @Test
+    fun testAudioSynchronizerPreservesBackgroundAmbience() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val bgAudio = File(context.cacheDir, "test_bg.wav")
+        val segAudio = File(context.cacheDir, "test_seg.wav")
+        val outAudio = File(context.cacheDir, "test_synced.wav")
+
+        com.example.audio.WavUtils.createSilenceWav(bgAudio, 3000L)
+        com.example.audio.WavUtils.createSilenceWav(segAudio, 800L)
+
+        val segments = listOf(
+            TranscriptSegmentEntity(
+                projectId = "p1",
+                index = 0,
+                startMs = 500L,
+                endMs = 1500L,
+                sourceText = "Hello",
+                translatedText = "হ্যালো",
+                audioSegmentPath = segAudio.absolutePath
+            )
+        )
+
+        val synchronizer = com.example.audio.AudioSynchronizer(context)
+        var reportedProgress = 0f
+        val result = synchronizer.synchronizeAndMux(
+            segments = segments,
+            totalDurationMs = 3000L,
+            outputFile = outAudio,
+            backgroundAudioFile = bgAudio
+        ) { prog ->
+            reportedProgress = prog
+        }
+
+        assertTrue(result.isSuccess)
+        assertTrue(outAudio.exists())
+        assertTrue(outAudio.length() > 44)
+        assertEquals(1.0f, reportedProgress, 0.01f)
+
+        bgAudio.delete()
+        segAudio.delete()
+        outAudio.delete()
+    }
+
+    @Test
+    fun testMediaPlayerManagerResizeAndTrackChoices() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val playerManager = com.example.player.MediaPlayerManager(context)
+
+        assertEquals(com.example.player.ResizeModeChoice.FIT, playerManager.playerState.value.resizeMode)
+        val nextMode = playerManager.cycleResizeMode()
+        assertEquals(com.example.player.ResizeModeChoice.ZOOM_CROP, nextMode)
+
+        playerManager.setAudioChoice(com.example.player.AudioTrackChoice.BANGLA_DUB)
+        assertEquals(com.example.player.AudioTrackChoice.BANGLA_DUB, playerManager.playerState.value.audioChoice)
+
+        playerManager.setSubtitleChoice(com.example.player.SubtitleChoice.BANGLA)
+        assertEquals(com.example.player.SubtitleChoice.BANGLA, playerManager.playerState.value.subtitleChoice)
+    }
 }

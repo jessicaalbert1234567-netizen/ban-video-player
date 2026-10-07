@@ -59,11 +59,24 @@ class DubbingViewModel(application: Application) : AndroidViewModel(application)
                 if (progress != null) {
                     val current = _selectedProject.value
                     if (current != null && current.id == progress.projectId) {
-                        _selectedProject.value = current.copy(
-                            currentStage = progress.stage,
-                            progressPercent = progress.overallProgressPercent,
-                            statusMessage = progress.statusMessage
-                        )
+                        if (progress.stage == ProcessingStage.COMPLETE) {
+                            val refreshed = repository.findProject(progress.projectId)
+                            if (refreshed != null) {
+                                _selectedProject.value = refreshed
+                            } else {
+                                _selectedProject.value = current.copy(
+                                    currentStage = progress.stage,
+                                    progressPercent = progress.overallProgressPercent,
+                                    statusMessage = progress.statusMessage
+                                )
+                            }
+                        } else {
+                            _selectedProject.value = current.copy(
+                                currentStage = progress.stage,
+                                progressPercent = progress.overallProgressPercent,
+                                statusMessage = progress.statusMessage
+                            )
+                        }
                     }
                 }
             }
@@ -508,19 +521,77 @@ class DubbingViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun selectProjectForPlayback(project: DubbingProject) {
-        _selectedProject.value = project
-        val videoUri = Uri.parse(project.videoUriString)
-        val dubbedFile = project.dubbedAudioPath?.let { File(it) }
-        val srtFile = project.subtitleSrtPath?.let { File(it) }
-        val sourceSrt = File(project.projectDirPath, "subtitle_en_source.srt").let { if (it.exists()) it else null }
+    private val _audioExportStatus = MutableStateFlow<String?>(null)
+    val audioExportStatus: StateFlow<String?> = _audioExportStatus.asStateFlow()
 
-        playerManager.setupMedia(
-            videoUri = videoUri,
-            dubbedAudioFile = dubbedFile,
-            srtFile = srtFile,
-            sourceSrtFile = sourceSrt
-        )
+    fun clearAudioExportStatus() {
+        _audioExportStatus.value = null
+    }
+
+    fun exportDubbedAudioToDownloads(project: DubbingProject) {
+        viewModelScope.launch {
+            val projectDir = File(project.projectDirPath)
+            val dubbedFile = project.dubbedAudioPath?.let { File(it) }?.takeIf { it.exists() && it.length() > 44 }
+                ?: File(projectDir, "dubbed_bn.m4a").takeIf { it.exists() && it.length() > 44 }
+                ?: File(projectDir, "dubbed_bn.wav").takeIf { it.exists() && it.length() > 44 }
+
+            if (dubbedFile == null) {
+                _audioExportStatus.value = "ডাবিং অডিও ফাইল খুঁজে পাওয়া যায়নি।"
+                return@launch
+            }
+
+            val rawTitle = project.title.ifBlank { "dubbed_audio" }.replace("[^a-zA-Z0-9_\\-]".toRegex(), "_")
+            val targetName = "${rawTitle}_bangla_dub"
+            val savedFile = com.example.audio.AudioExporter.saveAudioToPublicDownloads(app, targetName, dubbedFile)
+            if (savedFile != null) {
+                _audioExportStatus.value = "✓ ডাবিং অডিও সেভ করা হয়েছে: ${savedFile.name} (Downloads/BanglaDubbing ফোল্ডারে)"
+            } else {
+                _audioExportStatus.value = "ডাবিং অডিও ফাইল সংরক্ষণ করা যায়নি।"
+            }
+        }
+    }
+
+    fun selectProjectForPlayback(project: DubbingProject) {
+        viewModelScope.launch {
+            val latest = repository.findProject(project.id) ?: project
+            _selectedProject.value = latest
+
+            val videoUri = Uri.parse(latest.videoUriString)
+            val projectDir = File(latest.projectDirPath)
+
+            val candidateDubbed = latest.dubbedAudioPath?.let { File(it) }
+            val m4aFile = File(projectDir, "dubbed_bn.m4a")
+            val wavFile = File(projectDir, "dubbed_bn.wav")
+            val dubbedFile: File? = when {
+                candidateDubbed != null && candidateDubbed.exists() && candidateDubbed.length() > 44 -> candidateDubbed
+                m4aFile.exists() && m4aFile.length() > 44 -> m4aFile
+                wavFile.exists() && wavFile.length() > 44 -> wavFile
+                else -> null
+            }
+
+            val candidateSrt = latest.subtitleSrtPath?.let { File(it) }
+            val bnSrt = File(projectDir, "subtitle_bn.srt")
+            val srtFile: File? = when {
+                candidateSrt != null && candidateSrt.exists() && candidateSrt.length() > 0 -> candidateSrt
+                bnSrt.exists() && bnSrt.length() > 0 -> bnSrt
+                else -> null
+            }
+
+            val sourceCandidate1 = File(projectDir, "subtitle_en_source.srt")
+            val sourceCandidate2 = File(projectDir, "transcript_en.srt")
+            val sourceSrt: File? = when {
+                sourceCandidate1.exists() -> sourceCandidate1
+                sourceCandidate2.exists() -> sourceCandidate2
+                else -> null
+            }
+
+            playerManager.setupMedia(
+                videoUri = videoUri,
+                dubbedAudioFile = dubbedFile,
+                srtFile = srtFile,
+                sourceSrtFile = sourceSrt
+            )
+        }
     }
 
     fun setAudioChoice(choice: AudioTrackChoice) {

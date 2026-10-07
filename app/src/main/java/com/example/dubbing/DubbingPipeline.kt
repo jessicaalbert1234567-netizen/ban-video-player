@@ -97,12 +97,30 @@ class DubbingPipeline(
             val hasProvidedSubtitles = providedSubtitleCues != null && providedSubtitleCues.isNotEmpty()
             if (hasProvidedSubtitles) {
                 checkCancelled()
+                // Fast check: extract background audio so ambient audio (cars, storms, engine, footsteps, foley) is preserved
+                if (!rawAudioFile.exists() || rawAudioFile.length() <= 44) {
+                    reportStage(
+                        projectId,
+                        ProcessingStage.EXTRACT_AUDIO,
+                        50,
+                        5,
+                        "Extracting video audio for background ambience...",
+                        onProgressUpdate
+                    )
+                    try {
+                        val extractor = MediaCodecAudioExtractor(context)
+                        extractor.extractAudio(videoUri, rawAudioFile) { /* non-blocking */ }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Could not extract background audio: ${e.message}")
+                    }
+                }
+
                 reportStage(
                     projectId,
                     ProcessingStage.EXTRACT_AUDIO,
                     100,
                     15,
-                    "⚡ MKV Subtitle Track Ready (Audio Extraction Skipped)",
+                    "⚡ MKV Subtitle Track Ready",
                     onProgressUpdate
                 )
 
@@ -369,7 +387,12 @@ class DubbingPipeline(
                 reportStage(projectId, ProcessingStage.SYNC_AUDIO, 0, 85, "Synchronizing dubbed audio with video...", onProgressUpdate)
 
                 val synchronizer = AudioSynchronizer(context)
-                val syncResult = synchronizer.synchronizeAndMux(segments, totalDurationMs, finalDubbedAudioFile) { prog ->
+                val syncResult = synchronizer.synchronizeAndMux(
+                    segments = segments,
+                    totalDurationMs = totalDurationMs,
+                    outputFile = finalDubbedAudioFile,
+                    backgroundAudioFile = rawAudioFile.takeIf { it.exists() && it.length() > 44 }
+                ) { prog ->
                     val overall = 85 + (prog * 10).toInt()
                     reportStageSync(projectId, ProcessingStage.SYNC_AUDIO, (prog * 100).toInt(), overall, "Synchronizing audio: ${(prog * 100).toInt()}%", onProgressUpdate)
                 }
