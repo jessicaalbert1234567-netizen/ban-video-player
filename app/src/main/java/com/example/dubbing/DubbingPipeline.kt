@@ -331,7 +331,10 @@ class DubbingPipeline(
 
                         val stageProg = ((i + 1).toFloat() / segments.size)
                         val overall = 65 + (stageProg * 20).toInt()
-                        reportStage(projectId, ProcessingStage.GENERATE_TTS, (stageProg * 100).toInt(), overall, "Synthesizing segment ${i + 1}/${segments.size}", onProgressUpdate)
+                        reportStageSync(projectId, ProcessingStage.GENERATE_TTS, (stageProg * 100).toInt(), overall, "Synthesizing (${i + 1}/${segments.size})", onProgressUpdate)
+                        if (i % 8 == 0 || i == segments.size - 1) {
+                            repository.updateProjectProgress(projectId, ProcessingStage.GENERATE_TTS, overall, "Synthesizing (${i + 1}/${segments.size})")
+                        }
                     }
 
                     val nonBlankCount = segments.count { !(it.translatedText ?: it.sourceText).isBlank() }
@@ -344,6 +347,14 @@ class DubbingPipeline(
 
                     segments = ttsSegments
                     repository.saveSegments(segments)
+                    reportStage(
+                        projectId,
+                        ProcessingStage.GENERATE_TTS,
+                        100,
+                        85,
+                        "✓ Voice synthesis complete: ${segments.size} dialogue segments",
+                        onProgressUpdate
+                    )
                 } finally {
                     ttsEngine.close()
                 }
@@ -360,13 +371,14 @@ class DubbingPipeline(
                 val synchronizer = AudioSynchronizer(context)
                 val syncResult = synchronizer.synchronizeAndMux(segments, totalDurationMs, finalDubbedAudioFile) { prog ->
                     val overall = 85 + (prog * 10).toInt()
-                    reportStageSync(projectId, ProcessingStage.SYNC_AUDIO, (prog * 100).toInt(), overall, "Synchronizing audio tracks...", onProgressUpdate)
+                    reportStageSync(projectId, ProcessingStage.SYNC_AUDIO, (prog * 100).toInt(), overall, "Synchronizing audio: ${(prog * 100).toInt()}%", onProgressUpdate)
                 }
 
                 if (syncResult.isFailure) {
                     throw syncResult.exceptionOrNull() ?: IllegalStateException("Audio synchronization failed")
                 }
                 effectiveDubbedAudioFile = syncResult.getOrThrow()
+                reportStage(projectId, ProcessingStage.SYNC_AUDIO, 100, 95, "✓ Synchronized audio ready", onProgressUpdate)
             }
 
             // STAGE 7: Finalize & Complete (95% - 100%)

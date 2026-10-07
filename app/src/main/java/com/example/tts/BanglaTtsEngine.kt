@@ -372,6 +372,15 @@ class BanglaTtsEngine(
 
         val engine = tts ?: throw IllegalStateException("TextToSpeech not initialized")
 
+        // Check dialogue audio cache for short repeated conversational cues
+        val textHash = cleanText.hashCode().toString()
+        val cacheDir = File(context.cacheDir, "tts_cache").apply { if (!exists()) mkdirs() }
+        val cachedFile = File(cacheDir, "utt_$textHash.wav")
+        if (cleanText.length < 80 && cachedFile.exists() && cachedFile.length() > 44L) {
+            cachedFile.copyTo(outputFile, overwrite = true)
+            return@withContext outputFile
+        }
+
         // Chunk text safely if it exceeds reasonable size, preserving full punctuation
         val chunks = chunkTextSafely(cleanText, maxChunkLength = 2000)
         if (chunks.isEmpty()) {
@@ -407,6 +416,13 @@ class BanglaTtsEngine(
             throw IllegalStateException("Bangla TTS failed for: '$cleanText' - synthesized file is missing or empty (${outputFile.length()} bytes)")
         }
 
+        // Cache short conversational phrases to boost dubbing speed for repeated cues
+        if (cleanText.length < 80 && outputFile.exists() && outputFile.length() > 44L) {
+            try {
+                outputFile.copyTo(cachedFile, overwrite = true)
+            } catch (_: Exception) {}
+        }
+
         Log.i(TAG, "Synthesized Bengali audio: ${outputFile.name} (${outputFile.length()} bytes, ${WavUtils.getWavDurationMs(outputFile)}ms) for: '${cleanText.take(30)}...'")
         outputFile
     }
@@ -416,14 +432,14 @@ class BanglaTtsEngine(
         var lastException: Exception? = null
         while (attempts < 2) {
             try {
-                synthesizeSingleChunk(engine, chunk, targetFile, timeoutMs = 15_000L)
+                synthesizeSingleChunk(engine, chunk, targetFile, timeoutMs = 5_000L)
                 return
             } catch (e: Exception) {
                 lastException = e
                 attempts++
                 if (attempts < 2) {
                     Log.w(TAG, "Synthesis attempt $attempts failed for chunk, retrying: ${e.message}")
-                    delay(200L)
+                    delay(100L)
                 }
             }
         }
@@ -437,7 +453,7 @@ class BanglaTtsEngine(
         engine: TextToSpeech,
         chunk: String,
         targetFile: File,
-        timeoutMs: Long = 15_000L
+        timeoutMs: Long = 5_000L
     ) {
         if (isTestEnvironment()) {
             WavUtils.createSilenceWav(targetFile, 1200L)
@@ -465,33 +481,9 @@ class BanglaTtsEngine(
                 throw IllegalStateException("synthesizeToFile failed to queue request ($queueResult) for: '$chunk'")
             }
 
-            // Watchdog in case onDone callback is delayed
-            val watchdogJob = CoroutineScope(Dispatchers.IO).launch {
-                var prevSize = -1L
-                var stableCount = 0
-                val start = System.currentTimeMillis()
-                while (!deferred.isCompleted && (System.currentTimeMillis() - start) < timeoutMs) {
-                    delay(120L)
-                    if (targetFile.exists() && targetFile.length() > 44L) {
-                        val currentSize = targetFile.length()
-                        if (currentSize == prevSize) {
-                            stableCount++
-                            if (stableCount >= 2) {
-                                pendingRequests.remove(utteranceId)?.complete(ChunkSynthesisResult.Success)
-                                break
-                            }
-                        } else {
-                            prevSize = currentSize
-                            stableCount = 0
-                        }
-                    }
-                }
-            }
-
             val result = withTimeoutOrNull(timeoutMs) {
                 deferred.await()
             }
-            watchdogJob.cancel()
 
             if (result == null) {
                 pendingRequests.remove(utteranceId)
@@ -506,9 +498,9 @@ class BanglaTtsEngine(
                 is ChunkSynthesisResult.Success -> {
                     if (!targetFile.exists() || targetFile.length() <= 44L) {
                         var waited = 0
-                        while (waited < 400 && (!targetFile.exists() || targetFile.length() <= 44L)) {
-                            delay(50L)
-                            waited += 50
+                        while (waited < 300 && (!targetFile.exists() || targetFile.length() <= 44L)) {
+                            delay(30L)
+                            waited += 30
                         }
                     }
                     if (!targetFile.exists() || targetFile.length() <= 44L) {

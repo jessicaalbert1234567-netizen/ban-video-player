@@ -100,14 +100,22 @@ class AudioSynchronizer(private val context: Context) {
             val masterWav = File(outputM4aFile.parentFile, "dubbed_bn.wav")
             tempAlignedWav.copyTo(masterWav, overwrite = true)
 
-            // 4. Encode aligned WAV to AAC/M4A (Android standard container)
-            val encodeSuccess = encodeWavToAacM4a(tempAlignedWav, outputM4aFile, sampleRate)
+            // 4. Encode aligned WAV to AAC/M4A with strict timeout to prevent hangs
+            val encodeSuccess = kotlinx.coroutines.withTimeoutOrNull(2500L) {
+                try {
+                    encodeWavToAacM4a(tempAlignedWav, outputM4aFile, sampleRate)
+                } catch (e: Exception) {
+                    Log.w(TAG, "AAC encode error: ${e.message}")
+                    false
+                }
+            } ?: false
+
             onProgress(1.0f)
 
-            if (encodeSuccess && outputM4aFile.exists() && outputM4aFile.length() > 0) {
+            if (encodeSuccess && outputM4aFile.exists() && outputM4aFile.length() > 500) {
                 Result.success(outputM4aFile)
             } else {
-                Log.w(TAG, "M4A encode failed or empty, falling back to master WAV")
+                Log.i(TAG, "Using master WAV for playback: ${masterWav.absolutePath} (${masterWav.length()} bytes)")
                 Result.success(masterWav)
             }
         } catch (e: Exception) {
@@ -255,9 +263,10 @@ class AudioSynchronizer(private val context: Context) {
             var presentationTimeUs = 0L
             val bytesPerSample = 2
 
-            while (!isOutputEos) {
+            var emptyOutputCount = 0
+            while (!isOutputEos && emptyOutputCount < 40) {
                 if (!isInputEos) {
-                    val inIndex = codec.dequeueInputBuffer(5000L)
+                    val inIndex = codec.dequeueInputBuffer(2000L)
                     if (inIndex >= 0) {
                         val byteBuf = codec.getInputBuffer(inIndex)
                         if (byteBuf != null) {
@@ -276,12 +285,13 @@ class AudioSynchronizer(private val context: Context) {
                     }
                 }
 
-                val outIndex = codec.dequeueOutputBuffer(bufferInfo, 5000L)
+                val outIndex = codec.dequeueOutputBuffer(bufferInfo, 2000L)
                 if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                     val newFormat = codec.outputFormat
                     audioTrackIndex = muxer.addTrack(newFormat)
                     muxer.start()
                     muxerStarted = true
+                    emptyOutputCount = 0
                 } else if (outIndex >= 0) {
                     val outBuf = codec.getOutputBuffer(outIndex)
                     if (outBuf != null && (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0 && bufferInfo.size > 0) {
@@ -294,6 +304,11 @@ class AudioSynchronizer(private val context: Context) {
                     codec.releaseOutputBuffer(outIndex, false)
                     if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
                         isOutputEos = true
+                    }
+                    emptyOutputCount = 0
+                } else {
+                    if (isInputEos) {
+                        emptyOutputCount++
                     }
                 }
             }
