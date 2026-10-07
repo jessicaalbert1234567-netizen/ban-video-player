@@ -245,14 +245,17 @@ class DubbingPipeline(
                             onProgressUpdate
                         )
                     }
-                    segments = translatedSegments
+                    segments = translatedSegments.map { seg ->
+                        val natural = seg.translatedText?.let { com.example.translation.BanglaNaturalizer.naturalize(it) } ?: seg.sourceText
+                        seg.copy(translatedText = natural)
+                    }
                     repository.saveSegments(segments)
                     reportStage(
                         projectId,
                         ProcessingStage.TRANSLATE,
                         100,
                         55,
-                        "✓ Translation Complete: ${segments.size} dialogue cues in Bengali",
+                        "✓ Translation & Naturalizer Complete: ${segments.size} dialogue cues in authentic Bangla",
                         onProgressUpdate
                     )
                 } finally {
@@ -308,7 +311,8 @@ class DubbingPipeline(
                         checkCancelled()
                         val seg = segments[i]
                         val rawText = seg.translatedText?.trim()?.ifEmpty { null } ?: seg.sourceText.trim()
-                        val textToSpeak = rawText.filter { it != '\u0000' && !it.isISOControl() || it == '\n' || it == '\t' }
+                        val naturalizedText = com.example.translation.BanglaNaturalizer.naturalize(rawText)
+                        val textToSpeak = naturalizedText.filter { it != '\u0000' && !it.isISOControl() || it == '\n' || it == '\t' }
                         val segAudioFile = File(segmentsDir, "tts_seg_${seg.index}.wav")
 
                         val startSegTime = System.currentTimeMillis()

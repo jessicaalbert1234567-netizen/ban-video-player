@@ -122,7 +122,8 @@ class EnglishToBanglaTranslator(
         if (cleanInput.isEmpty()) return@withContext ""
 
         try {
-            mlKitTranslator.translate(cleanInput).await()
+            val rawResult = mlKitTranslator.translate(cleanInput).await()
+            BanglaNaturalizer.naturalize(rawResult)
         } catch (e: Throwable) {
             val isDownloaded = try { isModelDownloaded() } catch (_: Throwable) { false }
             if (!isDownloaded) {

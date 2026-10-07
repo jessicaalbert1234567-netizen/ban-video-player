@@ -3,7 +3,7 @@ package com.example.dubbing
 enum class ProcessingStage(val displayName: String) {
     EXTRACT_AUDIO("Extracting Audio"),
     TRANSCRIBE("English Speech Recognition (ASR)"),
-    TRANSLATE("Translating to Bangla"),
+    TRANSLATE("Bangla Translation & Naturalizer"),
     GENERATE_SUBTITLE("Generating Bangla Subtitles"),
     GENERATE_TTS("Synthesizing Bangla Voice"),
     SYNC_AUDIO("Synchronizing Audio"),

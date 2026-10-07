@@ -192,12 +192,13 @@ class SubtitleBatchTranslator(
             for (j in batch.indices) {
                 val origSeg = batch[j]
                 val existing = origSeg.translatedText
-                val translated = if (!existing.isNullOrBlank()) {
+                val rawCandidate = if (!existing.isNullOrBlank()) {
                     existing
                 } else {
                     val candidate = batchTranslations.getOrNull(j)?.trim()
                     if (!candidate.isNullOrBlank()) candidate else origSeg.sourceText
                 }
+                val translated = BanglaNaturalizer.naturalize(rawCandidate)
 
                 results.add(origSeg.copy(translatedText = translated))
                 processedCount++
@@ -305,7 +306,8 @@ class SubtitleBatchTranslator(
             }
         }
 
-        output
+        // Apply Rule-based Bangla Naturalizer to ensure authentic spoken flow
+        output.map { BanglaNaturalizer.naturalize(it) }
     }
 
     /**

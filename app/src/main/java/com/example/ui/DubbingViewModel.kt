@@ -63,6 +63,7 @@ class DubbingViewModel(application: Application) : AndroidViewModel(application)
                             val refreshed = repository.findProject(progress.projectId)
                             if (refreshed != null) {
                                 _selectedProject.value = refreshed
+                                selectProjectForPlayback(refreshed)
                             } else {
                                 _selectedProject.value = current.copy(
                                     currentStage = progress.stage,
@@ -355,11 +356,13 @@ class DubbingViewModel(application: Application) : AndroidViewModel(application)
                 }
 
                 val bnCues = translatedSegments.map {
+                    val rawText = it.translatedText ?: it.sourceText
+                    val natural = com.example.translation.BanglaNaturalizer.naturalize(rawText)
                     com.example.subtitle.SubtitleCue(
                         index = it.index,
                         startMs = it.startMs,
                         endMs = it.endMs,
-                        text = it.translatedText ?: it.sourceText
+                        text = natural
                     )
                 }
 
@@ -423,11 +426,13 @@ class DubbingViewModel(application: Application) : AndroidViewModel(application)
                 }
 
                 val bnCues = translatedSegments.map {
+                    val rawText = it.translatedText ?: it.sourceText
+                    val natural = com.example.translation.BanglaNaturalizer.naturalize(rawText)
                     com.example.subtitle.SubtitleCue(
                         index = it.index,
                         startMs = it.startMs,
                         endMs = it.endMs,
-                        text = it.translatedText ?: it.sourceText
+                        text = natural
                     )
                 }
 
@@ -653,16 +658,31 @@ class DubbingViewModel(application: Application) : AndroidViewModel(application)
                         }
                         val translator = com.example.translation.EnglishToBanglaTranslator(app)
                         val testPhrases = listOf(
-                            "How are you?",
-                            "Welcome to this video",
-                            "Today we are demonstrating offline AI video dubbing."
+                            "I have made a decision.",
+                            "Can you provide assistance?",
+                            "He kicked the bucket.",
+                            "This is a big problem."
                         )
                         for (phrase in testPhrases) {
                             val bn = translator.translate(phrase)
-                            addTestLog("EN: \"$phrase\" -> BN: \"$bn\"")
+                            addTestLog("EN: \"$phrase\"")
+                            addTestLog("  → Natural Bangla: \"$bn\"")
                         }
                         translator.close()
-                        addTestLog("✓ Translation Stage Test Passed.")
+
+                        addTestLog("Testing Rule-based Bangla Naturalizer directly...")
+                        val naturalizerExamples = listOf(
+                            "আমি একটি সিদ্ধান্ত তৈরি করেছি।" to com.example.translation.BanglaNaturalizer.naturalize("আমি একটি সিদ্ধান্ত তৈরি করেছি।"),
+                            "আপনি কি আমাকে সাহায্য করতে সক্ষম?" to com.example.translation.BanglaNaturalizer.naturalize("আপনি কি আমাকে সাহায্য করতে সক্ষম?"),
+                            "তিনি তার নিজের কাজ করেছে।" to com.example.translation.BanglaNaturalizer.naturalize("তিনি তার নিজের কাজ করেছে।"),
+                            "এটি হচ্ছে একটি বড় সমস্যা।" to com.example.translation.BanglaNaturalizer.naturalize("এটি হচ্ছে একটি বড় সমস্যা।"),
+                            "সে সেখানে যাওয়ার সিদ্ধান্ত করেছে।" to com.example.translation.BanglaNaturalizer.naturalize("সে সেখানে যাওয়ার সিদ্ধান্ত করেছে।")
+                        )
+                        for ((raw, fixed) in naturalizerExamples) {
+                            addTestLog("Raw: \"$raw\"")
+                            addTestLog("  ✓ Naturalized: \"$fixed\"")
+                        }
+                        addTestLog("✓ Translation & Naturalizer Stage Test Passed.")
                     }
                     "TTS" -> {
                         addTestLog("Testing Android Native Bengali TextToSpeech Engine...")

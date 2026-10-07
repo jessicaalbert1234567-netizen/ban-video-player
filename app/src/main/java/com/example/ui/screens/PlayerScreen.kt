@@ -119,11 +119,25 @@ fun PlayerScreen(
         }
     }
 
-    // Position polling loop for smooth seekbar updates
+    // Ensure media and subtitles are always loaded immediately upon entering player
+    LaunchedEffect(project?.id, project?.updatedAt) {
+        project?.let { p ->
+            viewModel.selectProjectForPlayback(p)
+        }
+    }
+
+    // Pause player when navigating away from player screen
+    DisposableEffect(Unit) {
+        onDispose {
+            playerManager.player?.pause()
+        }
+    }
+
+    // High-responsiveness polling loop for smooth seekbar updates and subtitle/audio ducking synchronization
     LaunchedEffect(playerState.isPlaying) {
         while (true) {
             playerManager.updateProgress()
-            delay(250)
+            delay(if (playerState.isPlaying) 100L else 400L)
         }
     }
 
