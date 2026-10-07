@@ -68,7 +68,7 @@ class DubbingPipeline(
         val rawAudioFile = File(projectDir, "source_audio.wav")
         val transcriptJsonFile = File(projectDir, "transcript.json")
         val srtFile = File(projectDir, "subtitle_bn.srt")
-        val finalDubbedAudioFile = File(projectDir, "dubbed_bn.m4a")
+        val finalDubbedAudioFile = File(projectDir, "dubbed_bn.wav")
 
         var project = repository.findProject(projectId) ?: DubbingProject(
             id = projectId,
