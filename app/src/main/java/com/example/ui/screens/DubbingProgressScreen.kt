@@ -292,8 +292,14 @@ fun DubbingProgressScreen(
                             )
                         }
 
+                        val stageLabel = if (stage == ProcessingStage.TRANSCRIBE && (progressState?.statusMessage?.contains("subtitle", ignoreCase = true) == true || project?.statusMessage?.contains("subtitle", ignoreCase = true) == true)) {
+                            "⚡ Subtitle Track Extracted (ASR Skipped - Instant)"
+                        } else {
+                            stage.displayName
+                        }
+
                         Text(
-                            text = stage.displayName,
+                            text = stageLabel,
                             style = MaterialTheme.typography.bodyMedium.copy(
                                 fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal
                             ),

@@ -58,6 +58,7 @@ class DubbingPipeline(
         videoUri: Uri,
         videoTitle: String,
         isReDubOnly: Boolean = false,
+        providedSubtitleCues: List<com.example.subtitle.SubtitleCue>? = null,
         onProgressUpdate: ((PipelineProgress) -> Unit)? = null
     ): Result<DubbingProject> = withContext(Dispatchers.Default) {
         activeJobCancelled = false
@@ -115,9 +116,35 @@ class DubbingPipeline(
 
             val totalDurationMs = if (project.durationMs > 0) project.durationMs else WavUtils.getWavDurationMs(rawAudioFile)
 
-            // STAGE 2: Transcribe English Speech (15% - 40%)
+            // STAGE 2: Transcribe English Speech (15% - 40%) OR Use Extracted Subtitle Cues (Instant)
             var segments: List<TranscriptSegmentEntity>
-            if (startingStage.ordinal <= ProcessingStage.TRANSCRIBE.ordinal) {
+            if (providedSubtitleCues != null && providedSubtitleCues.isNotEmpty()) {
+                checkCancelled()
+                reportStage(
+                    projectId,
+                    ProcessingStage.TRANSCRIBE,
+                    100,
+                    40,
+                    "⚡ Extracted ${providedSubtitleCues.size} subtitle cues (ASR skipped)",
+                    onProgressUpdate
+                )
+                segments = providedSubtitleCues.mapIndexed { index, cue ->
+                    TranscriptSegmentEntity(
+                        projectId = projectId,
+                        index = index,
+                        startMs = cue.startMs,
+                        endMs = cue.endMs,
+                        sourceText = cue.text,
+                        confidence = 1.0f
+                    )
+                }
+                repository.deleteSegmentsForProject(projectId)
+                repository.saveSegments(segments)
+
+                val sourceSrtFile = File(projectDir, "subtitle_en_source.srt")
+                com.example.subtitle.SubtitleExtractor.exportToSrt(providedSubtitleCues, sourceSrtFile)
+                Log.i(TAG, "Successfully bypassed ASR using ${providedSubtitleCues.size} extracted subtitle cues")
+            } else if (startingStage.ordinal <= ProcessingStage.TRANSCRIBE.ordinal) {
                 checkCancelled()
                 reportStage(projectId, ProcessingStage.TRANSCRIBE, 0, 15, "English Speech Recognition (ASR)...", onProgressUpdate)
 

@@ -28,7 +28,8 @@ enum class AudioTrackChoice(val label: String) {
 
 enum class SubtitleChoice(val label: String) {
     OFF("Off"),
-    BANGLA("বাংলা")
+    BANGLA("বাংলা"),
+    ENGLISH("English")
 }
 
 data class PlayerState(
@@ -58,7 +59,8 @@ class MediaPlayerManager(private val context: Context) {
     private var currentSrtFile: File? = null
 
     // Parsed subtitles for instant on-screen rendering
-    private val subtitleEntries = mutableListOf<ParsedSubtitle>()
+    private val bnSubtitleEntries = mutableListOf<ParsedSubtitle>()
+    private val enSubtitleEntries = mutableListOf<ParsedSubtitle>()
 
     data class ParsedSubtitle(val startMs: Long, val endMs: Long, val text: String)
 
@@ -98,13 +100,14 @@ class MediaPlayerManager(private val context: Context) {
     fun setupMedia(
         videoUri: Uri,
         dubbedAudioFile: File?,
-        srtFile: File?
+        srtFile: File?,
+        sourceSrtFile: File? = null
     ) {
         currentVideoUri = videoUri
         currentDubbedAudioFile = dubbedAudioFile
         currentSrtFile = srtFile
 
-        loadSubtitleFile(srtFile)
+        loadSubtitleFiles(srtFile, sourceSrtFile)
 
         val exo = initializePlayer()
         val dataSourceFactory = DefaultDataSource.Factory(context)
@@ -258,24 +261,44 @@ class MediaPlayerManager(private val context: Context) {
     }
 
     private fun updateCurrentSubtitleText(currentPositionMs: Long) {
-        if (_playerState.value.subtitleChoice == SubtitleChoice.OFF || subtitleEntries.isEmpty()) {
+        val choice = _playerState.value.subtitleChoice
+        if (choice == SubtitleChoice.OFF) {
             if (_playerState.value.activeSubtitleText != null) {
                 _playerState.value = _playerState.value.copy(activeSubtitleText = null)
             }
             return
         }
 
-        val active = subtitleEntries.firstOrNull { currentPositionMs in it.startMs..it.endMs }
+        val entries = when (choice) {
+            SubtitleChoice.BANGLA -> bnSubtitleEntries
+            SubtitleChoice.ENGLISH -> enSubtitleEntries
+            SubtitleChoice.OFF -> emptyList()
+        }
+
+        if (entries.isEmpty()) {
+            if (_playerState.value.activeSubtitleText != null) {
+                _playerState.value = _playerState.value.copy(activeSubtitleText = null)
+            }
+            return
+        }
+
+        val active = entries.firstOrNull { currentPositionMs in it.startMs..it.endMs }
         val text = active?.text
         if (_playerState.value.activeSubtitleText != text) {
             _playerState.value = _playerState.value.copy(activeSubtitleText = text)
         }
     }
 
-    private fun loadSubtitleFile(srtFile: File?) {
-        subtitleEntries.clear()
-        if (srtFile == null || !srtFile.exists()) return
+    private fun loadSubtitleFiles(bnSrtFile: File?, enSrtFile: File?) {
+        bnSubtitleEntries.clear()
+        enSubtitleEntries.clear()
 
+        bnSrtFile?.let { parseSrtIntoList(it, bnSubtitleEntries) }
+        enSrtFile?.let { parseSrtIntoList(it, enSubtitleEntries) }
+    }
+
+    private fun parseSrtIntoList(srtFile: File, targetList: MutableList<ParsedSubtitle>) {
+        if (!srtFile.exists() || srtFile.length() == 0L) return
         try {
             val lines = srtFile.readLines(Charsets.UTF_8)
             var i = 0
@@ -294,16 +317,16 @@ class MediaPlayerManager(private val context: Context) {
                             textLineIdx++
                         }
                         if (text.isNotBlank()) {
-                            subtitleEntries.add(ParsedSubtitle(startMs, endMs, text.trim()))
+                            targetList.add(ParsedSubtitle(startMs, endMs, text.trim()))
                         }
                         i = textLineIdx
                     }
                 }
                 i++
             }
-            Log.d(TAG, "Loaded ${subtitleEntries.size} subtitle entries from ${srtFile.name}")
+            Log.d(TAG, "Loaded ${targetList.size} subtitle entries from ${srtFile.name}")
         } catch (e: Exception) {
-            Log.w(TAG, "Error parsing SRT file", e)
+            Log.w(TAG, "Error parsing SRT file: ${srtFile.name}", e)
         }
     }
 

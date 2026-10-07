@@ -4,6 +4,7 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -44,12 +45,39 @@ fun HomeScreen(
     val isAllModelsReady by viewModel.isAllModelsReady.collectAsState()
     val ttsStatus by viewModel.ttsStatus.collectAsState()
     val projects by viewModel.allProjects.collectAsState()
+    val subtitleInspection by viewModel.subtitleInspectionState.collectAsState()
+    val exportMessage by viewModel.extractedSrtExportMessage.collectAsState()
 
+    var pendingVideoForExternalSubtitle by remember { mutableStateOf<Uri?>(null) }
+    var selectedTrackIndex by remember { mutableIntStateOf(0) }
+
+    // External subtitle picker launcher
+    val externalSubtitlePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { subUri: Uri? ->
+        val vidUri = pendingVideoForExternalSubtitle
+        if (subUri != null && vidUri != null) {
+            viewModel.startFastDubbingFromExternalSubtitle(vidUri, subUri, onNavigateToProgress)
+            pendingVideoForExternalSubtitle = null
+        }
+    }
+
+    // Video picker that will immediately follow with external subtitle picker
+    val videoForExternalSubLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { vidUri: Uri? ->
+        if (vidUri != null) {
+            pendingVideoForExternalSubtitle = vidUri
+            externalSubtitlePickerLauncher.launch("*/*")
+        }
+    }
+
+    // Main video picker - inspects for subtitle tracks to offer 10x faster dubbing
     val videoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         if (uri != null) {
-            viewModel.selectVideoForDubbing(uri, onNavigateToProgress)
+            viewModel.inspectVideoForSubtitles(uri)
         }
     }
 
@@ -320,7 +348,111 @@ fun HomeScreen(
                 }
             }
 
-            // 2. Video Import Action Card
+            // 2. MKV Subtitle Fast Dubbing Feature Card (MKVEdit Style - No ASR)
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+                    ),
+                    shape = RoundedCornerShape(20.dp),
+                    modifier = Modifier.fillMaxWidth().testTag("mkv_subtitle_feature_card")
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(20.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(44.dp)
+                                        .clip(CircleShape)
+                                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        Icons.Default.Bolt,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(26.dp)
+                                    )
+                                }
+                                Column {
+                                    Text(
+                                        text = "MKV Subtitle Fast Dubbing",
+                                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                                    )
+                                    Text(
+                                        text = "এমকেভি সাবটাইটেল ডাবিং (নো ASR)",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
+
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = MaterialTheme.colorScheme.primary
+                            ) {
+                                Text(
+                                    text = "10X FASTER",
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = MaterialTheme.colorScheme.onPrimary
+                                )
+                            }
+                        }
+
+                        Text(
+                            text = "MKVEdit-এর মতো MKV বা যেকোনো ভিডিও থেকে সরাসরি সাবটাইটেল এক্সট্র্যাক্ট করে তাৎক্ষণিক বাংলায় ডাবিং করুন। স্পিচ-টু-টেক্সট করতে হবে না — সময় বাঁচবে ৯০% এবং ডায়লগ হবে ১০০% নিখুঁত!",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Button(
+                                onClick = { videoPickerLauncher.launch("video/*") },
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(48.dp)
+                                    .testTag("mkv_open_video_button")
+                            ) {
+                                Icon(Icons.Default.Subtitles, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Open MKV Video", style = MaterialTheme.typography.labelLarge)
+                            }
+
+                            OutlinedButton(
+                                onClick = { videoForExternalSubLauncher.launch("video/*") },
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(48.dp)
+                                    .testTag("external_sub_dub_button")
+                            ) {
+                                Icon(Icons.Default.AttachFile, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Dub with .SRT", style = MaterialTheme.typography.labelLarge)
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 2b. Standard Video Import Action Card (With Speech-to-Text ASR)
             item {
                 Card(
                     colors = CardDefaults.cardColors(
@@ -353,11 +485,11 @@ fun HomeScreen(
 
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Text(
-                                text = "Select an English Video",
+                                text = "Choose Video for Full AI Dubbing",
                                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                             )
                             Text(
-                                text = "Converts dialogue to synced Bangla audio & subtitles",
+                                text = "Auto-detects subtitle tracks or falls back to offline Whisper ASR",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -457,6 +589,258 @@ fun HomeScreen(
                 }
             }
         }
+    }
+
+    // Subtitle Inspection & Selection Dialog
+    subtitleInspection?.let { inspection ->
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissSubtitleInspection() },
+            title = {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        Icons.Default.Subtitles,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        text = if (inspection.isInspecting) "Analyzing Subtitles..." else "MKV Subtitle Inspector",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                    )
+                }
+            },
+            text = {
+                if (inspection.isInspecting) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(36.dp))
+                        Text(
+                            "Scanning video tracks for embedded subtitles...",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                } else if (inspection.tracks.isNotEmpty()) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Text(
+                            text = "Video: ${inspection.videoTitle}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = SuccessGreen.copy(alpha = 0.1f)),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text(
+                                text = "💡 সাবটাইটেল পাওয়া গেছে! স্পিচ-টু-টেক্সট (ASR) এড়িয়ে সরাসরি দ্রুত ও নিখুঁত বাংলা ডাবিং করতে ট্র্যাক সিলেক্ট করুন।",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.padding(10.dp)
+                            )
+                        }
+
+                        Text(
+                            text = "Select Subtitle Track:",
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
+                        )
+
+                        inspection.tracks.forEach { track ->
+                            val isSelected = selectedTrackIndex == track.trackIndex
+                            Card(
+                                colors = CardDefaults.cardColors(
+                                    containerColor = if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                                    else MaterialTheme.colorScheme.surfaceVariant
+                                ),
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { selectedTrackIndex = track.trackIndex }
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    RadioButton(
+                                        selected = isSelected,
+                                        onClick = { selectedTrackIndex = track.trackIndex }
+                                    )
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = "${track.title} • ${track.displayLanguage}",
+                                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
+                                        )
+                                        Text(
+                                            text = "Format: ${track.formatName} (Track #${track.trackIndex + 1})",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Text(
+                            text = "Video: ${inspection.videoTitle}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = "এই ভিডিও ফাইলে কোনো এমবেডেড সাবটাইটেল ট্র্যাক পাওয়া যায়নি।",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Text(
+                            text = "আপনি আলাদা .SRT / .VTT সাবটাইটেল ফাইল সিলেক্ট করতে পারেন অথবা অফলাইন Whisper ASR দিয়ে সম্পূর্ণ ডাবিং করতে পারেন।",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                if (!inspection.isInspecting && inspection.tracks.isNotEmpty()) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                viewModel.startFastDubbingFromSubtitleTrack(
+                                    inspection.videoUri,
+                                    selectedTrackIndex,
+                                    onNavigateToProgress
+                                )
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("start_fast_dub_button"),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Icon(Icons.Default.Bolt, contentDescription = null)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("⚡ Start Fast Dubbing (No ASR)")
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = {
+                                    viewModel.extractAndExportSrt(inspection.videoUri, selectedTrackIndex)
+                                },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("extract_srt_button"),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Save .SRT")
+                            }
+
+                            OutlinedButton(
+                                onClick = {
+                                    viewModel.dismissSubtitleInspection()
+                                    viewModel.selectVideoForDubbing(inspection.videoUri, onNavigateToProgress)
+                                },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("use_asr_button"),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Icon(Icons.Default.Mic, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Use ASR")
+                            }
+                        }
+                    }
+                } else if (!inspection.isInspecting && inspection.tracks.isEmpty()) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                pendingVideoForExternalSubtitle = inspection.videoUri
+                                viewModel.dismissSubtitleInspection()
+                                externalSubtitlePickerLauncher.launch("*/*")
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("add_external_sub_btn"),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Icon(Icons.Default.AttachFile, contentDescription = null)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Add External .SRT / .VTT")
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                viewModel.dismissSubtitleInspection()
+                                viewModel.selectVideoForDubbing(inspection.videoUri, onNavigateToProgress)
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("continue_asr_button"),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Icon(Icons.Default.Mic, contentDescription = null)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Continue with Offline ASR")
+                        }
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.dismissSubtitleInspection() }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    // Export Srt Notification Dialog
+    exportMessage?.let { msg ->
+        AlertDialog(
+            onDismissRequest = { viewModel.clearExportMessage() },
+            title = {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(Icons.Default.CheckCircle, contentDescription = null, tint = SuccessGreen)
+                    Text("Subtitle Export", fontWeight = FontWeight.Bold)
+                }
+            },
+            text = {
+                Text(msg, style = MaterialTheme.typography.bodyMedium)
+            },
+            confirmButton = {
+                Button(onClick = { viewModel.clearExportMessage() }) {
+                    Text("OK")
+                }
+            }
+        )
     }
 }
 

@@ -76,7 +76,7 @@ fun PlayerScreen(
         )
 
         // 2. Active Subtitle Overlay (Burned-in styling: bold, outlined or dark translucent pill)
-        if (playerState.subtitleChoice == SubtitleChoice.BANGLA && !playerState.activeSubtitleText.isNullOrBlank()) {
+        if (playerState.subtitleChoice != SubtitleChoice.OFF && !playerState.activeSubtitleText.isNullOrBlank()) {
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -280,6 +280,12 @@ fun PlayerScreen(
                                     onClick = { playerManager.setSubtitleChoice(SubtitleChoice.BANGLA) },
                                     label = { Text("বাংলা") },
                                     modifier = Modifier.testTag("subtitle_choice_bangla")
+                                )
+                                FilterChip(
+                                    selected = playerState.subtitleChoice == SubtitleChoice.ENGLISH,
+                                    onClick = { playerManager.setSubtitleChoice(SubtitleChoice.ENGLISH) },
+                                    label = { Text("English") },
+                                    modifier = Modifier.testTag("subtitle_choice_english")
                                 )
                                 FilterChip(
                                     selected = playerState.subtitleChoice == SubtitleChoice.OFF,

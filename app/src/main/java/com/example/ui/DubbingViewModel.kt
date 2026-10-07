@@ -121,6 +121,157 @@ class DubbingViewModel(application: Application) : AndroidViewModel(application)
     private val _probeResults = MutableStateFlow<Map<String, com.example.models.ModelDownloader.HttpProbeResult>>(emptyMap())
     val probeResults: StateFlow<Map<String, com.example.models.ModelDownloader.HttpProbeResult>> = _probeResults.asStateFlow()
 
+    // Subtitle Inspection & Fast Dubbing states
+    private val _subtitleInspectionState = MutableStateFlow<SubtitleInspectionUiState?>(null)
+    val subtitleInspectionState: StateFlow<SubtitleInspectionUiState?> = _subtitleInspectionState.asStateFlow()
+
+    private val _extractedSrtExportMessage = MutableStateFlow<String?>(null)
+    val extractedSrtExportMessage: StateFlow<String?> = _extractedSrtExportMessage.asStateFlow()
+
+    fun dismissSubtitleInspection() {
+        _subtitleInspectionState.value = null
+    }
+
+    fun clearExportMessage() {
+        _extractedSrtExportMessage.value = null
+    }
+
+    fun inspectVideoForSubtitles(uri: Uri) {
+        viewModelScope.launch {
+            val fileName = queryFileName(uri) ?: "video_${System.currentTimeMillis()}.mkv"
+            _subtitleInspectionState.value = SubtitleInspectionUiState(
+                videoUri = uri,
+                videoTitle = fileName,
+                tracks = emptyList(),
+                isInspecting = true
+            )
+
+            val tracks = withContext(Dispatchers.IO) {
+                com.example.subtitle.SubtitleExtractor.inspectSubtitleTracks(app, uri)
+            }
+
+            _subtitleInspectionState.value = SubtitleInspectionUiState(
+                videoUri = uri,
+                videoTitle = fileName,
+                tracks = tracks,
+                isInspecting = false,
+                infoMessage = if (tracks.isEmpty()) "No embedded subtitle tracks detected in this video file." else null
+            )
+        }
+    }
+
+    fun startFastDubbingFromSubtitleTrack(
+        videoUri: Uri,
+        trackIndex: Int,
+        onNavigateToProgress: (String) -> Unit
+    ) {
+        viewModelScope.launch {
+            val fileName = queryFileName(videoUri) ?: "video_${System.currentTimeMillis()}.mkv"
+            _subtitleInspectionState.value = null
+
+            val cues = withContext(Dispatchers.IO) {
+                com.example.subtitle.SubtitleExtractor.extractCues(app, videoUri, trackIndex)
+            }
+
+            if (cues.isEmpty()) {
+                // If extraction returned 0 cues, fallback to standard dubbing
+                selectVideoForDubbing(videoUri, onNavigateToProgress)
+                return@launch
+            }
+
+            val projectId = UUID.randomUUID().toString()
+            val projectDir = storageManager.getProjectDir(projectId)
+            val project = DubbingProject(
+                id = projectId,
+                title = fileName,
+                videoUriString = videoUri.toString(),
+                projectDirPath = projectDir.absolutePath,
+                currentStage = ProcessingStage.EXTRACT_AUDIO,
+                statusMessage = "Starting fast subtitle dubbing (No ASR)..."
+            )
+            repository.saveProject(project)
+            _selectedProject.value = project
+
+            DubbingForegroundService.start(app)
+            onNavigateToProgress(projectId)
+
+            pipeline.executePipeline(
+                projectId = projectId,
+                videoUri = videoUri,
+                videoTitle = fileName,
+                providedSubtitleCues = cues
+            )
+        }
+    }
+
+    fun startFastDubbingFromExternalSubtitle(
+        videoUri: Uri,
+        subtitleUri: Uri,
+        onNavigateToProgress: (String) -> Unit
+    ) {
+        viewModelScope.launch {
+            val fileName = queryFileName(videoUri) ?: "video_${System.currentTimeMillis()}.mp4"
+            _subtitleInspectionState.value = null
+
+            val cues = withContext(Dispatchers.IO) {
+                com.example.subtitle.SubtitleExtractor.parseSubtitleUri(app, subtitleUri)
+            }
+
+            if (cues.isEmpty()) {
+                selectVideoForDubbing(videoUri, onNavigateToProgress)
+                return@launch
+            }
+
+            val projectId = UUID.randomUUID().toString()
+            val projectDir = storageManager.getProjectDir(projectId)
+            val project = DubbingProject(
+                id = projectId,
+                title = fileName,
+                videoUriString = videoUri.toString(),
+                projectDirPath = projectDir.absolutePath,
+                currentStage = ProcessingStage.EXTRACT_AUDIO,
+                statusMessage = "Starting fast subtitle dubbing from external SRT..."
+            )
+            repository.saveProject(project)
+            _selectedProject.value = project
+
+            DubbingForegroundService.start(app)
+            onNavigateToProgress(projectId)
+
+            pipeline.executePipeline(
+                projectId = projectId,
+                videoUri = videoUri,
+                videoTitle = fileName,
+                providedSubtitleCues = cues
+            )
+        }
+    }
+
+    fun extractAndExportSrt(
+        videoUri: Uri,
+        trackIndex: Int
+    ) {
+        viewModelScope.launch {
+            val fileName = queryFileName(videoUri) ?: "video_${System.currentTimeMillis()}"
+            val baseName = fileName.substringBeforeLast(".")
+
+            val cues = withContext(Dispatchers.IO) {
+                com.example.subtitle.SubtitleExtractor.extractCues(app, videoUri, trackIndex)
+            }
+
+            if (cues.isEmpty()) {
+                _extractedSrtExportMessage.value = "Failed to extract subtitle cues or track was empty."
+                return@launch
+            }
+
+            val exportDir = File(app.filesDir, "ExtractedSubtitles").apply { if (!exists()) mkdirs() }
+            val outputFile = File(exportDir, "${baseName}_track${trackIndex + 1}.srt")
+            com.example.subtitle.SubtitleExtractor.exportToSrt(cues, outputFile)
+
+            _extractedSrtExportMessage.value = "✓ Subtitle saved: ${outputFile.name} (${cues.size} dialogue cues)"
+        }
+    }
+
     fun probeModel(model: ModelInfo) {
         viewModelScope.launch(Dispatchers.IO) {
             val result = modelManager.downloader.probeUrl(model.downloadUrl)
@@ -194,11 +345,13 @@ class DubbingViewModel(application: Application) : AndroidViewModel(application)
         val videoUri = Uri.parse(project.videoUriString)
         val dubbedFile = project.dubbedAudioPath?.let { File(it) }
         val srtFile = project.subtitleSrtPath?.let { File(it) }
+        val sourceSrt = File(project.projectDirPath, "subtitle_en_source.srt").let { if (it.exists()) it else null }
 
         playerManager.setupMedia(
             videoUri = videoUri,
             dubbedAudioFile = dubbedFile,
-            srtFile = srtFile
+            srtFile = srtFile,
+            sourceSrtFile = sourceSrt
         )
     }
 
@@ -361,3 +514,12 @@ class DubbingViewModel(application: Application) : AndroidViewModel(application)
         return name
     }
 }
+
+data class SubtitleInspectionUiState(
+    val videoUri: Uri,
+    val videoTitle: String,
+    val tracks: List<com.example.subtitle.SubtitleTrackInfo>,
+    val isInspecting: Boolean = false,
+    val infoMessage: String? = null
+)
+
