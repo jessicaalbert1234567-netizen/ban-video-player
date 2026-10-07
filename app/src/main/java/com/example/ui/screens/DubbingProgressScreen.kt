@@ -292,10 +292,15 @@ fun DubbingProgressScreen(
                             )
                         }
 
-                        val stageLabel = if (stage == ProcessingStage.TRANSCRIBE && (progressState?.statusMessage?.contains("subtitle", ignoreCase = true) == true || project?.statusMessage?.contains("subtitle", ignoreCase = true) == true)) {
-                            "⚡ Subtitle Track Extracted (ASR Skipped - Instant)"
-                        } else {
-                            stage.displayName
+                        val isSubtitleMode = progressState?.statusMessage?.contains("subtitle", ignoreCase = true) == true || project?.statusMessage?.contains("subtitle", ignoreCase = true) == true
+                        val stageLabel = when {
+                            stage == ProcessingStage.EXTRACT_AUDIO && isSubtitleMode ->
+                                "⚡ Extract MKV Subtitles (Audio Extraction Skipped)"
+                            stage == ProcessingStage.TRANSCRIBE && isSubtitleMode ->
+                                "⚡ Dialogue Cues Ready (ASR Skipped - Instant)"
+                            stage == ProcessingStage.GENERATE_SUBTITLE && isSubtitleMode ->
+                                "⚡ Save Bangla SRT to Phone & App"
+                            else -> stage.displayName
                         }
 
                         Text(

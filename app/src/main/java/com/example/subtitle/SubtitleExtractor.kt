@@ -227,6 +227,49 @@ object SubtitleExtractor {
         return outputFile
     }
 
+    /**
+     * Saves SRT content into the device's public Download folder (Environment.DIRECTORY_DOWNLOADS)
+     * so the user can easily find, share, or use it in external video players.
+     */
+    fun saveSrtToPublicDownloads(context: Context, fileName: String, srtContent: String): File? {
+        val cleanName = if (fileName.endsWith(".srt", ignoreCase = true)) fileName else "$fileName.srt"
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                val values = android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, cleanName)
+                    put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "application/x-subrip")
+                    put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, android.os.Environment.DIRECTORY_DOWNLOADS + "/BanglaDubbing")
+                }
+                val uri = context.contentResolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                if (uri != null) {
+                    context.contentResolver.openOutputStream(uri)?.use { stream ->
+                        stream.write(srtContent.toByteArray(Charsets.UTF_8))
+                    }
+                    Log.i(TAG, "Saved subtitle to public Downloads via MediaStore: $cleanName")
+                }
+            }
+
+            // Also always write to public Downloads directory or app external files directory as direct File
+            val publicDownloads = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
+            val subDir = File(publicDownloads, "BanglaDubbing").apply { if (!exists()) mkdirs() }
+            val targetFile = File(subDir, cleanName)
+            targetFile.writeText(srtContent, Charsets.UTF_8)
+            Log.i(TAG, "Saved subtitle directly to file: ${targetFile.absolutePath}")
+            return targetFile
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not save to public Downloads, falling back to app external files dir: ${e.message}")
+            try {
+                val extDir = context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS) ?: context.filesDir
+                val fallbackFile = File(extDir, cleanName)
+                fallbackFile.writeText(srtContent, Charsets.UTF_8)
+                return fallbackFile
+            } catch (ex: Exception) {
+                Log.e(TAG, "Failed fallback subtitle export: ${ex.message}")
+                return null
+            }
+        }
+    }
+
     fun formatSrtTimestamp(ms: Long): String {
         val hours = ms / 3600000
         val minutes = (ms % 3600000) / 60000

@@ -93,8 +93,37 @@ class DubbingPipeline(
                 determineResumeStage(project, rawAudioFile, transcriptJsonFile, srtFile, finalDubbedAudioFile)
             }
 
-            // STAGE 1: Extract Audio (0% - 15%)
-            if (startingStage.ordinal <= ProcessingStage.EXTRACT_AUDIO.ordinal) {
+            // STAGE 1: Extract Audio (0% - 15%) - BYPASSED when subtitle cues are already provided
+            val hasProvidedSubtitles = providedSubtitleCues != null && providedSubtitleCues.isNotEmpty()
+            if (hasProvidedSubtitles) {
+                checkCancelled()
+                reportStage(
+                    projectId,
+                    ProcessingStage.EXTRACT_AUDIO,
+                    100,
+                    15,
+                    "⚡ MKV Subtitle Track Ready (Audio Extraction Skipped)",
+                    onProgressUpdate
+                )
+
+                // Instantly obtain video duration from metadata without slow audio decoding
+                val retrievedDurationMs = try {
+                    val retriever = android.media.MediaMetadataRetriever()
+                    retriever.setDataSource(context, videoUri)
+                    val durStr = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)
+                    retriever.release()
+                    durStr?.toLongOrNull() ?: 0L
+                } catch (_: Exception) { 0L }
+
+                val maxCueEndMs = providedSubtitleCues.maxOfOrNull { it.endMs } ?: 0L
+                val calculatedDuration = maxOf(retrievedDurationMs, maxCueEndMs + 1000L)
+
+                project = project.copy(
+                    durationMs = calculatedDuration
+                )
+                repository.saveProject(project)
+                Log.i(TAG, "Fast dubbing mode: skipped audio extraction, detected video duration = $calculatedDuration ms")
+            } else if (startingStage.ordinal <= ProcessingStage.EXTRACT_AUDIO.ordinal) {
                 checkCancelled()
                 reportStage(projectId, ProcessingStage.EXTRACT_AUDIO, 0, 0, "Extracting audio from video...", onProgressUpdate)
 
@@ -114,7 +143,13 @@ class DubbingPipeline(
                 repository.saveProject(project)
             }
 
-            val totalDurationMs = if (project.durationMs > 0) project.durationMs else WavUtils.getWavDurationMs(rawAudioFile)
+            val totalDurationMs = if (project.durationMs > 0) {
+                project.durationMs
+            } else if (hasProvidedSubtitles) {
+                (providedSubtitleCues?.maxOfOrNull { it.endMs } ?: 0L) + 1000L
+            } else {
+                WavUtils.getWavDurationMs(rawAudioFile)
+            }
 
             // STAGE 2: Transcribe English Speech (15% - 40%) OR Use Extracted Subtitle Cues (Instant)
             var segments: List<TranscriptSegmentEntity>
@@ -143,6 +178,14 @@ class DubbingPipeline(
 
                 val sourceSrtFile = File(projectDir, "subtitle_en_source.srt")
                 com.example.subtitle.SubtitleExtractor.exportToSrt(providedSubtitleCues, sourceSrtFile)
+
+                // Save English subtitle in device Downloads folder as well
+                val baseVideoTitle = videoTitle.substringBeforeLast(".")
+                com.example.subtitle.SubtitleExtractor.saveSrtToPublicDownloads(
+                    context,
+                    "${baseVideoTitle}_English",
+                    sourceSrtFile.readText()
+                )
                 Log.i(TAG, "Successfully bypassed ASR using ${providedSubtitleCues.size} extracted subtitle cues")
             } else if (startingStage.ordinal <= ProcessingStage.TRANSCRIBE.ordinal) {
                 checkCancelled()
@@ -218,7 +261,22 @@ class DubbingPipeline(
 
                 SubtitleGenerator.generateSrt(segments, srtFile)
                 SubtitleGenerator.generateTranscriptJson("en", "bn", segments, transcriptJsonFile)
-                reportStage(projectId, ProcessingStage.GENERATE_SUBTITLE, 100, 65, "Subtitles generated.", onProgressUpdate)
+
+                // Save translated Bengali SRT directly to device public Downloads folder!
+                val baseVideoTitle = videoTitle.substringBeforeLast(".")
+                val bnSrtContent = srtFile.readText()
+                val downloadedFile = com.example.subtitle.SubtitleExtractor.saveSrtToPublicDownloads(
+                    context,
+                    "${baseVideoTitle}_Bangla",
+                    bnSrtContent
+                )
+                val statusMsg = if (downloadedFile != null) {
+                    "✓ Bangla SRT saved to Downloads/BanglaDubbing (${downloadedFile.name})"
+                } else {
+                    "Bangla subtitles generated."
+                }
+                reportStage(projectId, ProcessingStage.GENERATE_SUBTITLE, 100, 65, statusMsg, onProgressUpdate)
+                Log.i(TAG, "Translated Bangla subtitle generated and exported to downloads: ${downloadedFile?.absolutePath}")
             }
 
             // STAGE 5: Bangla Voice Synthesis (TTS) (65% - 85%)
@@ -334,7 +392,7 @@ class DubbingPipeline(
                 currentStage = ProcessingStage.COMPLETE,
                 progressPercent = 100,
                 statusMessage = "Offline AI Dubbing Complete",
-                originalAudioPath = rawAudioFile.absolutePath,
+                originalAudioPath = if (rawAudioFile.exists()) rawAudioFile.absolutePath else null,
                 transcriptJsonPath = transcriptJsonFile.absolutePath,
                 subtitleSrtPath = srtFile.absolutePath,
                 dubbedAudioPath = dubbedAudioToUse.absolutePath,

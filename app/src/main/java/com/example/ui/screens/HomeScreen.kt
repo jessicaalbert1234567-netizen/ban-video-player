@@ -643,7 +643,7 @@ fun HomeScreen(
                             shape = RoundedCornerShape(8.dp)
                         ) {
                             Text(
-                                text = "💡 সাবটাইটেল পাওয়া গেছে! স্পিচ-টু-টেক্সট (ASR) এড়িয়ে সরাসরি দ্রুত ও নিখুঁত বাংলা ডাবিং করতে ট্র্যাক সিলেক্ট করুন।",
+                                text = "💡 ভিডিও থেকে ইংলিশ সাবটাইটেল এক্সট্র্যাক্ট করে সরাসরি বাংলায় অনুবাদ হবে এবং মোবাইল এর Download ফোল্ডারে সেভ হবে। অনুবাদকৃত বাংলা SRT দিয়ে বাংলা অডিও ট্র্যাক তৈরি করে প্লেয়ারে চালানো যাবে। অডিও এক্সট্র্যাক্ট বা ASR-এর প্রয়োজন নেই।",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurface,
                                 modifier = Modifier.padding(10.dp)

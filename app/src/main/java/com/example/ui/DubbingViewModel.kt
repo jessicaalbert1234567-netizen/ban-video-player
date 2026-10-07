@@ -268,7 +268,15 @@ class DubbingViewModel(application: Application) : AndroidViewModel(application)
             val outputFile = File(exportDir, "${baseName}_track${trackIndex + 1}.srt")
             com.example.subtitle.SubtitleExtractor.exportToSrt(cues, outputFile)
 
-            _extractedSrtExportMessage.value = "✓ Subtitle saved: ${outputFile.name} (${cues.size} dialogue cues)"
+            // Also save directly to mobile device's public Download folder
+            val srtText = outputFile.readText()
+            val downloadFile = com.example.subtitle.SubtitleExtractor.saveSrtToPublicDownloads(
+                app,
+                "${baseName}_track${trackIndex + 1}",
+                srtText
+            )
+            val pathNotice = if (downloadFile != null) " (Saved to Downloads/BanglaDubbing)" else ""
+            _extractedSrtExportMessage.value = "✓ Subtitle saved: ${outputFile.name}$pathNotice (${cues.size} dialogue cues)"
         }
     }
 
