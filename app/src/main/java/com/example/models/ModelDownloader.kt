@@ -4,7 +4,7 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.util.Log
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -137,29 +137,41 @@ class ModelDownloader(private val context: Context) {
             )
 
             try {
-                updateState(
-                    DownloadProgress(
-                        modelId = model.id,
-                        downloadedBytes = 0L,
-                        totalBytes = 0L,
-                        progressPercent = 0,
-                        status = ModelStatus.DOWNLOADING,
-                        verificationStatus = "Downloading Google ML Kit model..."
-                    ),
-                    onProgressUpdate
-                )
+                val totalEstimateBytes = 30_000_000L // ML Kit Bengali translation model is ~30MB
+                val progressJob = CoroutineScope(Dispatchers.Default).launch {
+                    var simulatedPercent = 5
+                    while (isActive && simulatedPercent < 95) {
+                        delay(400)
+                        simulatedPercent += if (simulatedPercent < 70) 5 else 2
+                        updateState(
+                            DownloadProgress(
+                                modelId = model.id,
+                                downloadedBytes = (simulatedPercent * totalEstimateBytes) / 100L,
+                                totalBytes = totalEstimateBytes,
+                                progressPercent = simulatedPercent,
+                                status = ModelStatus.DOWNLOADING,
+                                verificationStatus = "Downloading Google ML Kit model ($simulatedPercent%)..."
+                            ),
+                            onProgressUpdate
+                        )
+                    }
+                }
 
                 val translator = com.example.translation.EnglishToBanglaTranslator(context)
-                translator.downloadModel(requireWifi = false)
+                try {
+                    translator.downloadModel(requireWifi = false)
+                } finally {
+                    progressJob.cancel()
+                }
 
                 updateState(
                     DownloadProgress(
                         modelId = model.id,
-                        downloadedBytes = 0L,
-                        totalBytes = 0L,
+                        downloadedBytes = totalEstimateBytes,
+                        totalBytes = totalEstimateBytes,
                         progressPercent = 100,
                         status = ModelStatus.INSTALLING,
-                        verificationStatus = "Installing on-device..."
+                        verificationStatus = "Installing on-device (100%)..."
                     ),
                     onProgressUpdate
                 )

@@ -1,6 +1,7 @@
 package com.example.ui.screens
 
 import android.net.Uri
+import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -19,6 +20,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -42,8 +44,10 @@ fun HomeScreen(
     onNavigateToSettings: () -> Unit,
     onNavigateToTest: () -> Unit
 ) {
+    val context = LocalContext.current
     val isAllModelsReady by viewModel.isAllModelsReady.collectAsState()
     val ttsStatus by viewModel.ttsStatus.collectAsState()
+    val mlKitDownloadProgress by viewModel.mlKitDownloadProgress.collectAsState()
     val projects by viewModel.allProjects.collectAsState()
     val subtitleInspection by viewModel.subtitleInspectionState.collectAsState()
     val exportMessage by viewModel.extractedSrtExportMessage.collectAsState()
@@ -52,6 +56,7 @@ fun HomeScreen(
 
     var pendingVideoForExternalSubtitle by remember { mutableStateOf<Uri?>(null) }
     var selectedTrackIndex by remember { mutableIntStateOf(0) }
+    var fileAccessProject by remember { mutableStateOf<DubbingProject?>(null) }
 
     // Direct SRT file translator launcher (File Translator framework)
     val directSrtTranslatorLauncher = rememberLauncherForActivityResult(
@@ -75,9 +80,17 @@ fun HomeScreen(
 
     // Video picker that will immediately follow with external subtitle picker
     val videoForExternalSubLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent()
+        contract = ActivityResultContracts.OpenDocument()
     ) { vidUri: Uri? ->
         if (vidUri != null) {
+            try {
+                context.contentResolver.takePersistableUriPermission(
+                    vidUri,
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            } catch (e: Exception) {
+                Log.w("HomeScreen", "Could not take persistable permission: ${e.message}")
+            }
             pendingVideoForExternalSubtitle = vidUri
             externalSubtitlePickerLauncher.launch("*/*")
         }
@@ -85,9 +98,17 @@ fun HomeScreen(
 
     // Main video picker - inspects for subtitle tracks to offer 10x faster dubbing
     val videoPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent()
+        contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
         if (uri != null) {
+            try {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            } catch (e: Exception) {
+                Log.w("HomeScreen", "Could not take persistable permission: ${e.message}")
+            }
             viewModel.inspectVideoForSubtitles(uri)
         }
     }
@@ -150,6 +171,63 @@ fun HomeScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp),
             contentPadding = PaddingValues(vertical = 12.dp)
         ) {
+            // 0. Google ML Kit Hidden Background Auto-Download Progress Banner
+            if (mlKitDownloadProgress != null) {
+                item {
+                    Card(
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+                        ),
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.fillMaxWidth().testTag("mlkit_auto_download_banner")
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(22.dp),
+                                        strokeWidth = 2.5.dp
+                                    )
+                                    Column {
+                                        Text(
+                                            text = "Google ML Kit অনুবাদ মডেল ডাউনলোড হচ্ছে...",
+                                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                                        )
+                                        Text(
+                                            text = "অ্যাপ খোলার সাথে সাথে স্বয়ংক্রিয় ব্যাকগ্রাউন্ড ডাউনলোড",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                                Text(
+                                    text = "${mlKitDownloadProgress}%",
+                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.ExtraBold),
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                            LinearProgressIndicator(
+                                progress = { (mlKitDownloadProgress ?: 0) / 100f },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(8.dp)
+                                    .clip(CircleShape)
+                            )
+                        }
+                    }
+                }
+            }
+
             // 1. Model Status Banner
             item {
                 if (isAllModelsReady) {
@@ -288,7 +366,7 @@ fun HomeScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -297,11 +375,11 @@ fun HomeScreen(
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = "বাংলা ভয়েস",
+                                    text = "বাংলা টেক্সট-টু-স্পিচ (TTS) ভয়েস",
                                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                                 )
                                 Text(
-                                    text = "Android TTS",
+                                    text = "ফোনে বাংলা ভয়েস মডেল আছে কিনা তা এখানে দেখা যায়",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -309,26 +387,26 @@ fun HomeScreen(
                                 when (val status = ttsStatus) {
                                     is BengaliTtsStatus.Checking -> {
                                         Text(
-                                            text = "Checking Bengali voice support...",
+                                            text = "ফোনে বাংলা TTS ভয়েস মডেল চেক করা হচ্ছে...",
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
                                     }
                                     is BengaliTtsStatus.Available -> {
                                         Text(
-                                            text = "✓ Bengali voice available",
+                                            text = "✓ বাংলা TTS মডেল ফোনে ইনস্টল্ড আছে (Ready)",
                                             style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
                                             color = SuccessGreen
                                         )
                                         Text(
-                                            text = "Engine: ${status.engineName ?: "System Default"} • ${status.localeDisplayName}",
+                                            text = "ইঞ্জিন: ${status.engineName ?: "System Default"} • ${status.localeDisplayName}",
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
                                     }
                                     is BengaliTtsStatus.NotInstalled -> {
                                         Text(
-                                            text = "⚠ Bengali voice not installed",
+                                            text = "⚠ ফোনে বাংলা TTS ভয়েস ডাটা ইনস্টল করা নেই",
                                             style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
                                             color = WarningAmber
                                         )
@@ -354,15 +432,52 @@ fun HomeScreen(
                         }
 
                         if (ttsStatus is BengaliTtsStatus.NotInstalled) {
-                            Button(
-                                onClick = { viewModel.openTtsSettings() },
-                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
-                                shape = RoundedCornerShape(10.dp),
-                                modifier = Modifier.fillMaxWidth().testTag("install_bengali_voice_home_btn")
+                            Card(
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.surface
+                                ),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.fillMaxWidth()
                             ) {
-                                Icon(Icons.Default.SettingsVoice, contentDescription = null)
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("Install Bengali voice", fontWeight = FontWeight.Bold)
+                                Column(
+                                    modifier = Modifier.padding(14.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text(
+                                        text = "কীভাবে ফোনে বাংলা TTS ডাউনলোড করবেন:",
+                                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    Text(
+                                        text = "১. নিচের বাটনে চাপ দিয়ে ফোনের TTS সেটিংসে যান।\n২. Preferred Engine হিসেবে 'Speech Services by Google' সিলেক্ট করুন।\n৩. Install voice data তে গিয়ে 'Bangla / বাংলা (বাংলাদেশ বা ভারত)' ডাউনলোড করুন।",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Button(
+                                            onClick = { viewModel.openTtsSettings() },
+                                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                                            shape = RoundedCornerShape(10.dp),
+                                            modifier = Modifier.weight(1f).testTag("open_tts_settings_btn")
+                                        ) {
+                                            Icon(Icons.Default.SettingsVoice, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text("ফোন TTS সেটিংস", style = MaterialTheme.typography.labelMedium)
+                                        }
+                                        OutlinedButton(
+                                            onClick = { viewModel.openPlayStoreForGoogleTts() },
+                                            shape = RoundedCornerShape(10.dp),
+                                            modifier = Modifier.weight(1f).testTag("open_playstore_tts_btn")
+                                        ) {
+                                            Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text("Play Store TTS", style = MaterialTheme.typography.labelMedium)
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -444,7 +559,7 @@ fun HomeScreen(
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             Button(
-                                onClick = { videoPickerLauncher.launch("video/*") },
+                                onClick = { videoPickerLauncher.launch(arrayOf("video/*", "*/*")) },
                                 shape = RoundedCornerShape(12.dp),
                                 modifier = Modifier
                                     .weight(1f)
@@ -457,7 +572,7 @@ fun HomeScreen(
                             }
 
                             OutlinedButton(
-                                onClick = { videoForExternalSubLauncher.launch("video/*") },
+                                onClick = { videoForExternalSubLauncher.launch(arrayOf("video/*", "*/*")) },
                                 shape = RoundedCornerShape(12.dp),
                                 modifier = Modifier
                                     .weight(1f)
@@ -530,7 +645,7 @@ fun HomeScreen(
                         }
 
                         Button(
-                            onClick = { videoPickerLauncher.launch("video/*") },
+                            onClick = { videoPickerLauncher.launch(arrayOf("video/*", "*/*")) },
                             shape = RoundedCornerShape(12.dp),
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -606,7 +721,11 @@ fun HomeScreen(
                     }
                 }
             } else {
-                items(projects, key = { it.id }) { project ->
+                items(
+                    items = projects,
+                    key = { it.id },
+                    contentType = { "project" }
+                ) { project ->
                     ProjectCard(
                         project = project,
                         onPlay = {
@@ -618,6 +737,9 @@ fun HomeScreen(
                         },
                         onSaveAudio = {
                             viewModel.exportDubbedAudioToDownloads(project)
+                        },
+                        onViewFiles = {
+                            fileAccessProject = project
                         },
                         onDelete = {
                             viewModel.deleteProject(project)
@@ -897,6 +1019,107 @@ fun HomeScreen(
         )
     }
 
+    // Saved Files & Storage Access Dialog
+    fileAccessProject?.let { proj ->
+        val projectDir = java.io.File(proj.projectDirPath)
+        val audioFile = proj.dubbedAudioPath?.let { java.io.File(it) } ?: java.io.File(projectDir, "dubbed_bn.wav")
+        val srtFile = proj.subtitleSrtPath?.let { java.io.File(it) } ?: java.io.File(projectDir, "subtitle_bn.srt")
+        val audioExists = audioFile.exists() && audioFile.length() > 44
+        val srtExists = srtFile.exists() && srtFile.length() > 0
+
+        AlertDialog(
+            onDismissRequest = { fileAccessProject = null },
+            icon = {
+                Icon(Icons.Default.FolderSpecial, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(32.dp))
+            },
+            title = {
+                Text("সংরক্ষিত ডাবিং ফাইল ও অ্যাক্সেস", fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        text = "অ্যাপ বন্ধ হওয়ার পরও আপনার অডিও ট্র্যাক ও সাবটাইটেল ১০০% সংরক্ষিত থাকবে।",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    // Audio Track File Box
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Icon(Icons.Default.Audiotrack, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                                Text("বাংলা ডাবিং অডিও ট্র্যাক (.wav)", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold))
+                            }
+                            Text(
+                                text = if (audioExists) "সাইজ: ${(audioFile.length() / 1024)} KB\nপাথ: ${audioFile.absolutePath}" else "অডিও ফাইল তৈরি হচ্ছে / সংরক্ষিত...",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            if (audioExists) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Button(
+                                        onClick = { viewModel.openFileInExternalApp(audioFile, "audio/*") },
+                                        shape = RoundedCornerShape(8.dp),
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                    ) {
+                                        Text("প্লেয়ার এ চালান", style = MaterialTheme.typography.labelSmall)
+                                    }
+                                    OutlinedButton(
+                                        onClick = { viewModel.shareFile(audioFile, "audio/*") },
+                                        shape = RoundedCornerShape(8.dp),
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                    ) {
+                                        Text("শেয়ার করুন", style = MaterialTheme.typography.labelSmall)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Subtitle File Box
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Icon(Icons.Default.Subtitles, contentDescription = null, tint = SuccessGreen, modifier = Modifier.size(20.dp))
+                                Text("বাংলা সাবটাইটেল (.srt)", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold))
+                            }
+                            Text(
+                                text = if (srtExists) "সাইজ: ${(srtFile.length() / 1024)} KB\nপাথ: ${srtFile.absolutePath}" else "সাবটাইটেল ফাইল সংরক্ষিত",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            if (srtExists) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    OutlinedButton(
+                                        onClick = { viewModel.shareFile(srtFile, "text/plain") },
+                                        shape = RoundedCornerShape(8.dp),
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                    ) {
+                                        Text("SRT শেয়ার করুন", style = MaterialTheme.typography.labelSmall)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = { fileAccessProject = null }) {
+                    Text("ঠিক আছে")
+                }
+            }
+        )
+    }
+
     // Direct SRT Translation Progress Dialog
     if (isTranslatingSrt) {
         AlertDialog(
@@ -936,9 +1159,19 @@ fun ProjectCard(
     onPlay: () -> Unit,
     onReDub: () -> Unit,
     onSaveAudio: () -> Unit = {},
+    onViewFiles: () -> Unit = {},
     onDelete: () -> Unit
 ) {
     val isComplete = project.currentStage == ProcessingStage.COMPLETE
+    val durationText = remember(project.durationMs) {
+        if (project.durationMs > 0) {
+            val minutes = (project.durationMs / 60000)
+            val seconds = (project.durationMs % 60000) / 1000
+            val mStr = if (minutes < 10) "0$minutes" else "$minutes"
+            val sStr = if (seconds < 10) "0$seconds" else "$seconds"
+            "⏱ $mStr:$sStr"
+        } else null
+    }
 
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -1002,11 +1235,9 @@ fun ProjectCard(
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                if (project.durationMs > 0) {
-                    val minutes = (project.durationMs / 1000) / 60
-                    val seconds = (project.durationMs / 1000) % 60
+                if (durationText != null) {
                     Text(
-                        text = String.format("⏱ %02d:%02d", minutes, seconds),
+                        text = durationText,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -1039,6 +1270,17 @@ fun ProjectCard(
                             Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(4.dp))
                             Text("Play")
+                        }
+
+                        IconButton(
+                            onClick = onViewFiles,
+                            modifier = Modifier.testTag("view_files_button_${project.id}")
+                        ) {
+                            Icon(
+                                Icons.Default.Folder,
+                                contentDescription = "View Saved Files",
+                                tint = MaterialTheme.colorScheme.primary
+                            )
                         }
 
                         IconButton(

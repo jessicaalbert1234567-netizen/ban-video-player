@@ -19,6 +19,8 @@ import com.example.player.PlayerState
 import com.example.player.SubtitleChoice
 import com.example.settings.ProcessingMode
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -52,8 +54,19 @@ class DubbingViewModel(application: Application) : AndroidViewModel(application)
     private val _ttsStatus = MutableStateFlow<com.example.tts.BengaliTtsStatus>(com.example.tts.BengaliTtsStatus.Checking)
     val ttsStatus: StateFlow<com.example.tts.BengaliTtsStatus> = _ttsStatus.asStateFlow()
 
+    private val _mlKitDownloadProgress = MutableStateFlow<Int?>(null)
+    val mlKitDownloadProgress: StateFlow<Int?> = _mlKitDownloadProgress.asStateFlow()
+
+    private val _videoPermissionError = MutableStateFlow<String?>(null)
+    val videoPermissionError: StateFlow<String?> = _videoPermissionError.asStateFlow()
+
+    fun clearVideoPermissionError() {
+        _videoPermissionError.value = null
+    }
+
     init {
         checkBengaliTts()
+        autoDownloadRequiredModelsSilently()
         viewModelScope.launch {
             pipeline.pipelineState.collect { progress ->
                 if (progress != null) {
@@ -80,6 +93,42 @@ class DubbingViewModel(application: Application) : AndroidViewModel(application)
                         }
                     }
                 }
+            }
+        }
+    }
+
+    private fun autoDownloadRequiredModelsSilently() {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val isDownloaded = com.example.translation.EnglishToBanglaTranslator.isModelDownloaded()
+                if (!isDownloaded) {
+                    Log.i("DubbingViewModel", "Silently downloading Google ML Kit translation model in background...")
+                    _mlKitDownloadProgress.value = 5
+                    val progressJob = launch(Dispatchers.Default) {
+                        var p = 5
+                        while (isActive && p < 95) {
+                            delay(400)
+                            p += if (p < 70) 5 else 2
+                            _mlKitDownloadProgress.value = p
+                        }
+                    }
+                    val translator = com.example.translation.EnglishToBanglaTranslator(app)
+                    try {
+                        translator.downloadModel(requireWifi = false)
+                        _mlKitDownloadProgress.value = 100
+                        kotlinx.coroutines.delay(1000)
+                        _mlKitDownloadProgress.value = null
+                        Log.i("DubbingViewModel", "Silent download of Google ML Kit model complete!")
+                    } finally {
+                        progressJob.cancel()
+                        translator.close()
+                    }
+                } else {
+                    _mlKitDownloadProgress.value = null
+                }
+            } catch (e: Exception) {
+                Log.w("DubbingViewModel", "Background silent model download notice: ${e.message}")
+                _mlKitDownloadProgress.value = null
             }
         }
     }
@@ -114,6 +163,49 @@ class DubbingViewModel(application: Application) : AndroidViewModel(application)
 
     fun openTtsSettings() {
         com.example.tts.BanglaTtsEngine.openTtsSettings(app)
+    }
+
+    fun openPlayStoreForGoogleTts() {
+        com.example.tts.BanglaTtsEngine.openPlayStoreForGoogleTts(app)
+    }
+
+    fun openFileInExternalApp(file: java.io.File, mimeType: String) {
+        try {
+            val uri = androidx.core.content.FileProvider.getUriForFile(
+                app,
+                "${app.packageName}.fileprovider",
+                file
+            )
+            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, mimeType)
+                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            app.startActivity(intent)
+        } catch (e: Exception) {
+            _audioExportStatus.value = "ফাইল ওপেন করতে সমস্যা: ${e.localizedMessage}"
+        }
+    }
+
+    fun shareFile(file: java.io.File, mimeType: String) {
+        try {
+            val uri = androidx.core.content.FileProvider.getUriForFile(
+                app,
+                "${app.packageName}.fileprovider",
+                file
+            )
+            val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                type = mimeType
+                putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            val chooser = android.content.Intent.createChooser(intent, "Share ${file.name}").apply {
+                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            app.startActivity(chooser)
+        } catch (e: Exception) {
+            _audioExportStatus.value = "ফাইল শেয়ার করতে সমস্যা: ${e.localizedMessage}"
+        }
     }
 
     // Active project state
@@ -556,6 +648,25 @@ class DubbingViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun updateProjectVideoUri(project: DubbingProject, newUri: Uri) {
+        viewModelScope.launch {
+            try {
+                app.contentResolver.takePersistableUriPermission(
+                    newUri,
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            } catch (_: Exception) {}
+            val updated = project.copy(
+                videoUriString = newUri.toString(),
+                updatedAt = System.currentTimeMillis()
+            )
+            repository.saveProject(updated)
+            _selectedProject.value = updated
+            _videoPermissionError.value = null
+            selectProjectForPlayback(updated)
+        }
+    }
+
     fun selectProjectForPlayback(project: DubbingProject) {
         viewModelScope.launch {
             val latest = repository.findProject(project.id) ?: project
@@ -563,6 +674,24 @@ class DubbingViewModel(application: Application) : AndroidViewModel(application)
 
             val videoUri = Uri.parse(latest.videoUriString)
             val projectDir = File(latest.projectDirPath)
+
+            var canAccess = true
+            try {
+                if (videoUri.scheme == "content") {
+                    app.contentResolver.openFileDescriptor(videoUri, "r")?.close()
+                } else if (videoUri.scheme == "file") {
+                    canAccess = File(videoUri.path ?: "").exists()
+                }
+            } catch (e: Exception) {
+                canAccess = false
+                Log.w("DubbingViewModel", "Video access error across restart: ${e.message}")
+            }
+
+            if (!canAccess) {
+                _videoPermissionError.value = "ভিডিও ফাইলটির পারমিশন রিনিউ করতে ফাইলটি পুনরায় সিলেক্ট করুন।"
+            } else {
+                _videoPermissionError.value = null
+            }
 
             val candidateDubbed = latest.dubbedAudioPath?.let { File(it) }
             val m4aFile = File(projectDir, "dubbed_bn.m4a")

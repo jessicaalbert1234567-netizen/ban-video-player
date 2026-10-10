@@ -8,6 +8,8 @@ import com.google.mlkit.nl.translate.TranslateLanguage
 import com.google.mlkit.nl.translate.Translation
 import com.google.mlkit.nl.translate.TranslatorOptions
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -35,7 +37,7 @@ class SubtitleBatchTranslator(
 
     companion object {
         private const val TAG = "SubtitleBatchTranslator"
-        private const val BATCH_SIZE = 25
+        private const val BATCH_SIZE = 80
 
         private val CUE_TAG_REGEX = Regex("""<cue\s+id="?(\d+)"?>([\s\S]*?)</cue>""", RegexOption.IGNORE_CASE)
         private val NUMBERED_LINE_REGEX = Regex("""\[(\d+)\]\s*([^\[\n]+)""")
@@ -173,39 +175,38 @@ class SubtitleBatchTranslator(
     suspend fun translateSegments(
         segments: List<TranscriptSegmentEntity>,
         onProgress: suspend (current: Int, total: Int, currentText: String) -> Unit
-    ): List<TranscriptSegmentEntity> = withContext(Dispatchers.IO) {
-        if (segments.isEmpty()) return@withContext emptyList()
+    ): List<TranscriptSegmentEntity> = coroutineScope {
+        if (segments.isEmpty()) return@coroutineScope emptyList()
 
-        val results = ArrayList<TranscriptSegmentEntity>(segments.size)
         val total = segments.size
-        var processedCount = 0
+        val chunks = segments.chunked(BATCH_SIZE)
 
-        // Process in chunked batches (File Translator architecture)
-        var i = 0
-        while (i < segments.size) {
-            val batchEnd = minOf(i + BATCH_SIZE, segments.size)
-            val batch = segments.subList(i, batchEnd)
-
-            val batchInputs = batch.map { it.sourceText }
-            val batchTranslations = translateBatch(batchInputs)
-
-            for (j in batch.indices) {
-                val origSeg = batch[j]
-                val existing = origSeg.translatedText
-                val rawCandidate = if (!existing.isNullOrBlank()) {
-                    existing
-                } else {
-                    val candidate = batchTranslations.getOrNull(j)?.trim()
-                    if (!candidate.isNullOrBlank()) candidate else origSeg.sourceText
+        // Launch all chunk translations concurrently across IO thread pool
+        val deferredList = chunks.map { batch ->
+            async(Dispatchers.IO) {
+                val batchInputs = batch.map { it.sourceText }
+                val batchTranslations = translateBatch(batchInputs)
+                batch.mapIndexed { j, origSeg ->
+                    val existing = origSeg.translatedText
+                    val rawCandidate = if (!existing.isNullOrBlank()) {
+                        existing
+                    } else {
+                        val candidate = batchTranslations.getOrNull(j)?.trim()
+                        if (!candidate.isNullOrBlank()) candidate else origSeg.sourceText
+                    }
+                    val translated = BanglaNaturalizer.naturalize(rawCandidate)
+                    origSeg.copy(translatedText = translated)
                 }
-                val translated = BanglaNaturalizer.naturalize(rawCandidate)
-
-                results.add(origSeg.copy(translatedText = translated))
-                processedCount++
-                onProgress(processedCount, total, translated)
             }
+        }
 
-            i = batchEnd
+        var processedCount = 0
+        val results = ArrayList<TranscriptSegmentEntity>(segments.size)
+        for (deferred in deferredList) {
+            val batchResults = deferred.await()
+            results.addAll(batchResults)
+            processedCount += batchResults.size
+            onProgress(processedCount, total, batchResults.lastOrNull()?.translatedText ?: "")
         }
 
         results

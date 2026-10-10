@@ -48,7 +48,10 @@ data class PlayerState(
     val hasBanglaSubtitles: Boolean = false,
     val hasEnglishSubtitles: Boolean = false,
     val dubbedAudioFile: File? = null,
-    val isSpeechActive: Boolean = false
+    val isSpeechActive: Boolean = false,
+    val isLiveDubbing: Boolean = false,
+    val hasError: Boolean = false,
+    val errorMessage: String? = null
 )
 
 class MediaPlayerManager(private val context: Context) {
@@ -75,6 +78,25 @@ class MediaPlayerManager(private val context: Context) {
 
     data class ParsedSubtitle(val startMs: Long, val endMs: Long, val text: String)
 
+    private var liveTts: android.speech.tts.TextToSpeech? = null
+    private var isLiveTtsReady = false
+    private var lastSpokenCueStartMs: Long = -1L
+
+    private fun initLiveTts() {
+        if (liveTts == null) {
+            liveTts = android.speech.tts.TextToSpeech(context) { status ->
+                if (status == android.speech.tts.TextToSpeech.SUCCESS) {
+                    val res = liveTts?.setLanguage(java.util.Locale("bn", "BD"))
+                    if (res == android.speech.tts.TextToSpeech.LANG_MISSING_DATA || res == android.speech.tts.TextToSpeech.LANG_NOT_SUPPORTED) {
+                        liveTts?.setLanguage(java.util.Locale("bn", "IN"))
+                    }
+                    isLiveTtsReady = true
+                    Log.i(TAG, "Live Real-Time Bengali TTS Synthesizer initialized successfully")
+                }
+            }
+        }
+    }
+
     fun initializePlayer(): ExoPlayer {
         if (player == null) {
             player = ExoPlayer.Builder(context).build().apply {
@@ -87,6 +109,7 @@ class MediaPlayerManager(private val context: Context) {
                             dubbedAudioPlayer?.play()
                         } else {
                             dubbedAudioPlayer?.pause()
+                            liveTts?.stop()
                         }
                     }
 
@@ -97,6 +120,12 @@ class MediaPlayerManager(private val context: Context) {
 
                     override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
                         Log.e(TAG, "ExoPlayer playback error: ${error.errorCodeName} - ${error.message}", error)
+                        val msg = if (error.errorCodeName.contains("PERMISSION", ignoreCase = true) || error.message?.contains("permission", ignoreCase = true) == true) {
+                            "ভিডিও ফাইলটির অ্যাক্সেস পারমিশন রিনিউ করতে ফাইলটি পুনরায় সিলেক্ট করুন।"
+                        } else {
+                            "ভিডিও প্লেব্যাক ত্রুটি: ${error.message ?: "ভিডিও ফাইলটি খুঁজে পাওয়া যায়নি"}"
+                        }
+                        _playerState.value = _playerState.value.copy(hasError = true, errorMessage = msg)
                     }
                 })
             }
@@ -146,8 +175,11 @@ class MediaPlayerManager(private val context: Context) {
             else -> null
         }
 
-        val hasDubbed = effectiveDubbedFile != null
-        if (hasDubbed) {
+        val hasPreRenderedDubbed = effectiveDubbedFile != null
+        val canLiveDub = !hasPreRenderedDubbed && bnSubtitleEntries.isNotEmpty()
+        val hasDubbed = hasPreRenderedDubbed || canLiveDub
+
+        if (hasPreRenderedDubbed) {
             val dPlayer = initializeDubbedPlayer()
             val audioItem = MediaItem.fromUri(Uri.fromFile(effectiveDubbedFile!!))
             val audioSource = ProgressiveMediaSource.Factory(dataSourceFactory).createMediaSource(audioItem)
@@ -161,6 +193,11 @@ class MediaPlayerManager(private val context: Context) {
             dubbedAudioPlayer = null
         }
 
+        if (canLiveDub) {
+            initLiveTts()
+            Log.i(TAG, "Initialized Live Real-time TTS Dubbing (0-second wait mode)")
+        }
+
         val initialAudioChoice = if (hasDubbed) AudioTrackChoice.BANGLA_DUB else AudioTrackChoice.ORIGINAL
         val initialSubChoice = when {
             bnSubtitleEntries.isNotEmpty() -> SubtitleChoice.BANGLA
@@ -170,6 +207,9 @@ class MediaPlayerManager(private val context: Context) {
 
         _playerState.value = _playerState.value.copy(
             hasDubbedAudio = hasDubbed,
+            isLiveDubbing = canLiveDub,
+            hasError = false,
+            errorMessage = null,
             audioChoice = initialAudioChoice,
             subtitleChoice = initialSubChoice,
             hasBanglaSubtitles = bnSubtitleEntries.isNotEmpty(),
@@ -195,7 +235,8 @@ class MediaPlayerManager(private val context: Context) {
         val dPlayer = dubbedAudioPlayer
 
         val choice = _playerState.value.audioChoice
-        val hasDubbed = _playerState.value.hasDubbedAudio && dPlayer != null
+        val hasDubbed = _playerState.value.hasDubbedAudio
+        val isLive = _playerState.value.isLiveDubbing
 
         if (!hasDubbed) {
             exo.volume = 1.0f
@@ -210,22 +251,47 @@ class MediaPlayerManager(private val context: Context) {
         when (choice) {
             AudioTrackChoice.BANGLA_DUB -> {
                 if (isSpeaking) {
-                    // Speech present -> Dubbed speech at 100%, original audio ducked to 12% so background SFX is subtle
                     exo.volume = 0.12f
-                    dPlayer?.volume = 1.0f
+                    if (isLive) {
+                        val activeCue = bnSubtitleEntries.firstOrNull { currentPosMs in it.startMs..it.endMs }
+                        if (activeCue != null && activeCue.startMs != lastSpokenCueStartMs) {
+                            lastSpokenCueStartMs = activeCue.startMs
+                            if (isLiveTtsReady && _playerState.value.isPlaying) {
+                                val params = android.os.Bundle()
+                                params.putFloat(android.speech.tts.TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
+                                liveTts?.speak(activeCue.text, android.speech.tts.TextToSpeech.QUEUE_FLUSH, params, "cue_${activeCue.startMs}")
+                            }
+                        }
+                    } else {
+                        dPlayer?.volume = 1.0f
+                    }
                 } else {
-                    // No speech -> Original video audio automatically switches to 100% (cars, storms, footsteps, ambience)
                     exo.volume = 1.0f
-                    dPlayer?.volume = 0.0f
+                    if (!isLive) {
+                        dPlayer?.volume = 0.0f
+                    }
                 }
             }
             AudioTrackChoice.ORIGINAL -> {
                 exo.volume = 1.0f
                 dPlayer?.volume = 0.0f
+                if (isLive) liveTts?.stop()
             }
             AudioTrackChoice.BANGLA_ONLY -> {
                 exo.volume = 0.0f
-                dPlayer?.volume = 1.0f
+                if (isLive) {
+                    val activeCue = bnSubtitleEntries.firstOrNull { currentPosMs in it.startMs..it.endMs }
+                    if (activeCue != null && activeCue.startMs != lastSpokenCueStartMs) {
+                        lastSpokenCueStartMs = activeCue.startMs
+                        if (isLiveTtsReady && _playerState.value.isPlaying) {
+                            val params = android.os.Bundle()
+                            params.putFloat(android.speech.tts.TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
+                            liveTts?.speak(activeCue.text, android.speech.tts.TextToSpeech.QUEUE_FLUSH, params, "cue_${activeCue.startMs}")
+                        }
+                    }
+                } else {
+                    dPlayer?.volume = 1.0f
+                }
             }
         }
     }
@@ -267,6 +333,8 @@ class MediaPlayerManager(private val context: Context) {
     }
 
     fun seekTo(positionMs: Long) {
+        liveTts?.stop()
+        lastSpokenCueStartMs = -1L
         player?.seekTo(positionMs)
         dubbedAudioPlayer?.seekTo(positionMs)
         updateAudioVolumes(positionMs)
@@ -398,5 +466,10 @@ class MediaPlayerManager(private val context: Context) {
         player = null
         dubbedAudioPlayer?.release()
         dubbedAudioPlayer = null
+        try {
+            liveTts?.stop()
+            liveTts?.shutdown()
+            liveTts = null
+        } catch (_: Exception) {}
     }
 }

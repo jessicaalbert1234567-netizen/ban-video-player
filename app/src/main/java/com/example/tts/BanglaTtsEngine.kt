@@ -68,6 +68,27 @@ class BanglaTtsEngine(
                 }
             }
         }
+
+        /**
+         * Opens Google Play Store for Google Speech Services / Text-to-Speech
+         */
+        fun openPlayStoreForGoogleTts(context: Context) {
+            try {
+                val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse("market://details?id=$GOOGLE_TTS_PACKAGE")).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(intent)
+            } catch (_: Exception) {
+                try {
+                    val webIntent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://play.google.com/store/apps/details?id=$GOOGLE_TTS_PACKAGE")).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    context.startActivity(webIntent)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Could not open Play Store for TTS: ${e.message}")
+                }
+            }
+        }
     }
 
     private sealed class ChunkSynthesisResult {

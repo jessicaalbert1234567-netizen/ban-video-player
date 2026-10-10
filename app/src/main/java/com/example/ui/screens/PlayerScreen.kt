@@ -3,8 +3,11 @@ package com.example.ui.screens
 import android.app.Activity
 import android.content.Context
 import android.media.AudioManager
+import android.net.Uri
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -41,6 +44,7 @@ import com.example.player.ResizeModeChoice
 import com.example.player.SubtitleChoice
 import com.example.ui.DubbingViewModel
 import com.example.ui.theme.SuccessGreen
+import com.example.ui.theme.WarningAmber
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -65,12 +69,28 @@ fun PlayerScreen(
     val playerState by playerManager.playerState.collectAsState()
     val project by viewModel.selectedProject.collectAsState()
     val audioExportStatus by viewModel.audioExportStatus.collectAsState()
+    val videoPermissionError by viewModel.videoPermissionError.collectAsState()
+
+    val relinkVideoLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { newUri: Uri? ->
+        if (newUri != null && project != null) {
+            try {
+                context.contentResolver.takePersistableUriPermission(
+                    newUri,
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            } catch (_: Exception) {}
+            viewModel.updateProjectVideoUri(project!!, newUri)
+        }
+    }
 
     var showControls by remember { mutableStateOf(true) }
     var showSpeedDialog by remember { mutableStateOf(false) }
     var showAudioTrackDialog by remember { mutableStateOf(false) }
     var showSubtitleDialog by remember { mutableStateOf(false) }
     var showResizeDialog by remember { mutableStateOf(false) }
+    var showSavedFilesDialog by remember { mutableStateOf(false) }
 
     // Gesture State HUD
     var hudType by remember { mutableStateOf(GestureHudType.NONE) }
@@ -516,6 +536,18 @@ fun PlayerScreen(
                         )
                     }
 
+                    // Saved Files & Storage Access Dialog Button
+                    IconButton(
+                        onClick = { showSavedFilesDialog = true },
+                        modifier = Modifier.testTag("player_saved_files_button")
+                    ) {
+                        Icon(
+                            Icons.Default.FolderSpecial,
+                            contentDescription = "Saved Dubbing Files",
+                            tint = Color.White
+                        )
+                    }
+
                     // Playback Speed Button
                     IconButton(onClick = { showSpeedDialog = true }) {
                         Text(
@@ -939,11 +971,173 @@ fun PlayerScreen(
             }
         )
     }
+
+    // Saved Files & Storage Access Dialog
+    if (showSavedFilesDialog) {
+        val proj = project
+        val projectDir = proj?.projectDirPath?.let { java.io.File(it) }
+        val audioFile = proj?.dubbedAudioPath?.let { java.io.File(it) } ?: projectDir?.let { java.io.File(it, "dubbed_bn.wav") }
+        val srtFile = proj?.subtitleSrtPath?.let { java.io.File(it) } ?: projectDir?.let { java.io.File(it, "subtitle_bn.srt") }
+        val audioExists = audioFile?.exists() == true && audioFile.length() > 44
+        val srtExists = srtFile?.exists() == true && srtFile.length() > 0
+
+        AlertDialog(
+            onDismissRequest = { showSavedFilesDialog = false },
+            icon = {
+                Icon(Icons.Default.FolderSpecial, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(32.dp))
+            },
+            title = {
+                Text("স্বয়ংক্রিয়ভাবে সংরক্ষিত ফাইল", fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        text = "অ্যাপ পুরোপুরি বন্ধের পরও বাংলা ডাবিং অডিও ট্র্যাক এবং সাবটাইটেল নিরাপদভাবে সংরক্ষিত রয়েছে।",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    // Audio Track File Box
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Icon(Icons.Default.Audiotrack, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                                Text("বাংলা ডাবিং অডিও (.wav)", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold))
+                            }
+                            Text(
+                                text = if (audioExists && audioFile != null) "সাইজ: ${(audioFile.length() / 1024)} KB\nপাথ: ${audioFile.name}" else "ডাবিং অডিও সংরক্ষিত হচ্ছে...",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            if (audioExists && audioFile != null) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Button(
+                                        onClick = { viewModel.openFileInExternalApp(audioFile, "audio/*") },
+                                        shape = RoundedCornerShape(8.dp),
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                    ) {
+                                        Text("প্লেয়ারে চালান", style = MaterialTheme.typography.labelSmall)
+                                    }
+                                    OutlinedButton(
+                                        onClick = { viewModel.shareFile(audioFile, "audio/*") },
+                                        shape = RoundedCornerShape(8.dp),
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                    ) {
+                                        Text("শেয়ার করুন", style = MaterialTheme.typography.labelSmall)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Subtitle File Box
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Icon(Icons.Default.Subtitles, contentDescription = null, tint = SuccessGreen, modifier = Modifier.size(20.dp))
+                                Text("বাংলা সাবটাইটেল (.srt)", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold))
+                            }
+                            Text(
+                                text = if (srtExists && srtFile != null) "সাইজ: ${(srtFile.length() / 1024)} KB\nপাথ: ${srtFile.name}" else "সাবটাইটেল ফাইল সংরক্ষিত",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            if (srtExists && srtFile != null) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    OutlinedButton(
+                                        onClick = { viewModel.shareFile(srtFile, "text/plain") },
+                                        shape = RoundedCornerShape(8.dp),
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                    ) {
+                                        Text("SRT শেয়ার করুন", style = MaterialTheme.typography.labelSmall)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = { showSavedFilesDialog = false }) {
+                    Text("ঠিক আছে")
+                }
+            }
+        )
+    }
+
+    // Video Permission / Missing File Recovery Overlay
+    if (playerState.hasError || videoPermissionError != null) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.90f))
+                .padding(24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                shape = RoundedCornerShape(18.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 440.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    Icon(
+                        Icons.Default.Lock,
+                        contentDescription = null,
+                        tint = WarningAmber,
+                        modifier = Modifier.size(48.dp)
+                    )
+                    Text(
+                        text = "ভিডিও ফাইল পারমিশন রিনিউ",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                    )
+                    Text(
+                        text = videoPermissionError ?: playerState.errorMessage ?: "অ্যান্ড্রয়েড সিস্টেমের কারণে অ্যাপ পুরোপুরি বন্ধের পর ভিডিও ফাইলের অ্যাক্সেস পারমিশন রিফ্রেশ করতে হবে। আপনার ডাবিং অডিও ও সাবটাইটেল ১০০% সংরক্ষিত আছে।",
+                        style = MaterialTheme.typography.bodySmall,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Button(
+                        onClick = { relinkVideoLauncher.launch(arrayOf("video/*", "*/*")) },
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.FolderOpen, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("ভিডিও ফাইল নির্বাচন করুন (Re-link Video)")
+                    }
+                    OutlinedButton(
+                        onClick = onNavigateBack,
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("হোমে ফিরে যান (Back)")
+                    }
+                }
+            }
+        }
+    }
 }
 
 private fun formatDuration(ms: Long): String {
     val totalSec = (ms / 1000).coerceAtLeast(0)
     val minutes = totalSec / 60
     val seconds = totalSec % 60
-    return String.format("%02d:%02d", minutes, seconds)
+    val mStr = if (minutes < 10) "0$minutes" else "$minutes"
+    val sStr = if (seconds < 10) "0$seconds" else "$seconds"
+    return "$mStr:$sStr"
 }
