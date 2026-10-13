@@ -3,46 +3,50 @@ package com.example.translation
 import android.content.Context
 import android.util.Log
 import com.example.database.TranscriptSegmentEntity
+import com.google.android.gms.tasks.Task
 import com.google.mlkit.common.model.DownloadConditions
+import com.google.mlkit.common.model.RemoteModelManager
 import com.google.mlkit.nl.translate.TranslateLanguage
+import com.google.mlkit.nl.translate.TranslateRemoteModel
 import com.google.mlkit.nl.translate.Translation
 import com.google.mlkit.nl.translate.TranslatorOptions
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import org.json.JSONArray
-import java.net.URLEncoder
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.TimeUnit
 
 /**
- * Ultra-Fast, resilient Subtitle Translation Engine modeled after professional
- * subtitle and file translator frameworks (such as File Translator / com.filetranslato).
+ * Ultra-Fast, Resilient Offline Subtitle Translation Engine.
  *
- * Architecture & Optimizations:
- * 1. Tag-Preserving Batching: Groups 25-30 dialogue cues per call using <cue id="X"> tags,
- *    which Google ML Kit and Google Translate preserve intact. Translates hundreds of cues in seconds!
- * 2. Multi-tier failover: (1) On-device Google ML Kit -> (2) High-speed Google Translate API -> (3) Direct per-cue fallback.
- * 3. High-Capacity Dialogue Cache: Instantly resolves common conversational subtitles (0ms latency).
- * 4. Zero-Hang Watchdog: Strict per-batch timeouts guarantee progress never freezes or oscillates.
+ * Optimized for 4GB RAM Android devices:
+ * 1. Single Reused Translator: Reuses a single Google ML Kit Translator instance for the entire job.
+ * 2. Strictly Bounded Concurrency: Uses kotlinx.coroutines.sync.Semaphore(3) (up to 4) to eliminate
+ *    memory spikes and ANRs.
+ * 3. 100% Offline: Operates purely on-device via Google ML Kit Bengali neural model.
+ *    No network endpoints or remote fallbacks (translate.googleapis.com completely removed).
+ * 4. Zero Unnecessary Delay: No artificial delay() or batch completion freezes.
+ * 5. Monotonic Instant Progress: Emits progress callback immediately as each individual subtitle resolves.
+ * 6. Preserves Subtitle Integrity: Subtitle timestamps, indices, and chronological order are strictly retained.
+ * 7. Single Naturalization Pass: BanglaNaturalizer runs exactly once per translated dialogue.
+ * 8. Cache-Accelerated: In-memory phrase cache instantly resolves conversational phrases without ML Kit overhead.
  */
 class SubtitleBatchTranslator(
-    private val context: Context
+    private val context: Context,
+    private val customTranslator: (suspend (String) -> String)? = null,
+    private val concurrencyLimit: Int = 3
 ) : AutoCloseable {
 
     companion object {
         private const val TAG = "SubtitleBatchTranslator"
-        private const val BATCH_SIZE = 80
 
-        private val CUE_TAG_REGEX = Regex("""<cue\s+id="?(\d+)"?>([\s\S]*?)</cue>""", RegexOption.IGNORE_CASE)
-        private val NUMBERED_LINE_REGEX = Regex("""\[(\d+)\]\s*([^\[\n]+)""")
-
-        // In-memory cache for repeated conversational subtitle dialogue
+        // In-memory cache for repeated conversational subtitle dialogue (0ms latency)
         val phraseCache = ConcurrentHashMap<String, String>()
 
         init {
@@ -120,13 +124,12 @@ class SubtitleBatchTranslator(
             phraseCache["i love you"] = "আমি তোমাকে ভালোবাসি"
             phraseCache["i love you."] = "আমি তোমাকে ভালোবাসি।"
         }
-    }
 
-    private val httpClient: OkHttpClient by lazy {
-        OkHttpClient.Builder()
-            .connectTimeout(4, TimeUnit.SECONDS)
-            .readTimeout(6, TimeUnit.SECONDS)
-            .build()
+        private suspend fun <T> Task<T>.awaitTask(): T = suspendCancellableCoroutine { cont ->
+            addOnSuccessListener { if (cont.isActive) cont.resume(it) }
+            addOnFailureListener { if (cont.isActive) cont.resumeWithException(it) }
+            addOnCanceledListener { if (cont.isActive) cont.cancel() }
+        }
     }
 
     private var mlKitTranslator: com.google.mlkit.nl.translate.Translator? = null
@@ -145,207 +148,195 @@ class SubtitleBatchTranslator(
     }
 
     /**
-     * Pre-warms or downloads the offline ML Kit translation model if needed.
+     * Checks if the Google ML Kit offline Bengali translation model is installed on device.
+     */
+    suspend fun isModelDownloaded(): Boolean = withContext(Dispatchers.IO) {
+        if (customTranslator != null) return@withContext true
+        try {
+            val modelManager = RemoteModelManager.getInstance()
+            val bengaliModel = TranslateRemoteModel.Builder(TranslateLanguage.BENGALI).build()
+            modelManager.isModelDownloaded(bengaliModel).awaitTask()
+        } catch (e: Throwable) {
+            Log.w(TAG, "Notice checking ML Kit model download status: ${e.message}")
+            false
+        }
+    }
+
+    /**
+     * Pre-warms or verifies the offline ML Kit translation model.
      */
     suspend fun prepareModel(): Boolean = withContext(Dispatchers.IO) {
+        if (customTranslator != null) {
+            isMlKitInitialized = true
+            return@withContext true
+        }
         try {
+            val isDownloaded = isModelDownloaded()
+            if (isDownloaded) {
+                isMlKitInitialized = true
+                return@withContext true
+            }
+            // If not downloaded, trigger download
             val translator = getMlKitTranslator()
             val conditions = DownloadConditions.Builder().build()
-            kotlinx.coroutines.suspendCancellableCoroutine<Unit> { cont ->
-                translator.downloadModelIfNeeded(conditions)
-                    .addOnSuccessListener {
-                        isMlKitInitialized = true
-                        if (cont.isActive) cont.resume(Unit)
-                    }
-                    .addOnFailureListener {
-                        // Even if offline download fails or requires WiFi, online fallback is ready
-                        if (cont.isActive) cont.resume(Unit)
-                    }
+            val downloadTask = translator.downloadModelIfNeeded(conditions)
+            val success = suspendCancellableCoroutine<Boolean> { cont ->
+                downloadTask.addOnSuccessListener {
+                    isMlKitInitialized = true
+                    if (cont.isActive) cont.resume(true)
+                }
+                downloadTask.addOnFailureListener { ex ->
+                    Log.w(TAG, "ML Kit Bengali model download failed: ${ex.message}")
+                    if (cont.isActive) cont.resume(false)
+                }
             }
-            true
-        } catch (_: Exception) {
+            success
+        } catch (e: Exception) {
+            Log.w(TAG, "prepareModel note: ${e.message}")
             false
         }
     }
 
     /**
      * Translates a list of transcript segments into Bengali with monotonic progress callbacks.
-     * Skips segments that already have a non-blank translation.
+     *
+     * Concurrency: Controlled via Semaphore(concurrencyLimit) (default 3 concurrent ML Kit tasks).
+     * Order: Strictly retains original segment order and timestamps.
+     * Deduplication: Skips already-translated segments and uses phraseCache.
+     * Offline: Runs 100% locally with zero internet dependency.
      */
     suspend fun translateSegments(
         segments: List<TranscriptSegmentEntity>,
         onProgress: suspend (current: Int, total: Int, currentText: String) -> Unit
-    ): List<TranscriptSegmentEntity> = coroutineScope {
-        if (segments.isEmpty()) return@coroutineScope emptyList()
+    ): List<TranscriptSegmentEntity> = withContext(Dispatchers.IO) {
+        if (segments.isEmpty()) return@withContext emptyList()
 
         val total = segments.size
-        val chunks = segments.chunked(BATCH_SIZE)
+        val results = arrayOfNulls<TranscriptSegmentEntity>(total)
+        val completedCount = AtomicInteger(0)
+        val failureCount = AtomicInteger(0)
+        val actualConcurrency = concurrencyLimit.coerceIn(1, 4)
+        val semaphore = Semaphore(actualConcurrency)
+        val startTimeMs = System.currentTimeMillis()
 
-        // Launch all chunk translations concurrently across IO thread pool
-        val deferredList = chunks.map { batch ->
-            async(Dispatchers.IO) {
-                val batchInputs = batch.map { it.sourceText }
-                val batchTranslations = translateBatch(batchInputs)
-                batch.mapIndexed { j, origSeg ->
-                    val existing = origSeg.translatedText
-                    val rawCandidate = if (!existing.isNullOrBlank()) {
-                        existing
-                    } else {
-                        val candidate = batchTranslations.getOrNull(j)?.trim()
-                        if (!candidate.isNullOrBlank()) candidate else origSeg.sourceText
+        Log.i(TAG, "Beginning offline translation of $total subtitle cues (concurrency=$actualConcurrency)")
+
+        coroutineScope {
+            segments.forEachIndexed { idx, seg ->
+                launch {
+                    // 1. Skip already translated segments (preserves prior progress on resume)
+                    val existing = seg.translatedText?.trim()
+                    if (!existing.isNullOrBlank()) {
+                        results[idx] = seg
+                        val count = completedCount.incrementAndGet()
+                        onProgress(count, total, existing)
+                        return@launch
                     }
-                    val translated = BanglaNaturalizer.naturalize(rawCandidate)
-                    origSeg.copy(translatedText = translated)
-                }
-            }
-        }
 
-        var processedCount = 0
-        val results = ArrayList<TranscriptSegmentEntity>(segments.size)
-        for (deferred in deferredList) {
-            val batchResults = deferred.await()
-            results.addAll(batchResults)
-            processedCount += batchResults.size
-            onProgress(processedCount, total, batchResults.lastOrNull()?.translatedText ?: "")
-        }
-
-        results
-    }
-
-    /**
-     * Translates a batch of texts using tag-preserving structures and multi-tier fallback.
-     */
-    suspend fun translateBatch(texts: List<String>): List<String> = withContext(Dispatchers.IO) {
-        val output = MutableList(texts.size) { "" }
-        val missingIndices = mutableListOf<Int>()
-        val missingTexts = mutableListOf<String>()
-
-        for (idx in texts.indices) {
-            val raw = texts[idx].trim()
-            val cached = phraseCache[raw.lowercase()]
-            if (cached != null) {
-                output[idx] = cached
-            } else if (raw.isBlank()) {
-                output[idx] = ""
-            } else {
-                missingIndices.add(idx)
-                missingTexts.add(raw)
-            }
-        }
-
-        if (missingTexts.isEmpty()) {
-            return@withContext output
-        }
-
-        // Build Tag-Preserving Structure (<cue id="X">...</cue>)
-        val taggedPrompt = StringBuilder()
-        for (k in missingIndices.indices) {
-            val localId = k
-            val text = missingTexts[k]
-                .replace("<", "&lt;")
-                .replace(">", "&gt;")
-            taggedPrompt.append("<cue id=\"$localId\">$text</cue>\n")
-        }
-        val taggedString = taggedPrompt.toString()
-
-        var batchHandled = false
-
-        // Tier 1: Try Local Google ML Kit with Tag Structure
-        if (!isClosed) {
-            try {
-                val mlResult = translateViaMlKit(taggedString)
-                val parsed = extractTaggedTranslations(mlResult, missingIndices.size)
-                if (parsed.isNotEmpty()) {
-                    for ((localId, translation) in parsed) {
-                        val globalIndex = missingIndices[localId]
-                        output[globalIndex] = translation
-                        phraseCache[missingTexts[localId].lowercase()] = translation
+                    // 2. Skip empty / blank source dialogue
+                    val cleanSource = seg.sourceText.trim()
+                    if (cleanSource.isBlank()) {
+                        val emptySeg = seg.copy(translatedText = "")
+                        results[idx] = emptySeg
+                        val count = completedCount.incrementAndGet()
+                        onProgress(count, total, "")
+                        return@launch
                     }
-                    if (parsed.size >= (missingIndices.size * 0.8)) {
-                        batchHandled = true
-                        Log.d(TAG, "Tier 1 (ML Kit): Extracted ${parsed.size}/${missingIndices.size} cues successfully")
-                    }
-                }
-            } catch (e: Exception) {
-                Log.d(TAG, "Tier 1 (ML Kit) batch note: ${e.message}")
-            }
-        }
 
-        // Tier 2: Try High-Speed Online Google Translate API with Tag Structure
-        if (!batchHandled) {
-            try {
-                val onlineResult = translateViaOnlineApi(taggedString)
-                if (onlineResult != null) {
-                    val parsed = extractTaggedTranslations(onlineResult, missingIndices.size)
-                    if (parsed.isNotEmpty()) {
-                        for ((localId, translation) in parsed) {
-                            val globalIndex = missingIndices[localId]
-                            if (output[globalIndex].isBlank()) {
-                                output[globalIndex] = translation
-                                phraseCache[missingTexts[localId].lowercase()] = translation
+                    // 3. Fast-path: dialogue phrase cache (0ms latency)
+                    val cached = phraseCache[cleanSource.lowercase()]
+                    if (cached != null) {
+                        val cachedSeg = seg.copy(translatedText = cached)
+                        results[idx] = cachedSeg
+                        val count = completedCount.incrementAndGet()
+                        onProgress(count, total, cached)
+                        return@launch
+                    }
+
+                    // 4. ML Kit Translation governed by Semaphore
+                    semaphore.withPermit {
+                        // Secondary check in case an identical phrase was just resolved concurrently
+                        val recheck = phraseCache[cleanSource.lowercase()]
+                        if (recheck != null) {
+                            val cachedSeg = seg.copy(translatedText = recheck)
+                            results[idx] = cachedSeg
+                            val count = completedCount.incrementAndGet()
+                            onProgress(count, total, recheck)
+                            return@withPermit
+                        }
+
+                        var translatedText: String? = null
+                        var attempts = 0
+                        while (attempts < 2 && translatedText == null) {
+                            try {
+                                translatedText = if (customTranslator != null) {
+                                    customTranslator.invoke(cleanSource)
+                                } else {
+                                    translateViaMlKit(cleanSource)
+                                }
+                            } catch (e: Exception) {
+                                attempts++
+                                if (attempts >= 2) {
+                                    Log.w(TAG, "ML Kit translation failed for cue $idx ('${cleanSource.take(24)}'): ${e.message}")
+                                }
                             }
                         }
-                        if (parsed.size >= (missingIndices.size * 0.7)) {
-                            batchHandled = true
-                            Log.d(TAG, "Tier 2 (Online API): Extracted ${parsed.size}/${missingIndices.size} cues successfully")
+
+                        val finalSeg = if (translatedText != null && translatedText.isNotBlank()) {
+                            // Run Rule-based Bangla Naturalizer EXACTLY ONCE here
+                            val natural = BanglaNaturalizer.naturalize(translatedText.trim())
+                            phraseCache[cleanSource.lowercase()] = natural
+                            seg.copy(translatedText = natural)
+                        } else {
+                            // Failed: do NOT put English into translatedText!
+                            failureCount.incrementAndGet()
+                            seg.copy(translatedText = null)
+                        }
+
+                        results[idx] = finalSeg
+                        val count = completedCount.incrementAndGet()
+                        val sample = finalSeg.translatedText ?: ""
+                        onProgress(count, total, sample)
+
+                        // Requirement 7: Periodically log elapsed time, average ms/cue, and failures every 25 cues
+                        if (count % 25 == 0 || count == total) {
+                            val elapsed = System.currentTimeMillis() - startTimeMs
+                            val avgMs = elapsed.toDouble() / count
+                            Log.i(TAG, "Translation Progress: $count/$total cues processed. Elapsed: ${elapsed}ms, Avg: ${String.format("%.1f", avgMs)}ms/cue, Failures: ${failureCount.get()}")
                         }
                     }
                 }
-            } catch (e: Exception) {
-                Log.d(TAG, "Tier 2 (Online API) batch note: ${e.message}")
             }
         }
 
-        // Tier 3: Resolve any remaining missing items with single-line fallback
-        for (k in missingIndices.indices) {
-            val globalIndex = missingIndices[k]
-            if (output[globalIndex].isBlank()) {
-                val text = missingTexts[k]
-                val fallbackTrans = translateSingleWithFallback(text)
-                output[globalIndex] = fallbackTrans
-                phraseCache[text.lowercase()] = fallbackTrans
-            }
-        }
+        val totalElapsed = System.currentTimeMillis() - startTimeMs
+        val avgTotal = if (total > 0) totalElapsed.toDouble() / total else 0.0
+        Log.i(TAG, "Subtitle Translation Complete: $total cues in ${totalElapsed}ms (Avg ${String.format("%.1f", avgTotal)}ms/cue, Failures: ${failureCount.get()})")
 
-        // Apply Rule-based Bangla Naturalizer to ensure authentic spoken flow
-        output.map { BanglaNaturalizer.naturalize(it) }
+        results.mapIndexed { i, seg -> seg ?: segments[i] }
     }
 
     /**
-     * Extracts parsed translations from tagged text (<cue id="0">বাংলা</cue>).
+     * Translates a list of raw texts individually using concurrency limit and phrase cache.
+     * Preserves input order strictly.
      */
-    private fun extractTaggedTranslations(rawTranslatedText: String, expectedSize: Int): Map<Int, String> {
-        val result = mutableMapOf<Int, String>()
-        val matches = CUE_TAG_REGEX.findAll(rawTranslatedText)
-        for (match in matches) {
-            val id = match.groupValues[1].toIntOrNull() ?: continue
-            val text = match.groupValues[2].trim()
-                .replace("&lt;", "<")
-                .replace("&gt;", ">")
-                .replace("&amp;", "&")
-            if (id in 0 until expectedSize && text.isNotBlank()) {
-                result[id] = text
-            }
+    suspend fun translateBatch(texts: List<String>): List<String> = withContext(Dispatchers.IO) {
+        val dummySegments = texts.mapIndexed { index, text ->
+            TranscriptSegmentEntity(
+                projectId = "batch_trans",
+                index = index,
+                startMs = index * 1000L,
+                endMs = (index + 1) * 1000L,
+                sourceText = text
+            )
         }
-
-        // Secondary fallback format: numbered bracket format [0] ...
-        if (result.isEmpty()) {
-            val lineMatches = NUMBERED_LINE_REGEX.findAll(rawTranslatedText)
-            for (match in lineMatches) {
-                val id = match.groupValues[1].toIntOrNull() ?: continue
-                val text = match.groupValues[2].trim()
-                if (id in 0 until expectedSize && text.isNotBlank()) {
-                    result[id] = text
-                }
-            }
-        }
-
-        return result
+        val translated = translateSegments(dummySegments) { _, _, _ -> }
+        translated.map { it.translatedText ?: "" }
     }
 
     /**
-     * Translates a single line of text with robust multi-engine fallback.
-     * Guaranteed to NEVER throw an exception or block indefinitely.
+     * Translates a single line of text on-device with limited retry.
+     * Strictly offline; does not use network or fall back to remote HTTP.
      */
     suspend fun translateSingleWithFallback(text: String): String = withContext(Dispatchers.IO) {
         val clean = text.trim()
@@ -353,33 +344,30 @@ class SubtitleBatchTranslator(
 
         phraseCache[clean.lowercase()]?.let { return@withContext it }
 
-        // 1. Try On-Device ML Kit
-        if (!isClosed) {
+        var raw: String? = null
+        var attempts = 0
+        while (attempts < 2 && raw == null) {
             try {
-                val res = translateViaMlKit(clean)
-                if (res.isNotBlank()) {
-                    val cleanRes = res.trim()
-                    phraseCache[clean.lowercase()] = cleanRes
-                    return@withContext cleanRes
-                }
-            } catch (_: Exception) {}
+                raw = if (customTranslator != null) customTranslator.invoke(clean) else translateViaMlKit(clean)
+            } catch (_: Exception) {
+                attempts++
+            }
         }
 
-        // 2. Try Online Google Translate Endpoint
-        try {
-            val online = translateViaOnlineApi(clean)
-            if (!online.isNullOrBlank()) {
-                val cleanOnline = online.trim()
-                phraseCache[clean.lowercase()] = cleanOnline
-                return@withContext cleanOnline
-            }
-        } catch (_: Exception) {}
-
-        // 3. Fallback: preserve original text safely
-        clean
+        if (raw != null && raw.isNotBlank()) {
+            val natural = BanglaNaturalizer.naturalize(raw.trim())
+            phraseCache[clean.lowercase()] = natural
+            natural
+        } else {
+            "" // Do not masquerade English as Bengali
+        }
     }
 
-    private suspend fun translateViaMlKit(text: String): String = kotlinx.coroutines.suspendCancellableCoroutine { cont ->
+    private suspend fun translateViaMlKit(text: String): String = suspendCancellableCoroutine { cont ->
+        if (isClosed) {
+            cont.resumeWithException(IllegalStateException("SubtitleBatchTranslator is closed"))
+            return@suspendCancellableCoroutine
+        }
         val translator = getMlKitTranslator()
         val task = translator.translate(text)
         task.addOnSuccessListener { res ->
@@ -390,33 +378,6 @@ class SubtitleBatchTranslator(
         }
         task.addOnCanceledListener {
             if (cont.isActive) cont.cancel()
-        }
-    }
-
-    private fun translateViaOnlineApi(text: String): String? {
-        return try {
-            val encoded = URLEncoder.encode(text, "UTF-8")
-            val url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=bn&dt=t&q=$encoded"
-            val request = Request.Builder()
-                .url(url)
-                .header("User-Agent", "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko)")
-                .build()
-
-            val response = httpClient.newCall(request).execute()
-            if (!response.isSuccessful) return null
-            val body = response.body?.string() ?: return null
-
-            // Parse response structure: [[["বাংলা","English",null,null,10],...],...]
-            val jsonArray = JSONArray(body)
-            val sentences = jsonArray.getJSONArray(0)
-            val sb = StringBuilder()
-            for (i in 0 until sentences.length()) {
-                val sent = sentences.getJSONArray(i)
-                sb.append(sent.getString(0))
-            }
-            sb.toString().trim().ifBlank { null }
-        } catch (_: Exception) {
-            null
         }
     }
 

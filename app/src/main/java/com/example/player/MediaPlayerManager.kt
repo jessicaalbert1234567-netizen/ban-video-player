@@ -149,6 +149,16 @@ class MediaPlayerManager(private val context: Context) {
         srtFile: File?,
         sourceSrtFile: File? = null
     ) {
+        if (currentVideoUri == videoUri &&
+            currentDubbedAudioFile?.absolutePath == dubbedAudioFile?.absolutePath &&
+            player != null &&
+            player?.playbackState != Player.STATE_IDLE &&
+            player?.playbackState != Player.STATE_ENDED
+        ) {
+            Log.d(TAG, "setupMedia: Video and audio already initialized for $videoUri, maintaining state")
+            return
+        }
+
         currentVideoUri = videoUri
         currentDubbedAudioFile = dubbedAudioFile
         currentSrtFile = srtFile
