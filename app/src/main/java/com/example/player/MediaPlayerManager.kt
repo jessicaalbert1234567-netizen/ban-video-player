@@ -166,11 +166,11 @@ class MediaPlayerManager(private val context: Context) {
         loadSubtitleFiles(srtFile, sourceSrtFile)
 
         val exo = initializePlayer()
-        val dataSourceFactory = DefaultDataSource.Factory(context)
+        val mediaSourceFactory = androidx.media3.exoplayer.source.DefaultMediaSourceFactory(context)
 
         // 1. Setup Video with Original Audio
         val videoItem = MediaItem.fromUri(videoUri)
-        val videoSource = ProgressiveMediaSource.Factory(dataSourceFactory).createMediaSource(videoItem)
+        val videoSource = mediaSourceFactory.createMediaSource(videoItem)
         exo.setMediaSource(videoSource)
         exo.prepare()
 
@@ -192,7 +192,7 @@ class MediaPlayerManager(private val context: Context) {
         if (hasPreRenderedDubbed) {
             val dPlayer = initializeDubbedPlayer()
             val audioItem = MediaItem.fromUri(Uri.fromFile(effectiveDubbedFile!!))
-            val audioSource = ProgressiveMediaSource.Factory(dataSourceFactory).createMediaSource(audioItem)
+            val audioSource = mediaSourceFactory.createMediaSource(audioItem)
             dPlayer.setMediaSource(audioSource)
             dPlayer.prepare()
             dPlayer.seekTo(exo.currentPosition)

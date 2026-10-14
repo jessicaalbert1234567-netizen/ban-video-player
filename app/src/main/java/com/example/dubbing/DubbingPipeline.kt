@@ -77,19 +77,21 @@ class DubbingPipeline(
         val localVideoFile = File(projectDir, "source_video.$videoExt")
 
         var workingVideoUri = videoUri
-        if (localVideoFile.exists() && localVideoFile.length() > 0) {
+        if (localVideoFile.exists() && localVideoFile.length() > 1024) {
             workingVideoUri = Uri.fromFile(localVideoFile)
         } else {
             try {
                 withContext(Dispatchers.IO) {
+                    val tempCopyFile = File(projectDir, "source_video.tmp")
                     if (videoUri.scheme == "file") {
                         val srcFile = File(videoUri.path ?: "")
                         if (srcFile.exists() && srcFile.canonicalPath != localVideoFile.canonicalPath) {
-                            srcFile.copyTo(localVideoFile, overwrite = true)
+                            srcFile.copyTo(tempCopyFile, overwrite = true)
+                            tempCopyFile.renameTo(localVideoFile)
                         }
                     } else {
                         context.contentResolver.openInputStream(videoUri)?.use { input ->
-                            localVideoFile.outputStream().use { output ->
+                            tempCopyFile.outputStream().use { output ->
                                 val buffer = ByteArray(64 * 1024)
                                 var bytesRead: Int
                                 while (input.read(buffer).also { bytesRead = it } != -1) {
@@ -97,9 +99,12 @@ class DubbingPipeline(
                                 }
                             }
                         }
+                        if (tempCopyFile.exists() && tempCopyFile.length() > 1024) {
+                            tempCopyFile.renameTo(localVideoFile)
+                        }
                     }
                 }
-                if (localVideoFile.exists() && localVideoFile.length() > 0) {
+                if (localVideoFile.exists() && localVideoFile.length() > 1024) {
                     workingVideoUri = Uri.fromFile(localVideoFile)
                     Log.i(TAG, "Successfully cached source video to project storage: ${localVideoFile.absolutePath} (${localVideoFile.length()} bytes)")
                 }
@@ -482,6 +487,7 @@ class DubbingPipeline(
             }
 
             project = project.copy(
+                videoUriString = workingVideoUri.toString(),
                 currentStage = ProcessingStage.COMPLETE,
                 progressPercent = 100,
                 statusMessage = "Offline AI Dubbing Complete",

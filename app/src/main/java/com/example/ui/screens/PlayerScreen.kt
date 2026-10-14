@@ -1075,7 +1075,8 @@ fun PlayerScreen(
     }
 
     // Video Permission / Missing File Recovery Overlay
-    if (playerState.hasError || videoPermissionError != null) {
+    val shouldShowRecoveryOverlay = videoPermissionError != null && !playerState.hasDubbedAudio && (playerManager.player?.mediaItemCount ?: 0) == 0
+    if (shouldShowRecoveryOverlay) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -1106,7 +1107,7 @@ fun PlayerScreen(
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                     )
                     Text(
-                        text = videoPermissionError ?: playerState.errorMessage ?: "অ্যান্ড্রয়েড সিস্টেমের কারণে অ্যাপ পুরোপুরি বন্ধের পর ভিডিও ফাইলের অ্যাক্সেস পারমিশন রিফ্রেশ করতে হবে। আপনার ডাবিং অডিও ও সাবটাইটেল ১০০% সংরক্ষিত আছে।",
+                        text = videoPermissionError ?: playerState.errorMessage ?: "ভিডিও ফাইলের অ্যাক্সেস পারমিশন রিফ্রেশ করতে ফাইলটি নির্বাচন করুন।",
                         style = MaterialTheme.typography.bodySmall,
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                         color = MaterialTheme.colorScheme.onSurfaceVariant

@@ -76,7 +76,6 @@ class DubbingViewModel(application: Application) : AndroidViewModel(application)
                             val refreshed = repository.findProject(progress.projectId)
                             if (refreshed != null) {
                                 _selectedProject.value = refreshed
-                                selectProjectForPlayback(refreshed)
                             } else {
                                 _selectedProject.value = current.copy(
                                     currentStage = progress.stage,
@@ -662,14 +661,16 @@ class DubbingViewModel(application: Application) : AndroidViewModel(application)
             var savedUri = newUri
 
             try {
+                val tempFile = File(projectDir, "source_video.tmp")
                 if (newUri.scheme == "file") {
                     val srcFile = File(newUri.path ?: "")
                     if (srcFile.exists() && srcFile.canonicalPath != localVideoFile.canonicalPath) {
-                        srcFile.copyTo(localVideoFile, overwrite = true)
+                        srcFile.copyTo(tempFile, overwrite = true)
+                        tempFile.renameTo(localVideoFile)
                     }
                 } else {
                     app.contentResolver.openInputStream(newUri)?.use { input ->
-                        localVideoFile.outputStream().use { output ->
+                        tempFile.outputStream().use { output ->
                             val buffer = ByteArray(64 * 1024)
                             var bytesRead: Int
                             while (input.read(buffer).also { bytesRead = it } != -1) {
@@ -677,8 +678,11 @@ class DubbingViewModel(application: Application) : AndroidViewModel(application)
                             }
                         }
                     }
+                    if (tempFile.exists() && tempFile.length() > 1024) {
+                        tempFile.renameTo(localVideoFile)
+                    }
                 }
-                if (localVideoFile.exists() && localVideoFile.length() > 0) {
+                if (localVideoFile.exists() && localVideoFile.length() > 1024) {
                     savedUri = Uri.fromFile(localVideoFile)
                     Log.i("DubbingViewModel", "Successfully cached re-linked video locally to: ${localVideoFile.absolutePath}")
                 }
@@ -699,117 +703,99 @@ class DubbingViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    private var playbackSetupJob: kotlinx.coroutines.Job? = null
+
     fun selectProjectForPlayback(project: DubbingProject) {
-        viewModelScope.launch {
+        playbackSetupJob?.cancel()
+        playbackSetupJob = viewModelScope.launch {
             val latest = repository.findProject(project.id) ?: project
             _selectedProject.value = latest
+            _videoPermissionError.value = null
 
             val projectDir = File(latest.projectDirPath)
 
-            // 1. Check if a permanent local copy of the video exists in the project directory
+            // 1. Check if permanent local video file exists in projectDir
             val localVideoFile = projectDir.listFiles()?.firstOrNull { file ->
-                file.isFile && file.length() > 0 && (
+                file.isFile && file.length() > 1024 && (
                     file.name.startsWith("source_video") ||
                     file.name.startsWith("video") ||
                     file.extension.lowercase() in listOf("mp4", "mkv", "webm", "avi", "mov", "3gp", "ts")
-                ) && !file.name.contains("dubbed") && !file.name.contains("audio") && !file.name.endsWith(".wav") && !file.name.endsWith(".m4a")
+                ) && !file.name.contains("dubbed") && !file.name.contains("audio") && !file.name.endsWith(".wav") && !file.name.endsWith(".m4a") && !file.name.endsWith(".tmp")
             }
 
-            var videoUri = if (localVideoFile != null) {
-                Uri.fromFile(localVideoFile)
+            var videoUri: Uri? = null
+
+            if (localVideoFile != null) {
+                videoUri = Uri.fromFile(localVideoFile)
             } else {
-                Uri.parse(latest.videoUriString)
-            }
-
-            var canAccess = true
-            try {
-                if (videoUri.scheme == "content") {
-                    app.contentResolver.openFileDescriptor(videoUri, "r")?.close()
-                } else if (videoUri.scheme == "file") {
-                    canAccess = File(videoUri.path ?: "").exists()
-                }
-            } catch (e: Exception) {
-                canAccess = false
-                Log.w("DubbingViewModel", "Video access check failed for $videoUri: ${e.message}")
-            }
-
-            // 2. If content URI lost permission across app restart, attempt auto-recovery from MediaStore
-            if (!canAccess && videoUri.scheme == "content" && latest.title.isNotEmpty()) {
+                val candidateUri = Uri.parse(latest.videoUriString)
+                var canAccessUri = false
                 try {
-                    val projection = arrayOf(android.provider.MediaStore.Video.Media._ID)
-                    val selection = "${android.provider.MediaStore.Video.Media.DISPLAY_NAME} = ?"
-                    val selectionArgs = arrayOf(latest.title)
-                    app.contentResolver.query(
-                        android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
-                        projection,
-                        selection,
-                        selectionArgs,
-                        null
-                    )?.use { cursor ->
-                        if (cursor.moveToFirst()) {
-                            val id = cursor.getLong(cursor.getColumnIndexOrThrow(android.provider.MediaStore.Video.Media._ID))
-                            val recoveredUri = android.content.ContentUris.withAppendedId(
-                                android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
-                                id
-                            )
-                            app.contentResolver.openFileDescriptor(recoveredUri, "r")?.close()
-                            videoUri = recoveredUri
-                            canAccess = true
-                            Log.i("DubbingViewModel", "Auto-recovered video URI from MediaStore: $recoveredUri")
+                    if (candidateUri.scheme == "file") {
+                        val f = File(candidateUri.path ?: "")
+                        if (f.exists() && f.length() > 1024) {
+                            canAccessUri = true
+                            videoUri = candidateUri
+                        }
+                    } else if (candidateUri.scheme == "content") {
+                        app.contentResolver.openFileDescriptor(candidateUri, "r")?.use {
+                            canAccessUri = true
+                            videoUri = candidateUri
                         }
                     }
-                } catch (_: Exception) {}
-            }
+                } catch (_: Exception) {
+                    canAccessUri = false
+                }
 
-            // 3. If video is accessible and no local copy exists in projectDir, copy it in background so it never loses access
-            if (canAccess && localVideoFile == null && videoUri.scheme != "file") {
-                withContext(Dispatchers.IO) {
-                    try {
-                        val rawExt = latest.title.substringAfterLast('.', "mp4").lowercase()
-                        val videoExt = if (rawExt.isEmpty() || rawExt.length > 5 || rawExt.contains("/")) "mp4" else rawExt
-                        val copyDest = File(projectDir, "source_video.$videoExt")
-                        app.contentResolver.openInputStream(videoUri)?.use { input ->
-                            copyDest.outputStream().use { output ->
-                                val buffer = ByteArray(64 * 1024)
-                                var bytesRead: Int
-                                while (input.read(buffer).also { bytesRead = it } != -1) {
-                                    output.write(buffer, 0, bytesRead)
+                // If content URI is accessible, cache in background asynchronously without blocking playback
+                if (canAccessUri && candidateUri.scheme == "content") {
+                    launch(Dispatchers.IO) {
+                        try {
+                            val rawExt = latest.title.substringAfterLast('.', "mp4").lowercase()
+                            val videoExt = if (rawExt.isEmpty() || rawExt.length > 5 || rawExt.contains("/")) "mp4" else rawExt
+                            val targetFile = File(projectDir, "source_video.$videoExt")
+                            val tempFile = File(projectDir, "source_video.tmp")
+                            app.contentResolver.openInputStream(candidateUri)?.use { input ->
+                                tempFile.outputStream().use { output ->
+                                    val buffer = ByteArray(64 * 1024)
+                                    var bytesRead: Int
+                                    while (input.read(buffer).also { bytesRead = it } != -1) {
+                                        output.write(buffer, 0, bytesRead)
+                                    }
                                 }
                             }
+                            if (tempFile.exists() && tempFile.length() > 1024) {
+                                tempFile.renameTo(targetFile)
+                                val updated = latest.copy(videoUriString = Uri.fromFile(targetFile).toString())
+                                repository.saveProject(updated)
+                                _selectedProject.value = updated
+                                Log.i("DubbingViewModel", "Cached video locally during background task: ${targetFile.absolutePath}")
+                            }
+                        } catch (e: Exception) {
+                            Log.w("DubbingViewModel", "Background video caching failed: ${e.message}")
                         }
-                        if (copyDest.exists() && copyDest.length() > 0) {
-                            videoUri = Uri.fromFile(copyDest)
-                            val updated = latest.copy(videoUriString = videoUri.toString())
-                            repository.saveProject(updated)
-                            _selectedProject.value = updated
-                            Log.i("DubbingViewModel", "Cached video locally during playback setup: ${copyDest.absolutePath}")
-                        }
-                    } catch (e: Exception) {
-                        Log.w("DubbingViewModel", "Background video caching failed: ${e.message}")
                     }
                 }
-            } else if (localVideoFile != null && latest.videoUriString != videoUri.toString()) {
-                val updated = latest.copy(videoUriString = videoUri.toString())
-                repository.saveProject(updated)
-                _selectedProject.value = updated
+
+                // If content URI lost permission across app restart, attempt auto-recovery from public folders
+                if (videoUri == null && latest.title.isNotEmpty()) {
+                    val publicDirs = listOf(
+                        android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS),
+                        android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_MOVIES),
+                        android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DCIM)
+                    )
+                    for (dir in publicDirs) {
+                        val candidateFile = File(dir, latest.title)
+                        if (candidateFile.exists() && candidateFile.length() > 1024) {
+                            videoUri = Uri.fromFile(candidateFile)
+                            Log.i("DubbingViewModel", "Auto-recovered video from public storage: ${candidateFile.absolutePath}")
+                            break
+                        }
+                    }
+                }
             }
 
-            if (!canAccess) {
-                _videoPermissionError.value = "ভিডিও ফাইলটির অ্যাক্সেস পারমিশন রিনিউ করতে ফাইলটি পুনরায় সিলেক্ট করুন।"
-            } else {
-                _videoPermissionError.value = null
-            }
-
-            val candidateDubbed = latest.dubbedAudioPath?.let { File(it) }
-            val m4aFile = File(projectDir, "dubbed_bn.m4a")
-            val wavFile = File(projectDir, "dubbed_bn.wav")
-            val dubbedFile: File? = when {
-                candidateDubbed != null && candidateDubbed.exists() && candidateDubbed.length() > 44 -> candidateDubbed
-                m4aFile.exists() && m4aFile.length() > 44 -> m4aFile
-                wavFile.exists() && wavFile.length() > 44 -> wavFile
-                else -> null
-            }
-
+            // Subtitle files
             val candidateSrt = latest.subtitleSrtPath?.let { File(it) }
             val bnSrt = File(projectDir, "subtitle_bn.srt")
             val srtFile: File? = when {
@@ -826,13 +812,42 @@ class DubbingViewModel(application: Application) : AndroidViewModel(application)
                 else -> null
             }
 
-            if (canAccess) {
+            // Audio files: dubbed audio & original source audio
+            val candidateDubbed = latest.dubbedAudioPath?.let { File(it) }
+            val m4aFile = File(projectDir, "dubbed_bn.m4a")
+            val wavFile = File(projectDir, "dubbed_bn.wav")
+            val dubbedFile: File? = when {
+                candidateDubbed != null && candidateDubbed.exists() && candidateDubbed.length() > 44 -> candidateDubbed
+                m4aFile.exists() && m4aFile.length() > 44 -> m4aFile
+                wavFile.exists() && wavFile.length() > 44 -> wavFile
+                else -> null
+            }
+
+            val rawAudioFile = File(projectDir, "source_audio.wav")
+            val effectiveSourceAudio = if (rawAudioFile.exists() && rawAudioFile.length() > 44) rawAudioFile else null
+
+            // Determine effective media URI to play:
+            // 1. Cached/accessible source video file
+            // 2. Extracted original video soundtrack (source_audio.wav)
+            // 3. Dubbed speech audio (dubbed_bn.wav)
+            // This guarantees the user can ALWAYS play and hear their dubbed video even if the original video URI was revoked!
+            val effectiveMediaUri: Uri? = when {
+                videoUri != null -> videoUri
+                effectiveSourceAudio != null -> Uri.fromFile(effectiveSourceAudio)
+                dubbedFile != null -> Uri.fromFile(dubbedFile)
+                else -> null
+            }
+
+            if (effectiveMediaUri != null) {
+                _videoPermissionError.value = null
                 playerManager.setupMedia(
-                    videoUri = videoUri,
+                    videoUri = effectiveMediaUri,
                     dubbedAudioFile = dubbedFile,
                     srtFile = srtFile,
                     sourceSrtFile = sourceSrt
                 )
+            } else {
+                _videoPermissionError.value = "মিডিয়া ফাইল খুঁজে পাওয়া যায়নি।"
             }
         }
     }
