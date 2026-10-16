@@ -251,7 +251,7 @@ object SubtitleExtractor {
 
             // Also always write to public Downloads directory or app external files directory as direct File
             val publicDownloads = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
-            val subDir = File(publicDownloads, "BanglaDubbing").apply { if (!exists()) mkdirs() }
+            val subDir = File(publicDownloads, "FileTranslato").apply { if (!exists()) mkdirs() }
             val targetFile = File(subDir, cleanName)
             targetFile.writeText(srtContent, Charsets.UTF_8)
             Log.i(TAG, "Saved subtitle directly to file: ${targetFile.absolutePath}")

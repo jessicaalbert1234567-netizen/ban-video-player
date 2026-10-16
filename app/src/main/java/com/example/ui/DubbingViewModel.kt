@@ -428,50 +428,49 @@ class DubbingViewModel(application: Application) : AndroidViewModel(application)
                 return@launch
             }
 
-            _srtTranslationStatus.value = "বাংলায় অনুবাদ হচ্ছে (0/${cues.size} cues)..."
-            val translator = com.example.translation.SubtitleBatchTranslator(app)
-            try {
-                translator.prepareModel()
-                val segments = cues.mapIndexed { idx, cue ->
-                    TranscriptSegmentEntity(
-                        projectId = "standalone_mkv_sub",
-                        index = idx,
-                        startMs = cue.startMs,
-                        endMs = cue.endMs,
-                        sourceText = cue.text
-                    )
-                }
+            _srtTranslationStatus.value = "Google GTX API দিয়ে দ্রুত বাংলায় অনুবাদ হচ্ছে (0/${cues.size} cues)..."
+            val gtxItems = cues.map { cue ->
+                val sTime = com.example.subtitle.SubtitleExtractor.formatSrtTimestamp(cue.startMs)
+                val eTime = com.example.subtitle.SubtitleExtractor.formatSrtTimestamp(cue.endMs)
+                com.example.translation.SubtitleItem(
+                    index = cue.index,
+                    startTimeStr = sTime,
+                    endTimeStr = eTime,
+                    startTimeMs = cue.startMs,
+                    endTimeMs = cue.endMs,
+                    originalText = cue.text
+                )
+            }
 
-                val translatedSegments = translator.translateSegments(segments) { current, total, _ ->
+            try {
+                com.example.translation.GtxSubtitleTranslator.translateSubtitlesToBangla(gtxItems) { current, total ->
                     _srtTranslationStatus.value = "বাংলায় অনুবাদ হচ্ছে ($current/$total cues)..."
                 }
 
-                val bnCues = translatedSegments.map {
-                    val banglaText = it.translatedText ?: ""
+                val bnCues = gtxItems.map { item ->
                     com.example.subtitle.SubtitleCue(
-                        index = it.index,
-                        startMs = it.startMs,
-                        endMs = it.endMs,
-                        text = banglaText
+                        index = item.index,
+                        startMs = item.startTimeMs,
+                        endMs = item.endTimeMs,
+                        text = item.translatedText
                     )
                 }
 
                 val exportDir = File(app.filesDir, "ExtractedSubtitles").apply { if (!exists()) mkdirs() }
-                val localFile = File(exportDir, "${baseName}_Bangla.srt")
+                val localFile = File(exportDir, "${baseName}_bangla.srt")
                 com.example.subtitle.SubtitleExtractor.exportToSrt(bnCues, localFile)
 
                 val downloadFile = com.example.subtitle.SubtitleExtractor.saveSrtToPublicDownloads(
                     app,
-                    "${baseName}_Bangla",
+                    "${baseName}_bangla",
                     localFile.readText()
                 )
 
-                val pathNotice = if (downloadFile != null) " (Saved to Downloads/BanglaDubbing/${downloadFile.name})" else ""
+                val pathNotice = if (downloadFile != null) " (Saved to Download/FileTranslato/${downloadFile.name})" else ""
                 _extractedSrtExportMessage.value = "✓ বাংলা সাবটাইটেল অনুবাদ সম্পন্ন!${pathNotice} • মোট ${bnCues.size} ডায়লগ"
             } catch (e: Exception) {
                 _extractedSrtExportMessage.value = "অনুবাদ ত্রুটি: ${e.localizedMessage}"
             } finally {
-                translator.close()
                 _isTranslatingSrt.value = false
                 _srtTranslationStatus.value = null
             }
@@ -497,50 +496,49 @@ class DubbingViewModel(application: Application) : AndroidViewModel(application)
                 return@launch
             }
 
-            _srtTranslationStatus.value = "বাংলায় অনুবাদ হচ্ছে (0/${cues.size} cues)..."
-            val translator = com.example.translation.SubtitleBatchTranslator(app)
-            try {
-                translator.prepareModel()
-                val segments = cues.mapIndexed { idx, cue ->
-                    TranscriptSegmentEntity(
-                        projectId = "standalone_ext_sub",
-                        index = idx,
-                        startMs = cue.startMs,
-                        endMs = cue.endMs,
-                        sourceText = cue.text
-                    )
-                }
+            _srtTranslationStatus.value = "Google GTX API দিয়ে দ্রুত বাংলায় অনুবাদ হচ্ছে (0/${cues.size} cues)..."
+            val gtxItems = cues.map { cue ->
+                val sTime = com.example.subtitle.SubtitleExtractor.formatSrtTimestamp(cue.startMs)
+                val eTime = com.example.subtitle.SubtitleExtractor.formatSrtTimestamp(cue.endMs)
+                com.example.translation.SubtitleItem(
+                    index = cue.index,
+                    startTimeStr = sTime,
+                    endTimeStr = eTime,
+                    startTimeMs = cue.startMs,
+                    endTimeMs = cue.endMs,
+                    originalText = cue.text
+                )
+            }
 
-                val translatedSegments = translator.translateSegments(segments) { current, total, _ ->
+            try {
+                com.example.translation.GtxSubtitleTranslator.translateSubtitlesToBangla(gtxItems) { current, total ->
                     _srtTranslationStatus.value = "বাংলায় অনুবাদ হচ্ছে ($current/$total cues)..."
                 }
 
-                val bnCues = translatedSegments.map {
-                    val banglaText = it.translatedText ?: ""
+                val bnCues = gtxItems.map { item ->
                     com.example.subtitle.SubtitleCue(
-                        index = it.index,
-                        startMs = it.startMs,
-                        endMs = it.endMs,
-                        text = banglaText
+                        index = item.index,
+                        startMs = item.startTimeMs,
+                        endMs = item.endTimeMs,
+                        text = item.translatedText
                     )
                 }
 
                 val exportDir = File(app.filesDir, "ExtractedSubtitles").apply { if (!exists()) mkdirs() }
-                val localFile = File(exportDir, "${baseName}_Bangla.srt")
+                val localFile = File(exportDir, "${baseName}_bangla.srt")
                 com.example.subtitle.SubtitleExtractor.exportToSrt(bnCues, localFile)
 
                 val downloadFile = com.example.subtitle.SubtitleExtractor.saveSrtToPublicDownloads(
                     app,
-                    "${baseName}_Bangla",
+                    "${baseName}_bangla",
                     localFile.readText()
                 )
 
-                val pathNotice = if (downloadFile != null) " (Saved to Downloads/BanglaDubbing/${downloadFile.name})" else ""
+                val pathNotice = if (downloadFile != null) " (Saved to Download/FileTranslato/${downloadFile.name})" else ""
                 _extractedSrtExportMessage.value = "✓ বাংলা সাবটাইটেল তৈরি হয়েছে!${pathNotice} • মোট ${bnCues.size} ডায়লগ"
             } catch (e: Exception) {
                 _extractedSrtExportMessage.value = "অনুবাদ ত্রুটি: ${e.localizedMessage}"
             } finally {
-                translator.close()
                 _isTranslatingSrt.value = false
                 _srtTranslationStatus.value = null
             }

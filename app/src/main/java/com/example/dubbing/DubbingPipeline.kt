@@ -14,6 +14,7 @@ import com.example.database.TranscriptSegmentEntity
 import com.example.settings.ProcessingMode
 import com.example.settings.SettingsManager
 import com.example.storage.StorageManager
+import com.example.subtitle.SubtitleExtractor
 import com.example.subtitle.SubtitleGenerator
 import com.example.translation.EnglishToBanglaTranslator
 import com.example.tts.BanglaTtsEngine
@@ -274,52 +275,58 @@ class DubbingPipeline(
                 throw IllegalStateException("Transcription failed: No English speech detected in the audio track.")
             }
 
-            // STAGE 3: Translate to Bangla (40% - 55%)
+            // STAGE 3: Translate to Bangla (40% - 55%) via Google Translate GTX API
             if (startingStage.ordinal <= ProcessingStage.TRANSLATE.ordinal) {
                 checkCancelled()
-                reportStage(projectId, ProcessingStage.TRANSLATE, 0, 40, "Preparing resilient English → Bangla translation...", onProgressUpdate)
+                reportStage(projectId, ProcessingStage.TRANSLATE, 0, 40, "Google Translate GTX API দিয়ে দ্রুত বাংলায় অনুবাদ শুরু হচ্ছে...", onProgressUpdate)
 
                 val translationStartTime = System.currentTimeMillis()
-                val batchTranslator = com.example.translation.SubtitleBatchTranslator(context)
-                try {
-                    val modelReady = batchTranslator.prepareModel()
-                    if (!modelReady && !batchTranslator.isModelDownloaded()) {
-                        Log.w(TAG, "Offline Bengali translation model is not downloaded or ready yet.")
-                    }
-                    var lastReportedOverall = 40
-                    val translatedSegments = batchTranslator.translateSegments(segments) { current, total, sampleText ->
-                        checkCancelled()
-                        val stageProg = (current.toFloat() / total.toFloat())
-                        val overall = maxOf(lastReportedOverall, 40 + (stageProg * 15).toInt())
-                        lastReportedOverall = overall
-                        val cleanSample = sampleText.take(24).replace("\n", " ")
-                        reportStage(
-                            projectId,
-                            ProcessingStage.TRANSLATE,
-                            (stageProg * 100).toInt(),
-                            overall,
-                            "Translated $current/$total: \"$cleanSample...\"",
-                            onProgressUpdate
-                        )
-                    }
-                    // Retain translated results directly (already naturalized once in SubtitleBatchTranslator)
-                    segments = translatedSegments
-                    repository.saveSegments(segments)
-                    val transElapsed = System.currentTimeMillis() - translationStartTime
-                    Log.i(TAG, "Translation Stage Complete in ${transElapsed}ms for ${segments.size} segments")
+                val gtxItems = segments.map { seg ->
+                    val sTime = SubtitleExtractor.formatSrtTimestamp(seg.startMs)
+                    val eTime = SubtitleExtractor.formatSrtTimestamp(seg.endMs)
+                    com.example.translation.SubtitleItem(
+                        index = seg.index + 1,
+                        startTimeStr = sTime,
+                        endTimeStr = eTime,
+                        startTimeMs = seg.startMs,
+                        endTimeMs = seg.endMs,
+                        originalText = seg.sourceText
+                    )
+                }
+
+                var lastReportedOverall = 40
+                com.example.translation.GtxSubtitleTranslator.translateSubtitlesToBangla(gtxItems) { current, total ->
+                    checkCancelled()
+                    val stageProg = (current.toFloat() / total.toFloat())
+                    val overall = maxOf(lastReportedOverall, 40 + (stageProg * 15).toInt())
+                    lastReportedOverall = overall
+                    val sample = gtxItems.getOrNull(current - 1)?.translatedText?.take(22) ?: ""
                     reportStage(
                         projectId,
                         ProcessingStage.TRANSLATE,
-                        100,
-                        55,
-                        "✓ Translation Complete: ${segments.size} dialogue cues in authentic Bangla",
+                        (stageProg * 100).toInt(),
+                        overall,
+                        "বাংলায় অনুবাদ: $current/$total (\"$sample...\")",
                         onProgressUpdate
                     )
-                } finally {
-                    batchTranslator.close()
                 }
-                com.example.models.MemoryDiagnostics.logHeapSnapshot("PIPELINE", "Translation Stage Complete, released translation sessions")
-                System.gc()
+
+                segments = segments.mapIndexed { idx, seg ->
+                    val trans = gtxItems.getOrNull(idx)?.translatedText?.trim()?.takeIf { it.isNotEmpty() } ?: seg.sourceText
+                    seg.copy(translatedText = trans)
+                }
+                repository.saveSegments(segments)
+
+                val transElapsed = System.currentTimeMillis() - translationStartTime
+                Log.i(TAG, "GTX Translation Complete in ${transElapsed}ms for ${segments.size} cues")
+                reportStage(
+                    projectId,
+                    ProcessingStage.TRANSLATE,
+                    100,
+                    55,
+                    "✓ Translation Complete: ${segments.size} dialogue cues in authentic Bangla (GTX API)",
+                    onProgressUpdate
+                )
             }
 
             // STAGE 4: Generate Bangla Subtitles & JSON transcript (55% - 65%)
@@ -330,21 +337,21 @@ class DubbingPipeline(
                 SubtitleGenerator.generateSrt(segments, srtFile)
                 SubtitleGenerator.generateTranscriptJson("en", "bn", segments, transcriptJsonFile)
 
-                // Save translated Bengali SRT directly to device public Downloads folder
+                // Save translated Bengali SRT directly to device public Download/FileTranslato folder
                 val baseVideoTitle = videoTitle.substringBeforeLast(".")
                 val bnSrtContent = srtFile.readText()
                 val downloadedFile = com.example.subtitle.SubtitleExtractor.saveSrtToPublicDownloads(
                     context,
-                    "${baseVideoTitle}_Bangla",
+                    "${baseVideoTitle}_bangla",
                     bnSrtContent
                 )
                 val statusMsg = if (downloadedFile != null) {
-                    "✓ Bangla SRT saved to Downloads/BanglaDubbing (${downloadedFile.name})"
+                    "✓ Bangla SRT saved to Download/FileTranslato (${downloadedFile.name})"
                 } else {
                     "Bangla subtitles generated."
                 }
                 reportStage(projectId, ProcessingStage.GENERATE_SUBTITLE, 100, 65, statusMsg, onProgressUpdate)
-                Log.i(TAG, "Translated Bangla subtitle generated and exported to downloads: ${downloadedFile?.absolutePath}")
+                Log.i(TAG, "Translated Bangla subtitle generated and exported to FileTranslato: ${downloadedFile?.absolutePath}")
             }
 
             // STAGE 5: Bangla Voice Synthesis (TTS) (65% - 85%)
@@ -457,6 +464,21 @@ class DubbingPipeline(
 
                 if (syncResult.isSuccess) {
                     effectiveDubbedAudioFile = syncResult.getOrThrow()
+                    try {
+                        val baseVideoTitle = videoTitle.substringBeforeLast(".")
+                        val publicDownloads = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
+                        val fileTranslatoDir = File(publicDownloads, "FileTranslato").apply { if (!exists()) mkdirs() }
+                        val publicDubbedAudio = File(fileTranslatoDir, "${baseVideoTitle}_bangla_dubbed_audio.wav")
+                        effectiveDubbedAudioFile.copyTo(publicDubbedAudio, overwrite = true)
+                        Log.i(TAG, "Exported dubbed audio to Download/FileTranslato: ${publicDubbedAudio.absolutePath}")
+
+                        if (rawAudioFile.exists() && rawAudioFile.length() > 44) {
+                            val publicOriginalAudio = File(fileTranslatoDir, "${baseVideoTitle}_original_audio.wav")
+                            rawAudioFile.copyTo(publicOriginalAudio, overwrite = true)
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Could not mirror audio to FileTranslato: ${e.message}")
+                    }
                 } else {
                     WavUtils.createSilenceWav(finalDubbedAudioFile, maxOf(1000L, totalDurationMs))
                     effectiveDubbedAudioFile = finalDubbedAudioFile

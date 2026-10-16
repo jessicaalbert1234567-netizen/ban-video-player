@@ -64,36 +64,51 @@ jobs:
           ban-video-player-debug.apk
         if-no-files-found: warn
 
-    - name: Update Latest Release Tag
-      if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
-      run: |
-        git config user.name "github-actions[bot]"
-        git config user.email "github-actions[bot]@users.noreply.github.com"
-        git tag -fa latest -m "Latest Build APK"
-        git push -f origin latest || true
-
     - name: Publish Direct Download Release
       if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+      continue-on-error: true
       uses: softprops/action-gh-release@v2
       with:
-        tag_name: latest
-        name: "Offline AI Video Dubbing Player (Latest APK)"
+        tag_name: v1.0.${{ github.run_number }}
+        name: "Offline AI Video Dubbing Player (v1.0.${{ github.run_number }})"
         draft: false
         prerelease: false
         make_latest: true
         body: |
-          ## 📱 Offline AI Video Dubbing Player - Latest APK
-
-          ### 🚀 Direct Download Link (Mobile / Android):
-          Click below to download the `.apk` directly without extracting any zip file:
-          - 📥 **[Download ban-video-player-debug.apk](https://github.com/${{ github.repository }}/releases/download/latest/ban-video-player-debug.apk)**
-          - 📥 **[Download app-debug.apk](https://github.com/${{ github.repository }}/releases/download/latest/app-debug.apk)**
-
-          **Build details:**
+          ## 📱 Offline AI Video Dubbing Player - APK Download
+          
+          ### 🚀 Direct APK Download Links (Mobile / Android):
+          No need to unzip! Click the link below to download and install directly on your Android device:
+          - 📥 **[Download ban-video-player-debug.apk](https://github.com/${{ github.repository }}/releases/download/v1.0.${{ github.run_number }}/ban-video-player-debug.apk)**
+          - 📥 **[Download app-debug.apk](https://github.com/${{ github.repository }}/releases/download/v1.0.${{ github.run_number }}/app-debug.apk)**
+          
+          **Build Information:**
+          - **Run Number:** `#${{ github.run_number }}`
           - **Commit:** `${{ github.sha }}`
-          - **Date:** `${{ github.event.head_commit.timestamp }}`
         files: |
           app/build/outputs/apk/debug/app-debug.apk
           ban-video-player-debug.apk
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Fallback Release using GitHub CLI
+      if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+      continue-on-error: true
+      run: |
+        TAG="v1.0.${{ github.run_number }}"
+        gh release create "$TAG" ban-video-player-debug.apk app/build/outputs/apk/debug/app-debug.apk \
+          --title "Offline AI Video Dubbing Player ($TAG)" \
+          --notes "Direct APK download for Android devices." || true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Generate Actions Job Summary
+      run: |
+        echo "## 📱 Build Complete: Offline AI Dubbing Player" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 📥 Direct APK Download:" >> $GITHUB_STEP_SUMMARY
+        echo "1. Go to the repository **[Releases](https://github.com/${{ github.repository }}/releases)** tab." >> $GITHUB_STEP_SUMMARY
+        echo "2. Download **ban-video-player-debug.apk** directly to your phone (no zip extraction needed!)." >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### ⚠️ If you downloaded the Artifact ZIP file:" >> $GITHUB_STEP_SUMMARY
+        echo "The file from the Artifacts section is a **.zip** archive. Open it on your phone using any file manager (e.g., Google Files or ZArchiver), extract **app-debug.apk**, and tap to install." >> $GITHUB_STEP_SUMMARY
