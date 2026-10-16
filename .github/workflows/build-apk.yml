@@ -64,22 +64,31 @@ jobs:
           ban-video-player-debug.apk
         if-no-files-found: warn
 
+    - name: Update Latest Release Tag
+      if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git tag -fa latest -m "Latest Build APK"
+        git push -f origin latest || true
+
     - name: Publish Direct Download Release
       if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
       uses: softprops/action-gh-release@v2
       with:
         tag_name: latest
-        name: "Latest Debug APK"
+        name: "Offline AI Video Dubbing Player (Latest APK)"
         draft: false
         prerelease: false
+        make_latest: true
         body: |
           ## 📱 Offline AI Video Dubbing Player - Latest APK
-          
+
           ### 🚀 Direct Download Link (Mobile / Android):
           Click below to download the `.apk` directly without extracting any zip file:
-          - 📥 **[Download app-debug.apk](https://github.com/${{ github.repository }}/releases/download/latest/app-debug.apk)**
           - 📥 **[Download ban-video-player-debug.apk](https://github.com/${{ github.repository }}/releases/download/latest/ban-video-player-debug.apk)**
-          
+          - 📥 **[Download app-debug.apk](https://github.com/${{ github.repository }}/releases/download/latest/app-debug.apk)**
+
           **Build details:**
           - **Commit:** `${{ github.sha }}`
           - **Date:** `${{ github.event.head_commit.timestamp }}`

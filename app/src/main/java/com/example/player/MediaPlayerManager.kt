@@ -50,6 +50,7 @@ data class PlayerState(
     val dubbedAudioFile: File? = null,
     val isSpeechActive: Boolean = false,
     val isLiveDubbing: Boolean = false,
+    val isAudioOnlyFallback: Boolean = false,
     val hasError: Boolean = false,
     val errorMessage: String? = null
 )
@@ -120,10 +121,28 @@ class MediaPlayerManager(private val context: Context) {
 
                     override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
                         Log.e(TAG, "ExoPlayer playback error: ${error.errorCodeName} - ${error.message}", error)
+                        val dubbed = _playerState.value.dubbedAudioFile
+                        if (dubbed != null && dubbed.exists() && dubbed.length() > 44 && !_playerState.value.isAudioOnlyFallback) {
+                            Log.i(TAG, "Auto-recovering playback using dubbed audio track")
+                            _playerState.value = _playerState.value.copy(
+                                isAudioOnlyFallback = true,
+                                hasError = false,
+                                errorMessage = null
+                            )
+                            val audioItem = MediaItem.fromUri(Uri.fromFile(dubbed))
+                            val audioSource = androidx.media3.exoplayer.source.DefaultMediaSourceFactory(context).createMediaSource(audioItem)
+                            dubbedAudioPlayer?.stop()
+                            dubbedAudioPlayer?.release()
+                            dubbedAudioPlayer = null
+                            player?.setMediaSource(audioSource)
+                            player?.prepare()
+                            player?.play()
+                            return
+                        }
                         val msg = if (error.errorCodeName.contains("PERMISSION", ignoreCase = true) || error.message?.contains("permission", ignoreCase = true) == true) {
                             "ভিডিও ফাইলটির অ্যাক্সেস পারমিশন রিনিউ করতে ফাইলটি পুনরায় সিলেক্ট করুন।"
                         } else {
-                            "ভিডিও প্লেব্যাক ত্রুটি: ${error.message ?: "ভিডিও ফাইলটি খুঁজে পাওয়া যায়নি"}"
+                            "ভিডিও প্লেব্যাক নোটিস: ${error.message ?: "ভিডিও ফাইলটি খুঁজে পাওয়া যায়নি"}"
                         }
                         _playerState.value = _playerState.value.copy(hasError = true, errorMessage = msg)
                     }
@@ -185,11 +204,17 @@ class MediaPlayerManager(private val context: Context) {
             else -> null
         }
 
+        val isVideoUriAudioFile = videoUri.path?.let { p ->
+            p.endsWith(".wav") || p.endsWith(".m4a") || p.endsWith(".mp3") || p.endsWith(".aac")
+        } ?: false
+        val isVideoUriSameAsDubbed = effectiveDubbedFile != null && videoUri.toString() == Uri.fromFile(effectiveDubbedFile).toString()
+        val isAudioOnly = isVideoUriAudioFile || isVideoUriSameAsDubbed
+
         val hasPreRenderedDubbed = effectiveDubbedFile != null
         val canLiveDub = !hasPreRenderedDubbed && bnSubtitleEntries.isNotEmpty()
         val hasDubbed = hasPreRenderedDubbed || canLiveDub
 
-        if (hasPreRenderedDubbed) {
+        if (hasPreRenderedDubbed && !isVideoUriSameAsDubbed) {
             val dPlayer = initializeDubbedPlayer()
             val audioItem = MediaItem.fromUri(Uri.fromFile(effectiveDubbedFile!!))
             val audioSource = mediaSourceFactory.createMediaSource(audioItem)
@@ -218,6 +243,7 @@ class MediaPlayerManager(private val context: Context) {
         _playerState.value = _playerState.value.copy(
             hasDubbedAudio = hasDubbed,
             isLiveDubbing = canLiveDub,
+            isAudioOnlyFallback = isAudioOnly,
             hasError = false,
             errorMessage = null,
             audioChoice = initialAudioChoice,
@@ -248,7 +274,7 @@ class MediaPlayerManager(private val context: Context) {
         val hasDubbed = _playerState.value.hasDubbedAudio
         val isLive = _playerState.value.isLiveDubbing
 
-        if (!hasDubbed) {
+        if (!hasDubbed || _playerState.value.isAudioOnlyFallback) {
             exo.volume = 1.0f
             return
         }

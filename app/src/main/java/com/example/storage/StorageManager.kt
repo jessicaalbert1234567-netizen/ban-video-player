@@ -7,10 +7,14 @@ class StorageManager(private val context: Context) {
 
     val rootProjectsDir: File
         get() {
-            val dir = File(context.filesDir, "AI_Dubbing/Projects")
+            val base = context.getExternalFilesDir(null) ?: context.filesDir
+            val dir = File(base, "AI_Dubbing/Projects")
             if (!dir.exists()) dir.mkdirs()
             return dir
         }
+
+    val internalProjectsDir: File
+        get() = File(context.filesDir, "AI_Dubbing/Projects")
 
     val tempDir: File
         get() {
@@ -20,6 +24,10 @@ class StorageManager(private val context: Context) {
         }
 
     fun getProjectDir(projectId: String): File {
+        // If it already exists in internal storage, preserve that location
+        val internalDir = File(internalProjectsDir, projectId)
+        if (internalDir.exists()) return internalDir
+
         val dir = File(rootProjectsDir, projectId)
         if (!dir.exists()) dir.mkdirs()
         return dir

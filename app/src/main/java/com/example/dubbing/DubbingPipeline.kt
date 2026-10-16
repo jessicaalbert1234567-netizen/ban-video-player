@@ -87,20 +87,27 @@ class DubbingPipeline(
                         val srcFile = File(videoUri.path ?: "")
                         if (srcFile.exists() && srcFile.canonicalPath != localVideoFile.canonicalPath) {
                             srcFile.copyTo(tempCopyFile, overwrite = true)
-                            tempCopyFile.renameTo(localVideoFile)
                         }
                     } else {
                         context.contentResolver.openInputStream(videoUri)?.use { input ->
                             tempCopyFile.outputStream().use { output ->
-                                val buffer = ByteArray(64 * 1024)
+                                val buffer = ByteArray(128 * 1024)
                                 var bytesRead: Int
                                 while (input.read(buffer).also { bytesRead = it } != -1) {
                                     output.write(buffer, 0, bytesRead)
                                 }
+                                output.flush()
                             }
                         }
-                        if (tempCopyFile.exists() && tempCopyFile.length() > 1024) {
-                            tempCopyFile.renameTo(localVideoFile)
+                    }
+                    if (tempCopyFile.exists() && tempCopyFile.length() > 1024) {
+                        if (localVideoFile.exists()) {
+                            localVideoFile.delete()
+                        }
+                        val renamed = tempCopyFile.renameTo(localVideoFile)
+                        if (!renamed) {
+                            tempCopyFile.copyTo(localVideoFile, overwrite = true)
+                            tempCopyFile.delete()
                         }
                     }
                 }

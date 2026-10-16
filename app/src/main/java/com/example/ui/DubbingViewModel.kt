@@ -757,15 +757,21 @@ class DubbingViewModel(application: Application) : AndroidViewModel(application)
                             val tempFile = File(projectDir, "source_video.tmp")
                             app.contentResolver.openInputStream(candidateUri)?.use { input ->
                                 tempFile.outputStream().use { output ->
-                                    val buffer = ByteArray(64 * 1024)
+                                    val buffer = ByteArray(128 * 1024)
                                     var bytesRead: Int
                                     while (input.read(buffer).also { bytesRead = it } != -1) {
                                         output.write(buffer, 0, bytesRead)
                                     }
+                                    output.flush()
                                 }
                             }
                             if (tempFile.exists() && tempFile.length() > 1024) {
-                                tempFile.renameTo(targetFile)
+                                if (targetFile.exists()) targetFile.delete()
+                                val renamed = tempFile.renameTo(targetFile)
+                                if (!renamed) {
+                                    tempFile.copyTo(targetFile, overwrite = true)
+                                    tempFile.delete()
+                                }
                                 val updated = latest.copy(videoUriString = Uri.fromFile(targetFile).toString())
                                 repository.saveProject(updated)
                                 _selectedProject.value = updated
@@ -774,6 +780,38 @@ class DubbingViewModel(application: Application) : AndroidViewModel(application)
                         } catch (e: Exception) {
                             Log.w("DubbingViewModel", "Background video caching failed: ${e.message}")
                         }
+                    }
+                }
+
+                // If content URI lost permission across app restart, attempt auto-recovery via MediaStore
+                if (videoUri == null && latest.title.isNotEmpty()) {
+                    try {
+                        val projection = arrayOf(
+                            android.provider.MediaStore.Video.Media._ID,
+                            android.provider.MediaStore.Video.Media.DISPLAY_NAME
+                        )
+                        val selection = "${android.provider.MediaStore.Video.Media.DISPLAY_NAME} = ?"
+                        val selectionArgs = arrayOf(latest.title)
+                        app.contentResolver.query(
+                            android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                            projection,
+                            selection,
+                            selectionArgs,
+                            null
+                        )?.use { cursor ->
+                            if (cursor.moveToFirst()) {
+                                val idIdx = cursor.getColumnIndexOrThrow(android.provider.MediaStore.Video.Media._ID)
+                                val id = cursor.getLong(idIdx)
+                                val mediaUri = android.content.ContentUris.withAppendedId(
+                                    android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                                    id
+                                )
+                                videoUri = mediaUri
+                                Log.i("DubbingViewModel", "Auto-recovered video from MediaStore: $mediaUri")
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.w("DubbingViewModel", "MediaStore query failed: ${e.message}")
                     }
                 }
 
@@ -847,7 +885,8 @@ class DubbingViewModel(application: Application) : AndroidViewModel(application)
                     sourceSrtFile = sourceSrt
                 )
             } else {
-                _videoPermissionError.value = "মিডিয়া ফাইল খুঁজে পাওয়া যায়নি।"
+                _videoPermissionError.value = null
+                Log.w("DubbingViewModel", "No media file could be located for playback")
             }
         }
     }

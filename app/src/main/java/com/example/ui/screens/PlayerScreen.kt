@@ -726,6 +726,34 @@ fun PlayerScreen(
             }
         }
 
+        // Audio-Only Fallback Notice Badge
+        if (playerState.isAudioOnlyFallback) {
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f),
+                shape = RoundedCornerShape(20.dp),
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 70.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(
+                        Icons.Default.Headphones,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Text(
+                        text = "ডাবিং বাংলা অডিও প্লে হচ্ছে",
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                }
+            }
+        }
+
         // Snackbar Host for export notifications
         SnackbarHost(
             hostState = snackbarHostState,
@@ -1074,9 +1102,10 @@ fun PlayerScreen(
         )
     }
 
-    // Video Permission / Missing File Recovery Overlay
-    val shouldShowRecoveryOverlay = videoPermissionError != null && !playerState.hasDubbedAudio && (playerManager.player?.mediaItemCount ?: 0) == 0
-    if (shouldShowRecoveryOverlay) {
+
+
+    // Graceful Fatal Error State (Only when absolutely no media or audio exists)
+    if (playerState.hasError && (playerManager.player?.mediaItemCount ?: 0) == 0 && !playerState.hasDubbedAudio) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -1097,31 +1126,22 @@ fun PlayerScreen(
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
                     Icon(
-                        Icons.Default.Lock,
+                        Icons.Default.ErrorOutline,
                         contentDescription = null,
-                        tint = WarningAmber,
+                        tint = MaterialTheme.colorScheme.error,
                         modifier = Modifier.size(48.dp)
                     )
                     Text(
-                        text = "ভিডিও ফাইল পারমিশন রিনিউ",
+                        text = "প্লেব্যাক ত্রুটি",
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                     )
                     Text(
-                        text = videoPermissionError ?: playerState.errorMessage ?: "ভিডিও ফাইলের অ্যাক্সেস পারমিশন রিফ্রেশ করতে ফাইলটি নির্বাচন করুন।",
+                        text = playerState.errorMessage ?: "মিডিয়া ফাইলটি প্লে করা যায়নি।",
                         style = MaterialTheme.typography.bodySmall,
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Button(
-                        onClick = { relinkVideoLauncher.launch(arrayOf("video/*", "*/*")) },
-                        shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Icon(Icons.Default.FolderOpen, contentDescription = null)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("ভিডিও ফাইল নির্বাচন করুন (Re-link Video)")
-                    }
-                    OutlinedButton(
                         onClick = onNavigateBack,
                         shape = RoundedCornerShape(10.dp),
                         modifier = Modifier.fillMaxWidth()
