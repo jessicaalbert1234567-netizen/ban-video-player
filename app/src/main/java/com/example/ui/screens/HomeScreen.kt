@@ -5,14 +5,12 @@ import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -28,11 +26,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.database.DubbingProject
 import com.example.dubbing.ProcessingStage
-import com.example.tts.BengaliTtsStatus
 import com.example.ui.DubbingViewModel
 import com.example.ui.theme.ErrorRed
 import com.example.ui.theme.SuccessGreen
-import com.example.ui.theme.WarningAmber
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -45,75 +41,47 @@ fun HomeScreen(
     onNavigateToTest: () -> Unit
 ) {
     val context = LocalContext.current
-    val isAllModelsReady by viewModel.isAllModelsReady.collectAsState()
-    val ttsStatus by viewModel.ttsStatus.collectAsState()
-    val mlKitDownloadProgress by viewModel.mlKitDownloadProgress.collectAsState()
     val projects by viewModel.allProjects.collectAsState()
-    val subtitleInspection by viewModel.subtitleInspectionState.collectAsState()
-    val exportMessage by viewModel.extractedSrtExportMessage.collectAsState()
-    val isTranslatingSrt by viewModel.isTranslatingSrt.collectAsState()
-    val srtTranslationStatus by viewModel.srtTranslationStatus.collectAsState()
+    val noSubtitleError by viewModel.noSubtitleError.collectAsState()
+    val isAnalyzingMkv by viewModel.isAnalyzingMkv.collectAsState()
+    val audioExportStatus by viewModel.audioExportStatus.collectAsState()
 
     var pendingVideoForExternalSubtitle by remember { mutableStateOf<Uri?>(null) }
-    var selectedTrackIndex by remember { mutableIntStateOf(0) }
     var fileAccessProject by remember { mutableStateOf<DubbingProject?>(null) }
 
-    // Direct SRT file translator launcher (File Translator framework)
-    val directSrtTranslatorLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent()
-    ) { srtUri: Uri? ->
-        if (srtUri != null) {
-            viewModel.translateAndExportExternalSrtToBangla(srtUri)
-        }
-    }
-
-    // External subtitle picker launcher
+    // Launcher for picking external subtitle (.srt, .vtt)
     val externalSubtitlePickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent()
+        contract = ActivityResultContracts.OpenDocument()
     ) { subUri: Uri? ->
         val vidUri = pendingVideoForExternalSubtitle
         if (subUri != null && vidUri != null) {
-            viewModel.startFastDubbingFromExternalSubtitle(vidUri, subUri, onNavigateToProgress)
+            com.example.storage.VideoUriResolver.takePersistablePermission(context, subUri)
+            viewModel.startDubbingWithExternalSubtitle(vidUri, subUri, onNavigateToProgress)
             pendingVideoForExternalSubtitle = null
         }
     }
 
-    // Video picker that will immediately follow with external subtitle picker
+    // Launcher for Option 2: Pick Video first, then pick Subtitle
     val videoForExternalSubLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { vidUri: Uri? ->
         if (vidUri != null) {
-            try {
-                context.contentResolver.takePersistableUriPermission(
-                    vidUri,
-                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
-                )
-            } catch (e: Exception) {
-                Log.w("HomeScreen", "Could not take persistable permission: ${e.message}")
-            }
+            com.example.storage.VideoUriResolver.takePersistablePermission(context, vidUri)
             pendingVideoForExternalSubtitle = vidUri
-            externalSubtitlePickerLauncher.launch("*/*")
+            externalSubtitlePickerLauncher.launch(arrayOf("application/x-subrip", "text/plain", "text/*", "*/*"))
         }
     }
 
-    // Main video picker - inspects for subtitle tracks to offer 10x faster dubbing
-    val videoPickerLauncher = rememberLauncherForActivityResult(
+    // Launcher for Option 1: Main MKV Video Picker - Auto detects SRT and starts dubbing immediately!
+    val mkvVideoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
         if (uri != null) {
-            try {
-                context.contentResolver.takePersistableUriPermission(
-                    uri,
-                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
-                )
-            } catch (e: Exception) {
-                Log.w("HomeScreen", "Could not take persistable permission: ${e.message}")
-            }
-            viewModel.inspectVideoForSubtitles(uri)
+            com.example.storage.VideoUriResolver.takePersistablePermission(context, uri)
+            viewModel.startAutomaticMkvDubbing(uri, onNavigateToProgress)
         }
     }
 
-    val audioExportStatus by viewModel.audioExportStatus.collectAsState()
     val homeSnackbarHostState = remember { SnackbarHostState() }
     LaunchedEffect(audioExportStatus) {
         audioExportStatus?.let { msg ->
@@ -129,14 +97,14 @@ fun HomeScreen(
                 title = {
                     Column {
                         Text(
-                            text = "Offline AI Dubbing Player",
+                            text = "AutoMkvDubber",
                             style = MaterialTheme.typography.titleLarge.copy(
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 20.sp
                             )
                         )
                         Text(
-                            text = "English to Bangla Neural Dubbing",
+                            text = "স্বয়ংক্রিয় বাংলা ভিডিও ডাবিং",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -147,7 +115,7 @@ fun HomeScreen(
                         onClick = onNavigateToTest,
                         modifier = Modifier.testTag("nav_test_button")
                     ) {
-                        Icon(Icons.Default.Build, contentDescription = "Test Pipeline")
+                        Icon(Icons.Default.Build, contentDescription = "Test")
                     }
                     IconButton(
                         onClick = onNavigateToSettings,
@@ -171,327 +139,14 @@ fun HomeScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp),
             contentPadding = PaddingValues(vertical = 12.dp)
         ) {
-            // 0. Google ML Kit Hidden Background Auto-Download Progress Banner
-            if (mlKitDownloadProgress != null) {
-                item {
-                    Card(
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
-                        ),
-                        shape = RoundedCornerShape(16.dp),
-                        modifier = Modifier.fillMaxWidth().testTag("mlkit_auto_download_banner")
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(16.dp),
-                            verticalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                ) {
-                                    CircularProgressIndicator(
-                                        modifier = Modifier.size(22.dp),
-                                        strokeWidth = 2.5.dp
-                                    )
-                                    Column {
-                                        Text(
-                                            text = "Google ML Kit অনুবাদ মডেল ডাউনলোড হচ্ছে...",
-                                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
-                                        )
-                                        Text(
-                                            text = "অ্যাপ খোলার সাথে সাথে স্বয়ংক্রিয় ব্যাকগ্রাউন্ড ডাউনলোড",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                }
-                                Text(
-                                    text = "${mlKitDownloadProgress}%",
-                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.ExtraBold),
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                            }
-                            LinearProgressIndicator(
-                                progress = { (mlKitDownloadProgress ?: 0) / 100f },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(8.dp)
-                                    .clip(CircleShape)
-                            )
-                        }
-                    }
-                }
-            }
-
-            // 1. Model Status Banner
-            item {
-                if (isAllModelsReady) {
-                    Card(
-                        colors = CardDefaults.cardColors(
-                            containerColor = SuccessGreen.copy(alpha = 0.12f)
-                        ),
-                        shape = RoundedCornerShape(16.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(16.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(12.dp)
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(40.dp)
-                                        .clip(CircleShape)
-                                        .background(SuccessGreen.copy(alpha = 0.2f)),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(
-                                        Icons.Default.CheckCircle,
-                                        contentDescription = null,
-                                        tint = SuccessGreen
-                                    )
-                                }
-                                Column {
-                                    Text(
-                                        text = "Offline AI Dubbing is Ready",
-                                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
-                                        color = MaterialTheme.colorScheme.onSurface
-                                    )
-                                    Text(
-                                        text = "ASR, Translation & Bangla Voice Installed",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            }
-                            IconButton(onClick = onNavigateToModelManager) {
-                                Icon(
-                                    Icons.AutoMirrored.Filled.ArrowForward,
-                                    contentDescription = "Manage Models",
-                                    tint = SuccessGreen
-                                )
-                            }
-                        }
-                    }
-                } else {
-                    Card(
-                        colors = CardDefaults.cardColors(
-                            containerColor = WarningAmber.copy(alpha = 0.12f)
-                        ),
-                        shape = RoundedCornerShape(16.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(16.dp),
-                            verticalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(12.dp)
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(40.dp)
-                                        .clip(CircleShape)
-                                        .background(WarningAmber.copy(alpha = 0.2f)),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(
-                                        Icons.Default.Warning,
-                                        contentDescription = null,
-                                        tint = WarningAmber
-                                    )
-                                }
-                                Column {
-                                    Text(
-                                        text = "Required AI Models Missing",
-                                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
-                                        color = MaterialTheme.colorScheme.onSurface
-                                    )
-                                    Text(
-                                        text = "Download once to use 100% offline forever",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            }
-                            Button(
-                                onClick = onNavigateToModelManager,
-                                colors = ButtonDefaults.buttonColors(containerColor = WarningAmber),
-                                shape = RoundedCornerShape(12.dp),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .testTag("download_models_banner_button")
-                            ) {
-                                Icon(Icons.Default.FileDownload, contentDescription = null)
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = "Download Required Models",
-                                    color = Color.Black,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-
-            // 1b. Bengali Voice Status Card
+            // OPTION 1: Main Hero Card — Select MKV Video (Auto Dubbing)
             item {
                 Card(
                     colors = CardDefaults.cardColors(
-                        containerColor = when (ttsStatus) {
-                            is BengaliTtsStatus.Available -> SuccessGreen.copy(alpha = 0.08f)
-                            is BengaliTtsStatus.NotInstalled -> WarningAmber.copy(alpha = 0.08f)
-                            else -> MaterialTheme.colorScheme.surfaceVariant
-                        }
-                    ),
-                    shape = RoundedCornerShape(16.dp),
-                    modifier = Modifier.fillMaxWidth().testTag("home_tts_status_card")
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = "বাংলা টেক্সট-টু-স্পিচ (TTS) ভয়েস",
-                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
-                                )
-                                Text(
-                                    text = "ফোনে বাংলা ভয়েস মডেল আছে কিনা তা এখানে দেখা যায়",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                                Spacer(modifier = Modifier.height(4.dp))
-                                when (val status = ttsStatus) {
-                                    is BengaliTtsStatus.Checking -> {
-                                        Text(
-                                            text = "ফোনে বাংলা TTS ভয়েস মডেল চেক করা হচ্ছে...",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                    is BengaliTtsStatus.Available -> {
-                                        Text(
-                                            text = "✓ বাংলা TTS মডেল ফোনে ইনস্টল্ড আছে (Ready)",
-                                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
-                                            color = SuccessGreen
-                                        )
-                                        Text(
-                                            text = "ইঞ্জিন: ${status.engineName ?: "System Default"} • ${status.localeDisplayName}",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                    is BengaliTtsStatus.NotInstalled -> {
-                                        Text(
-                                            text = "⚠ ফোনে বাংলা TTS ভয়েস ডাটা ইনস্টল করা নেই",
-                                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
-                                            color = WarningAmber
-                                        )
-                                        Text(
-                                            text = status.message,
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                }
-                            }
-
-                            IconButton(
-                                onClick = { viewModel.checkBengaliTts() },
-                                modifier = Modifier.testTag("refresh_home_tts_btn")
-                            ) {
-                                Icon(
-                                    Icons.Default.Refresh,
-                                    contentDescription = "Refresh TTS status",
-                                    tint = MaterialTheme.colorScheme.primary
-                                )
-                            }
-                        }
-
-                        if (ttsStatus is BengaliTtsStatus.NotInstalled) {
-                            Card(
-                                colors = CardDefaults.cardColors(
-                                    containerColor = MaterialTheme.colorScheme.surface
-                                ),
-                                shape = RoundedCornerShape(12.dp),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Column(
-                                    modifier = Modifier.padding(14.dp),
-                                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    Text(
-                                        text = "কীভাবে ফোনে বাংলা TTS ডাউনলোড করবেন:",
-                                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
-                                        color = MaterialTheme.colorScheme.primary
-                                    )
-                                    Text(
-                                        text = "১. নিচের বাটনে চাপ দিয়ে ফোনের TTS সেটিংসে যান।\n২. Preferred Engine হিসেবে 'Speech Services by Google' সিলেক্ট করুন।\n৩. Install voice data তে গিয়ে 'Bangla / বাংলা (বাংলাদেশ বা ভারত)' ডাউনলোড করুন।",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        Button(
-                                            onClick = { viewModel.openTtsSettings() },
-                                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
-                                            shape = RoundedCornerShape(10.dp),
-                                            modifier = Modifier.weight(1f).testTag("open_tts_settings_btn")
-                                        ) {
-                                            Icon(Icons.Default.SettingsVoice, contentDescription = null, modifier = Modifier.size(16.dp))
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            Text("ফোন TTS সেটিংস", style = MaterialTheme.typography.labelMedium)
-                                        }
-                                        OutlinedButton(
-                                            onClick = { viewModel.openPlayStoreForGoogleTts() },
-                                            shape = RoundedCornerShape(10.dp),
-                                            modifier = Modifier.weight(1f).testTag("open_playstore_tts_btn")
-                                        ) {
-                                            Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            Text("Play Store TTS", style = MaterialTheme.typography.labelMedium)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // 2. MKV Subtitle Fast Dubbing Feature Card (MKVEdit Style - No ASR)
-            item {
-                Card(
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+                        containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
                     ),
                     shape = RoundedCornerShape(20.dp),
-                    modifier = Modifier.fillMaxWidth().testTag("mkv_subtitle_feature_card")
+                    modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(
                         modifier = Modifier
@@ -506,29 +161,29 @@ fun HomeScreen(
                         ) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
                                 Box(
                                     modifier = Modifier
-                                        .size(44.dp)
+                                        .size(48.dp)
                                         .clip(CircleShape)
                                         .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)),
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Icon(
-                                        Icons.Default.Bolt,
+                                        Icons.Default.MovieFilter,
                                         contentDescription = null,
                                         tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(26.dp)
+                                        modifier = Modifier.size(28.dp)
                                     )
                                 }
                                 Column {
                                     Text(
-                                        text = "MKV Subtitle Fast Dubbing",
+                                        text = "MKV ভিডিও অটো ডাবিং",
                                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                                     )
                                     Text(
-                                        text = "এমকেভি সাবটাইটেল ডাবিং (নো ASR)",
+                                        text = "১ ক্লিকে সম্পূর্ণ অটোমেটিক প্রসেস",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.primary
                                     )
@@ -540,7 +195,7 @@ fun HomeScreen(
                                 color = MaterialTheme.colorScheme.primary
                             ) {
                                 Text(
-                                    text = "10X FASTER",
+                                    text = "AUTO",
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                                     style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                                     color = MaterialTheme.colorScheme.onPrimary
@@ -549,59 +204,31 @@ fun HomeScreen(
                         }
 
                         Text(
-                            text = "MKVEdit-এর মতো MKV বা যেকোনো ভিডিও থেকে সরাসরি সাবটাইটেল এক্সট্র্যাক্ট করে তাৎক্ষণিক বাংলায় ডাবিং করুন। স্পিচ-টু-টেক্সট করতে হবে না — সময় বাঁচবে ৯০% এবং ডায়লগ হবে ১০০% নিখুঁত!",
+                            text = "শুধু আপনার MKV মুভি বা ভিডিও ফাইল সিলেক্ট করুন। অ্যাপটি স্বয়ংক্রিয়ভাবে ভিডিওর ভেতর থেকে SRT সাবটাইটেল বের করে দ্রুত বাংলায় অনুবাদ ও Google TTS দিয়ে পূর্ণাঙ্গ বাংলা ডাবিং তৈরি করবে।",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
 
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Button(
-                                onClick = { videoPickerLauncher.launch(arrayOf("video/*", "*/*")) },
-                                shape = RoundedCornerShape(12.dp),
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(48.dp)
-                                    .testTag("mkv_open_video_button")
-                            ) {
-                                Icon(Icons.Default.Subtitles, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Open MKV Video", style = MaterialTheme.typography.labelLarge)
-                            }
-
-                            OutlinedButton(
-                                onClick = { videoForExternalSubLauncher.launch(arrayOf("video/*", "*/*")) },
-                                shape = RoundedCornerShape(12.dp),
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(48.dp)
-                                    .testTag("external_sub_dub_button")
-                            ) {
-                                Icon(Icons.Default.AttachFile, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Dub with .SRT", style = MaterialTheme.typography.labelLarge)
-                            }
-                        }
-
-                        FilledTonalButton(
-                            onClick = { directSrtTranslatorLauncher.launch("*/*") },
+                        Button(
+                            onClick = { mkvVideoPickerLauncher.launch(arrayOf("video/*", "*/*")) },
                             shape = RoundedCornerShape(12.dp),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(44.dp)
-                                .testTag("direct_translate_srt_button")
+                                .height(52.dp)
+                                .testTag("mkv_open_video_button")
                         ) {
-                            Icon(Icons.Default.Translate, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Icon(Icons.Default.VideoFile, contentDescription = null)
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Translate .SRT to Bangla (File Translator Mode)", style = MaterialTheme.typography.labelMedium)
+                            Text(
+                                text = "MKV ভিডিও সিলেক্ট করুন (অটো ডাবিং)",
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                            )
                         }
                     }
                 }
             }
 
-            // 2b. Standard Video Import Action Card (With Speech-to-Text ASR)
+            // OPTION 2: External Subtitle Dubbing Card
             item {
                 Card(
                     colors = CardDefaults.cardColors(
@@ -614,56 +241,65 @@ fun HomeScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(20.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .size(56.dp)
-                                .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
-                            contentAlignment = Alignment.Center
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            Icon(
-                                Icons.Default.VideoFile,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(32.dp)
-                            )
+                            Box(
+                                modifier = Modifier
+                                        .size(44.dp)
+                                        .clip(CircleShape)
+                                        .background(MaterialTheme.colorScheme.secondary.copy(alpha = 0.2f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    Icons.Default.Subtitles,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.secondary,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
+                            Column {
+                                Text(
+                                    text = "বাংলা অনুবাদকৃত SRT দিয়ে সরাসরি ডাবিং",
+                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                                )
+                                Text(
+                                    text = "ভিডিও + নিজস্ব বাংলা SRT ফাইল",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
 
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(
-                                text = "Choose Video for Full AI Dubbing",
-                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
-                            )
-                            Text(
-                                text = "Auto-detects subtitle tracks or falls back to offline Whisper ASR",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
+                        Text(
+                            text = "অন্য কোনো উৎস বা ইন্টারনেট থেকে ডাউনলোড করা বাংলা অনুবাদকৃত SRT ফাইল এবং ভিডিও বেছে নিয়ে সরাসরি দ্রুত ডাবিং তৈরি করুন (অনুবাদ স্কিপ করে সরাসরি ভয়েস তৈরি হবে)।",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
 
-                        Button(
-                            onClick = { videoPickerLauncher.launch(arrayOf("video/*", "*/*")) },
+                        OutlinedButton(
+                            onClick = { videoForExternalSubLauncher.launch(arrayOf("video/*", "*/*")) },
                             shape = RoundedCornerShape(12.dp),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(50.dp)
-                                .testTag("choose_video_button")
+                                .testTag("external_sub_dub_button")
                         ) {
-                            Icon(Icons.Default.Add, contentDescription = null)
+                            Icon(Icons.Default.AttachFile, contentDescription = null)
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = "Choose Local Video",
-                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
+                                text = "ভিডিও ও বাংলা SRT বেছে নিন",
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold)
                             )
                         }
                     }
                 }
             }
 
-            // 3. Recent Projects Header
+            // SECTION 3: Dubbed Videos Header
             item {
                 Row(
                     modifier = Modifier
@@ -673,18 +309,18 @@ fun HomeScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "Dubbed Videos",
+                        text = "ডাবিং করা ভিডিওসমূহ",
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                     )
                     Text(
-                        text = "${projects.size} total",
+                        text = "${projects.size} টি ডাবিং",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
 
-            // 4. Projects List
+            // SECTION 4: Dubbed Videos List
             if (projects.isEmpty()) {
                 item {
                     Card(
@@ -708,12 +344,12 @@ fun HomeScreen(
                                 modifier = Modifier.size(48.dp)
                             )
                             Text(
-                                text = "No dubbed videos yet",
+                                text = "কোনো ডাবিং করা ভিডিও নেই",
                                 style = MaterialTheme.typography.titleSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                             Text(
-                                text = "Choose a video above to generate offline Bangla dubbing.",
+                                text = "উপরে থাকা অপশন থেকে একটি MKV বা ভিডিও সিলেক্ট করে ডাবিং শুরু করুন।",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -750,270 +386,53 @@ fun HomeScreen(
         }
     }
 
-    // Subtitle Inspection & Selection Dialog
-    subtitleInspection?.let { inspection ->
+    // Analyzing Subtitles Progress Modal
+    if (isAnalyzingMkv) {
         AlertDialog(
-            onDismissRequest = { viewModel.dismissSubtitleInspection() },
+            onDismissRequest = {},
+            icon = {
+                CircularProgressIndicator(modifier = Modifier.size(36.dp))
+            },
             title = {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Icon(
-                        Icons.Default.Subtitles,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                    Text(
-                        text = if (inspection.isInspecting) "Analyzing Subtitles..." else "MKV Subtitle Inspector",
-                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
-                    )
-                }
+                Text("MKV স্ক্যান করা হচ্ছে...", fontWeight = FontWeight.Bold)
             },
             text = {
-                if (inspection.isInspecting) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        CircularProgressIndicator(modifier = Modifier.size(36.dp))
-                        Text(
-                            "Scanning video tracks for embedded subtitles...",
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                    }
-                } else if (inspection.tracks.isNotEmpty()) {
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        Text(
-                            text = "Video: ${inspection.videoTitle}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Card(
-                            colors = CardDefaults.cardColors(containerColor = SuccessGreen.copy(alpha = 0.1f)),
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Text(
-                                text = "💡 ভিডিও থেকে ইংলিশ সাবটাইটেল এক্সট্র্যাক্ট করে সরাসরি বাংলায় অনুবাদ হবে এবং মোবাইল এর Download ফোল্ডারে সেভ হবে। অনুবাদকৃত বাংলা SRT দিয়ে বাংলা অডিও ট্র্যাক তৈরি করে প্লেয়ারে চালানো যাবে। অডিও এক্সট্র্যাক্ট বা ASR-এর প্রয়োজন নেই।",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.padding(10.dp)
-                            )
-                        }
-
-                        Text(
-                            text = "Select Subtitle Track:",
-                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
-                        )
-
-                        inspection.tracks.forEach { track ->
-                            val isSelected = selectedTrackIndex == track.trackIndex
-                            Card(
-                                colors = CardDefaults.cardColors(
-                                    containerColor = if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
-                                    else MaterialTheme.colorScheme.surfaceVariant
-                                ),
-                                shape = RoundedCornerShape(10.dp),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable { selectedTrackIndex = track.trackIndex }
-                            ) {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(12.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                ) {
-                                    RadioButton(
-                                        selected = isSelected,
-                                        onClick = { selectedTrackIndex = track.trackIndex }
-                                    )
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(
-                                            text = "${track.title} • ${track.displayLanguage}",
-                                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
-                                        )
-                                        Text(
-                                            text = "Format: ${track.formatName} (Track #${track.trackIndex + 1})",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        Text(
-                            text = "Video: ${inspection.videoTitle}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Text(
-                            text = "এই ভিডিও ফাইলে কোনো এমবেডেড সাবটাইটেল ট্র্যাক পাওয়া যায়নি।",
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                        Text(
-                            text = "আপনি আলাদা .SRT / .VTT সাবটাইটেল ফাইল সিলেক্ট করতে পারেন অথবা অফলাইন Whisper ASR দিয়ে সম্পূর্ণ ডাবিং করতে পারেন।",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
+                Text(
+                    text = "ভিডিওর ভেতর থেকে সাবটাইটেল ট্র্যাক খোঁজা হচ্ছে। এক মুহূর্ত অপেক্ষা করুন...",
+                    style = MaterialTheme.typography.bodyMedium
+                )
             },
-            confirmButton = {
-                if (!inspection.isInspecting && inspection.tracks.isNotEmpty()) {
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Button(
-                            onClick = {
-                                viewModel.startFastDubbingFromSubtitleTrack(
-                                    inspection.videoUri,
-                                    selectedTrackIndex,
-                                    onNavigateToProgress
-                                )
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("start_fast_dub_button"),
-                            shape = RoundedCornerShape(10.dp)
-                        ) {
-                            Icon(Icons.Default.Bolt, contentDescription = null)
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("⚡ Start Fast Dubbing (No ASR)")
-                        }
-
-                        FilledTonalButton(
-                            onClick = {
-                                viewModel.translateAndExportMkvSubtitleToBangla(
-                                    inspection.videoUri,
-                                    selectedTrackIndex
-                                )
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("translate_mkv_srt_button"),
-                            shape = RoundedCornerShape(10.dp)
-                        ) {
-                            Icon(Icons.Default.Translate, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("🌐 Translate to Bangla .SRT (File Translator)")
-                        }
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            OutlinedButton(
-                                onClick = {
-                                    viewModel.extractAndExportSrt(inspection.videoUri, selectedTrackIndex)
-                                },
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .testTag("extract_srt_button"),
-                                shape = RoundedCornerShape(10.dp)
-                            ) {
-                                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("Save .SRT")
-                            }
-
-                            OutlinedButton(
-                                onClick = {
-                                    viewModel.dismissSubtitleInspection()
-                                    viewModel.selectVideoForDubbing(inspection.videoUri, onNavigateToProgress)
-                                },
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .testTag("use_asr_button"),
-                                shape = RoundedCornerShape(10.dp)
-                            ) {
-                                Icon(Icons.Default.Mic, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("Use ASR")
-                            }
-                        }
-                    }
-                } else if (!inspection.isInspecting && inspection.tracks.isEmpty()) {
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Button(
-                            onClick = {
-                                pendingVideoForExternalSubtitle = inspection.videoUri
-                                viewModel.dismissSubtitleInspection()
-                                externalSubtitlePickerLauncher.launch("*/*")
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("add_external_sub_btn"),
-                            shape = RoundedCornerShape(10.dp)
-                        ) {
-                            Icon(Icons.Default.AttachFile, contentDescription = null)
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Add External .SRT / .VTT")
-                        }
-
-                        OutlinedButton(
-                            onClick = {
-                                viewModel.dismissSubtitleInspection()
-                                viewModel.selectVideoForDubbing(inspection.videoUri, onNavigateToProgress)
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("continue_asr_button"),
-                            shape = RoundedCornerShape(10.dp)
-                        ) {
-                            Icon(Icons.Default.Mic, contentDescription = null)
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Continue with Offline ASR")
-                        }
-                    }
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { viewModel.dismissSubtitleInspection() }) {
-                    Text("Cancel")
-                }
-            }
+            confirmButton = {}
         )
     }
 
-    // Export Srt Notification Dialog
-    exportMessage?.let { msg ->
+    // No Subtitle Found Alert Dialog
+    noSubtitleError?.let { errorText ->
         AlertDialog(
-            onDismissRequest = { viewModel.clearExportMessage() },
+            onDismissRequest = { viewModel.clearNoSubtitleError() },
+            icon = {
+                Icon(
+                    Icons.Default.WarningAmber,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(36.dp)
+                )
+            },
             title = {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Icon(Icons.Default.CheckCircle, contentDescription = null, tint = SuccessGreen)
-                    Text("Subtitle Export", fontWeight = FontWeight.Bold)
-                }
+                Text("সাবটাইটেল পাওয়া যায়নি", fontWeight = FontWeight.Bold)
             },
             text = {
-                Text(msg, style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    text = errorText,
+                    style = MaterialTheme.typography.bodyMedium
+                )
             },
             confirmButton = {
-                Button(onClick = { viewModel.clearExportMessage() }) {
-                    Text("OK")
+                Button(
+                    onClick = { viewModel.clearNoSubtitleError() },
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Text("ঠিক আছে")
                 }
             }
         )
@@ -1057,7 +476,7 @@ fun HomeScreen(
                                 Text("বাংলা ডাবিং অডিও ট্র্যাক (.wav)", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold))
                             }
                             Text(
-                                text = if (audioExists) "সাইজ: ${(audioFile.length() / 1024)} KB\nপাথ: ${audioFile.absolutePath}" else "অডিও ফাইল তৈরি হচ্ছে / সংরক্ষিত...",
+                                text = if (audioExists) "সাইজ: ${(audioFile.length() / 1024)} KB\nপাথ: ${audioFile.name}" else "অডিও ফাইল তৈরি হচ্ছে / সংরক্ষিত...",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -1093,7 +512,7 @@ fun HomeScreen(
                                 Text("বাংলা সাবটাইটেল (.srt)", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold))
                             }
                             Text(
-                                text = if (srtExists) "সাইজ: ${(srtFile.length() / 1024)} KB\nপাথ: ${srtFile.absolutePath}" else "সাবটাইটেল ফাইল সংরক্ষিত",
+                                text = if (srtExists) "সাইজ: ${(srtFile.length() / 1024)} KB\nপাথ: ${srtFile.name}" else "সাবটাইটেল ফাইল সংরক্ষিত",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -1117,38 +536,6 @@ fun HomeScreen(
                     Text("ঠিক আছে")
                 }
             }
-        )
-    }
-
-    // Direct SRT Translation Progress Dialog
-    if (isTranslatingSrt) {
-        AlertDialog(
-            onDismissRequest = { /* Modal while translation is executing */ },
-            icon = {
-                CircularProgressIndicator(modifier = Modifier.size(36.dp))
-            },
-            title = {
-                Text("Translating Subtitle to Bangla", fontWeight = FontWeight.Bold)
-            },
-            text = {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text(
-                        text = srtTranslationStatus ?: "বাংলায় অনুবাদ হচ্ছে...",
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Medium
-                    )
-                    Text(
-                        text = "গুগল ট্রান্সলেট ও ফাইল ট্রান্সলেটর ফ্রেমওয়ার্ক অনুযায়ী অতি দ্রুত ব্যাচে অনুবাদ সম্পন্ন হচ্ছে এবং স্বয়ংক্রিয়ভাবে ডাউনলোড ফোল্ডারে সেভ হবে।",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            },
-            confirmButton = {}
         )
     }
 }

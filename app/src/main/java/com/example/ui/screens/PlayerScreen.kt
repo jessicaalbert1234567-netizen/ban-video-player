@@ -71,19 +71,6 @@ fun PlayerScreen(
     val audioExportStatus by viewModel.audioExportStatus.collectAsState()
     val videoPermissionError by viewModel.videoPermissionError.collectAsState()
 
-    val relinkVideoLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument()
-    ) { newUri: Uri? ->
-        if (newUri != null && project != null) {
-            try {
-                context.contentResolver.takePersistableUriPermission(
-                    newUri,
-                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
-                )
-            } catch (_: Exception) {}
-            viewModel.updateProjectVideoUri(project!!, newUri)
-        }
-    }
 
     var showControls by remember { mutableStateOf(true) }
     var showSpeedDialog by remember { mutableStateOf(false) }
@@ -141,8 +128,9 @@ fun PlayerScreen(
 
     // Ensure media and subtitles are always loaded immediately upon entering player
     LaunchedEffect(project?.id, project?.updatedAt) {
-        project?.let { p ->
-            viewModel.selectProjectForPlayback(p)
+        val currentProj = project ?: viewModel.allProjects.value.firstOrNull()
+        if (currentProj != null) {
+            viewModel.selectProjectForPlayback(currentProj)
         }
     }
 

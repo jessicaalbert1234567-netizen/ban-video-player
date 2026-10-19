@@ -247,12 +247,159 @@ class DubbingViewModel(application: Application) : AndroidViewModel(application)
     private val _extractedSrtExportMessage = MutableStateFlow<String?>(null)
     val extractedSrtExportMessage: StateFlow<String?> = _extractedSrtExportMessage.asStateFlow()
 
+    // Direct Automated MKV Dubbing & Error States
+    private val _noSubtitleError = MutableStateFlow<String?>(null)
+    val noSubtitleError: StateFlow<String?> = _noSubtitleError.asStateFlow()
+
+    private val _isAnalyzingMkv = MutableStateFlow(false)
+    val isAnalyzingMkv: StateFlow<Boolean> = _isAnalyzingMkv.asStateFlow()
+
+    fun clearNoSubtitleError() {
+        _noSubtitleError.value = null
+    }
+
     fun dismissSubtitleInspection() {
         _subtitleInspectionState.value = null
     }
 
     fun clearExportMessage() {
         _extractedSrtExportMessage.value = null
+    }
+
+    /**
+     * One-click automated MKV Dubbing:
+     * 1. Inspects video for embedded subtitle tracks automatically.
+     * 2. If found, extracts the best track (English or default) and immediately starts dubbing!
+     * 3. If NOT found, alerts the user clearly: "এই MKV ভিডিওটিতে কোনো সাবটাইটেল (SRT) ফাইল পাওয়া যায়নি।"
+     */
+    fun startAutomaticMkvDubbing(
+        videoUri: Uri,
+        onNavigateToProgress: (String) -> Unit
+    ) {
+        viewModelScope.launch {
+            try {
+                app.contentResolver.takePersistableUriPermission(
+                    videoUri,
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            } catch (e: Exception) {
+                Log.w("DubbingViewModel", "Could not take persistable permission: ${e.message}")
+            }
+
+            _isAnalyzingMkv.value = true
+            val fileName = queryFileName(videoUri) ?: "video_${System.currentTimeMillis()}.mkv"
+
+            val tracks = withContext(Dispatchers.IO) {
+                com.example.subtitle.SubtitleExtractor.inspectSubtitleTracks(app, videoUri)
+            }
+
+            if (tracks.isEmpty()) {
+                _isAnalyzingMkv.value = false
+                _noSubtitleError.value = "এই MKV ভিডিওটিতে কোনো সাবটাইটেল (SRT) ফাইল পাওয়া যায়নি।\n\nঅনুগ্রহ করে সাবটাইটেলযুক্ত MKV ফাইল সিলেক্ট করুন অথবা নিচে থাকা 'বাংলা অনুবাদকৃত SRT দিয়ে সরাসরি ডাবিং' অপশন ব্যবহার করে নিজস্ব বাংলা SRT ফাইল যোগ করুন।"
+                return@launch
+            }
+
+            // Automatically pick the best subtitle track: prefer English or default track
+            val bestTrack = tracks.firstOrNull {
+                it.language.contains("en", ignoreCase = true) ||
+                it.displayLanguage.contains("English", ignoreCase = true) ||
+                it.isDefault
+            } ?: tracks.first()
+
+            val cues = withContext(Dispatchers.IO) {
+                com.example.subtitle.SubtitleExtractor.extractCues(app, videoUri, bestTrack.trackIndex)
+            }
+
+            _isAnalyzingMkv.value = false
+
+            if (cues.isEmpty()) {
+                _noSubtitleError.value = "ভিডিওটির সাবটাইটেল ট্র্যাক (${bestTrack.title}) থেকে সংলাপ পড়া যায়নি। অনুগ্রহ করে আলাদা SRT ফাইল দিয়ে চেষ্টা করুন।"
+                return@launch
+            }
+
+            // Start dubbing pipeline immediately!
+            val projectId = UUID.randomUUID().toString()
+            val projectDir = storageManager.getProjectDir(projectId)
+            val project = DubbingProject(
+                id = projectId,
+                title = fileName,
+                videoUriString = videoUri.toString(),
+                projectDirPath = projectDir.absolutePath,
+                currentStage = ProcessingStage.EXTRACT_AUDIO,
+                statusMessage = "Starting automated MKV dubbing..."
+            )
+            repository.saveProject(project)
+            _selectedProject.value = project
+
+            DubbingForegroundService.start(app)
+            withContext(Dispatchers.Main) {
+                onNavigateToProgress(projectId)
+            }
+
+            pipeline.executePipeline(
+                projectId = projectId,
+                videoUri = videoUri,
+                videoTitle = fileName,
+                providedSubtitleCues = cues
+            )
+        }
+    }
+
+    /**
+     * Direct Dubbing with External Subtitle (Video + SRT):
+     * Parses the external subtitle (English or pre-translated Bangla) and starts dubbing immediately.
+     */
+    fun startDubbingWithExternalSubtitle(
+        videoUri: Uri,
+        subtitleUri: Uri,
+        onNavigateToProgress: (String) -> Unit
+    ) {
+        viewModelScope.launch {
+            try {
+                app.contentResolver.takePersistableUriPermission(
+                    videoUri,
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            } catch (e: Exception) {
+                Log.w("DubbingViewModel", "Could not take persistable permission: ${e.message}")
+            }
+
+            val fileName = queryFileName(videoUri) ?: "video_${System.currentTimeMillis()}.mp4"
+
+            val cues = withContext(Dispatchers.IO) {
+                com.example.subtitle.SubtitleExtractor.parseSubtitleUri(app, subtitleUri)
+            }
+
+            if (cues.isEmpty()) {
+                _noSubtitleError.value = "সিলেক্ট করা সাবটাইটেল ফাইলে কোনো টেক্সট বা টাইমকোড পাওয়া যায়নি।"
+                return@launch
+            }
+
+            val projectId = UUID.randomUUID().toString()
+            val projectDir = storageManager.getProjectDir(projectId)
+            val project = DubbingProject(
+                id = projectId,
+                title = fileName,
+                videoUriString = videoUri.toString(),
+                projectDirPath = projectDir.absolutePath,
+                currentStage = ProcessingStage.EXTRACT_AUDIO,
+                statusMessage = "Starting dubbing from external subtitle..."
+            )
+            repository.saveProject(project)
+            _selectedProject.value = project
+
+            DubbingForegroundService.start(app)
+            withContext(Dispatchers.Main) {
+                onNavigateToProgress(projectId)
+            }
+
+            pipeline.executePipeline(
+                projectId = projectId,
+                videoUri = videoUri,
+                videoTitle = fileName,
+                providedSubtitleCues = cues
+            )
+        }
     }
 
     fun inspectVideoForSubtitles(uri: Uri) {
@@ -285,6 +432,15 @@ class DubbingViewModel(application: Application) : AndroidViewModel(application)
         onNavigateToProgress: (String) -> Unit
     ) {
         viewModelScope.launch {
+            try {
+                app.contentResolver.takePersistableUriPermission(
+                    videoUri,
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            } catch (e: Exception) {
+                Log.w("DubbingViewModel", "Could not take persistable permission: ${e.message}")
+            }
+
             val fileName = queryFileName(videoUri) ?: "video_${System.currentTimeMillis()}.mkv"
             _subtitleInspectionState.value = null
 
@@ -293,7 +449,6 @@ class DubbingViewModel(application: Application) : AndroidViewModel(application)
             }
 
             if (cues.isEmpty()) {
-                // If extraction returned 0 cues, fallback to standard dubbing
                 selectVideoForDubbing(videoUri, onNavigateToProgress)
                 return@launch
             }
@@ -328,42 +483,7 @@ class DubbingViewModel(application: Application) : AndroidViewModel(application)
         subtitleUri: Uri,
         onNavigateToProgress: (String) -> Unit
     ) {
-        viewModelScope.launch {
-            val fileName = queryFileName(videoUri) ?: "video_${System.currentTimeMillis()}.mp4"
-            _subtitleInspectionState.value = null
-
-            val cues = withContext(Dispatchers.IO) {
-                com.example.subtitle.SubtitleExtractor.parseSubtitleUri(app, subtitleUri)
-            }
-
-            if (cues.isEmpty()) {
-                selectVideoForDubbing(videoUri, onNavigateToProgress)
-                return@launch
-            }
-
-            val projectId = UUID.randomUUID().toString()
-            val projectDir = storageManager.getProjectDir(projectId)
-            val project = DubbingProject(
-                id = projectId,
-                title = fileName,
-                videoUriString = videoUri.toString(),
-                projectDirPath = projectDir.absolutePath,
-                currentStage = ProcessingStage.EXTRACT_AUDIO,
-                statusMessage = "Starting fast subtitle dubbing from external SRT..."
-            )
-            repository.saveProject(project)
-            _selectedProject.value = project
-
-            DubbingForegroundService.start(app)
-            onNavigateToProgress(projectId)
-
-            pipeline.executePipeline(
-                projectId = projectId,
-                videoUri = videoUri,
-                videoTitle = fileName,
-                providedSubtitleCues = cues
-            )
-        }
+        startDubbingWithExternalSubtitle(videoUri, subtitleUri, onNavigateToProgress)
     }
 
     fun extractAndExportSrt(
@@ -703,6 +823,24 @@ class DubbingViewModel(application: Application) : AndroidViewModel(application)
 
     private var playbackSetupJob: kotlinx.coroutines.Job? = null
 
+    fun loadProject(projectId: String) {
+        viewModelScope.launch {
+            val proj = repository.findProject(projectId)
+            if (proj != null) {
+                _selectedProject.value = proj
+            }
+        }
+    }
+
+    fun selectProjectForPlaybackById(projectId: String) {
+        viewModelScope.launch {
+            val proj = repository.findProject(projectId) ?: _selectedProject.value
+            if (proj != null) {
+                selectProjectForPlayback(proj)
+            }
+        }
+    }
+
     fun selectProjectForPlayback(project: DubbingProject) {
         playbackSetupJob?.cancel()
         playbackSetupJob = viewModelScope.launch {
@@ -710,167 +848,91 @@ class DubbingViewModel(application: Application) : AndroidViewModel(application)
             _selectedProject.value = latest
             _videoPermissionError.value = null
 
-            val projectDir = File(latest.projectDirPath)
+            val projectDirCandidates = listOfNotNull(
+                File(latest.projectDirPath),
+                storageManager.getProjectDir(latest.id),
+                File(storageManager.internalProjectsDir, latest.id),
+                File(storageManager.rootProjectsDir, latest.id)
+            ).distinct()
 
-            // 1. Check if permanent local video file exists in projectDir
-            val localVideoFile = projectDir.listFiles()?.firstOrNull { file ->
-                file.isFile && file.length() > 1024 && (
-                    file.name.startsWith("source_video") ||
-                    file.name.startsWith("video") ||
-                    file.extension.lowercase() in listOf("mp4", "mkv", "webm", "avi", "mov", "3gp", "ts")
-                ) && !file.name.contains("dubbed") && !file.name.contains("audio") && !file.name.endsWith(".wav") && !file.name.endsWith(".m4a") && !file.name.endsWith(".tmp")
-            }
+            val videoUri: Uri? = com.example.storage.VideoUriResolver.resolvePlayableVideoUri(
+                context = app,
+                projectId = latest.id,
+                videoTitle = latest.title,
+                savedUriString = latest.videoUriString,
+                projectDirPath = latest.projectDirPath
+            )
 
-            var videoUri: Uri? = null
-
-            if (localVideoFile != null) {
-                videoUri = Uri.fromFile(localVideoFile)
-            } else {
-                val candidateUri = Uri.parse(latest.videoUriString)
-                var canAccessUri = false
-                try {
-                    if (candidateUri.scheme == "file") {
-                        val f = File(candidateUri.path ?: "")
-                        if (f.exists() && f.length() > 1024) {
-                            canAccessUri = true
-                            videoUri = candidateUri
-                        }
-                    } else if (candidateUri.scheme == "content") {
-                        app.contentResolver.openFileDescriptor(candidateUri, "r")?.use {
-                            canAccessUri = true
-                            videoUri = candidateUri
-                        }
-                    }
-                } catch (_: Exception) {
-                    canAccessUri = false
-                }
-
-                // If content URI is accessible, cache in background asynchronously without blocking playback
-                if (canAccessUri && candidateUri.scheme == "content") {
-                    launch(Dispatchers.IO) {
-                        try {
-                            val rawExt = latest.title.substringAfterLast('.', "mp4").lowercase()
-                            val videoExt = if (rawExt.isEmpty() || rawExt.length > 5 || rawExt.contains("/")) "mp4" else rawExt
-                            val targetFile = File(projectDir, "source_video.$videoExt")
-                            val tempFile = File(projectDir, "source_video.tmp")
-                            app.contentResolver.openInputStream(candidateUri)?.use { input ->
-                                tempFile.outputStream().use { output ->
-                                    val buffer = ByteArray(128 * 1024)
-                                    var bytesRead: Int
-                                    while (input.read(buffer).also { bytesRead = it } != -1) {
-                                        output.write(buffer, 0, bytesRead)
-                                    }
-                                    output.flush()
-                                }
-                            }
-                            if (tempFile.exists() && tempFile.length() > 1024) {
-                                if (targetFile.exists()) targetFile.delete()
-                                val renamed = tempFile.renameTo(targetFile)
-                                if (!renamed) {
-                                    tempFile.copyTo(targetFile, overwrite = true)
-                                    tempFile.delete()
-                                }
-                                val updated = latest.copy(videoUriString = Uri.fromFile(targetFile).toString())
-                                repository.saveProject(updated)
-                                _selectedProject.value = updated
-                                Log.i("DubbingViewModel", "Cached video locally during background task: ${targetFile.absolutePath}")
-                            }
-                        } catch (e: Exception) {
-                            Log.w("DubbingViewModel", "Background video caching failed: ${e.message}")
-                        }
-                    }
-                }
-
-                // If content URI lost permission across app restart, attempt auto-recovery via MediaStore
-                if (videoUri == null && latest.title.isNotEmpty()) {
-                    try {
-                        val projection = arrayOf(
-                            android.provider.MediaStore.Video.Media._ID,
-                            android.provider.MediaStore.Video.Media.DISPLAY_NAME
-                        )
-                        val selection = "${android.provider.MediaStore.Video.Media.DISPLAY_NAME} = ?"
-                        val selectionArgs = arrayOf(latest.title)
-                        app.contentResolver.query(
-                            android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
-                            projection,
-                            selection,
-                            selectionArgs,
-                            null
-                        )?.use { cursor ->
-                            if (cursor.moveToFirst()) {
-                                val idIdx = cursor.getColumnIndexOrThrow(android.provider.MediaStore.Video.Media._ID)
-                                val id = cursor.getLong(idIdx)
-                                val mediaUri = android.content.ContentUris.withAppendedId(
-                                    android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
-                                    id
-                                )
-                                videoUri = mediaUri
-                                Log.i("DubbingViewModel", "Auto-recovered video from MediaStore: $mediaUri")
-                            }
-                        }
-                    } catch (e: Exception) {
-                        Log.w("DubbingViewModel", "MediaStore query failed: ${e.message}")
-                    }
-                }
-
-                // If content URI lost permission across app restart, attempt auto-recovery from public folders
-                if (videoUri == null && latest.title.isNotEmpty()) {
-                    val publicDirs = listOf(
-                        android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS),
-                        android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_MOVIES),
-                        android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DCIM)
-                    )
-                    for (dir in publicDirs) {
-                        val candidateFile = File(dir, latest.title)
-                        if (candidateFile.exists() && candidateFile.length() > 1024) {
-                            videoUri = Uri.fromFile(candidateFile)
-                            Log.i("DubbingViewModel", "Auto-recovered video from public storage: ${candidateFile.absolutePath}")
-                            break
-                        }
-                    }
-                }
+            if (videoUri != null && videoUri.toString() != latest.videoUriString) {
+                val updatedWithValidUri = latest.copy(videoUriString = videoUri.toString())
+                repository.saveProject(updatedWithValidUri)
+                _selectedProject.value = updatedWithValidUri
             }
 
             // Subtitle files
+            var srtFile: File? = null
             val candidateSrt = latest.subtitleSrtPath?.let { File(it) }
-            val bnSrt = File(projectDir, "subtitle_bn.srt")
-            val srtFile: File? = when {
-                candidateSrt != null && candidateSrt.exists() && candidateSrt.length() > 0 -> candidateSrt
-                bnSrt.exists() && bnSrt.length() > 0 -> bnSrt
-                else -> null
+            if (candidateSrt != null && candidateSrt.exists() && candidateSrt.length() > 0) {
+                srtFile = candidateSrt
+            } else {
+                for (dir in projectDirCandidates) {
+                    val bnSrt = File(dir, "subtitle_bn.srt")
+                    if (bnSrt.exists() && bnSrt.length() > 0) {
+                        srtFile = bnSrt
+                        break
+                    }
+                }
             }
 
-            val sourceCandidate1 = File(projectDir, "subtitle_en_source.srt")
-            val sourceCandidate2 = File(projectDir, "transcript_en.srt")
-            val sourceSrt: File? = when {
-                sourceCandidate1.exists() -> sourceCandidate1
-                sourceCandidate2.exists() -> sourceCandidate2
-                else -> null
+            var sourceSrt: File? = null
+            for (dir in projectDirCandidates) {
+                val sourceCandidate1 = File(dir, "subtitle_en_source.srt")
+                val sourceCandidate2 = File(dir, "transcript_en.srt")
+                if (sourceCandidate1.exists()) {
+                    sourceSrt = sourceCandidate1
+                    break
+                } else if (sourceCandidate2.exists()) {
+                    sourceSrt = sourceCandidate2
+                    break
+                }
             }
 
             // Audio files: dubbed audio & original source audio
+            var dubbedFile: File? = null
             val candidateDubbed = latest.dubbedAudioPath?.let { File(it) }
-            val m4aFile = File(projectDir, "dubbed_bn.m4a")
-            val wavFile = File(projectDir, "dubbed_bn.wav")
-            val dubbedFile: File? = when {
-                candidateDubbed != null && candidateDubbed.exists() && candidateDubbed.length() > 44 -> candidateDubbed
-                m4aFile.exists() && m4aFile.length() > 44 -> m4aFile
-                wavFile.exists() && wavFile.length() > 44 -> wavFile
-                else -> null
+            if (candidateDubbed != null && candidateDubbed.exists() && candidateDubbed.length() > 44) {
+                dubbedFile = candidateDubbed
+            } else {
+                for (dir in projectDirCandidates) {
+                    val wavFile = File(dir, "dubbed_bn.wav")
+                    val m4aFile = File(dir, "dubbed_bn.m4a")
+                    val mp3File = File(dir, "dubbed_bn.mp3")
+                    if (wavFile.exists() && wavFile.length() > 44) {
+                        dubbedFile = wavFile
+                        break
+                    } else if (m4aFile.exists() && m4aFile.length() > 44) {
+                        dubbedFile = m4aFile
+                        break
+                    } else if (mp3File.exists() && mp3File.length() > 44) {
+                        dubbedFile = mp3File
+                        break
+                    }
+                }
             }
 
-            val rawAudioFile = File(projectDir, "source_audio.wav")
-            val effectiveSourceAudio = if (rawAudioFile.exists() && rawAudioFile.length() > 44) rawAudioFile else null
+            var effectiveSourceAudio: File? = null
+            for (dir in projectDirCandidates) {
+                val rawAudioFile = File(dir, "source_audio.wav")
+                if (rawAudioFile.exists() && rawAudioFile.length() > 44) {
+                    effectiveSourceAudio = rawAudioFile
+                    break
+                }
+            }
 
-            // Determine effective media URI to play:
-            // 1. Cached/accessible source video file
-            // 2. Extracted original video soundtrack (source_audio.wav)
-            // 3. Dubbed speech audio (dubbed_bn.wav)
-            // This guarantees the user can ALWAYS play and hear their dubbed video even if the original video URI was revoked!
             val effectiveMediaUri: Uri? = when {
                 videoUri != null -> videoUri
-                effectiveSourceAudio != null -> Uri.fromFile(effectiveSourceAudio)
                 dubbedFile != null -> Uri.fromFile(dubbedFile)
+                effectiveSourceAudio != null -> Uri.fromFile(effectiveSourceAudio)
                 else -> null
             }
 

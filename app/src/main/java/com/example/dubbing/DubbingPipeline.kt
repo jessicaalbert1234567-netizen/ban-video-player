@@ -14,9 +14,13 @@ import com.example.database.TranscriptSegmentEntity
 import com.example.settings.ProcessingMode
 import com.example.settings.SettingsManager
 import com.example.storage.StorageManager
+import com.example.storage.VideoUriResolver
 import com.example.subtitle.SubtitleExtractor
 import com.example.subtitle.SubtitleGenerator
+import com.example.translation.BanglaNaturalizer
 import com.example.translation.EnglishToBanglaTranslator
+import com.example.translation.OfflineDialogueTranslator
+import com.example.translation.SubtitleBatchTranslator
 import com.example.tts.BanglaTtsEngine
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -73,6 +77,8 @@ class DubbingPipeline(
         val srtFile = File(projectDir, "subtitle_bn.srt")
         val finalDubbedAudioFile = File(projectDir, "dubbed_bn.wav")
 
+        VideoUriResolver.takePersistablePermission(context, videoUri)
+
         val rawExt = videoTitle.substringAfterLast('.', "mp4").lowercase()
         val videoExt = if (rawExt.isEmpty() || rawExt.length > 5 || rawExt.contains("/")) "mp4" else rawExt
         val localVideoFile = File(projectDir, "source_video.$videoExt")
@@ -119,6 +125,17 @@ class DubbingPipeline(
             } catch (e: Exception) {
                 Log.w(TAG, "Could not cache source video locally: ${e.message}, falling back to original URI", e)
             }
+        }
+
+        val resolvedInitial = VideoUriResolver.resolvePlayableVideoUri(
+            context = context,
+            projectId = projectId,
+            videoTitle = videoTitle,
+            savedUriString = workingVideoUri.toString(),
+            projectDirPath = projectDir.absolutePath
+        )
+        if (resolvedInitial != null) {
+            workingVideoUri = resolvedInitial
         }
 
         var project = repository.findProject(projectId) ?: DubbingProject(
@@ -275,58 +292,152 @@ class DubbingPipeline(
                 throw IllegalStateException("Transcription failed: No English speech detected in the audio track.")
             }
 
-            // STAGE 3: Translate to Bangla (40% - 55%) via Google Translate GTX API
+            // STAGE 3: Translate to Bangla (40% - 55%) via GTX API with Offline ML Kit Fallback & Normalization
             if (startingStage.ordinal <= ProcessingStage.TRANSLATE.ordinal) {
                 checkCancelled()
-                reportStage(projectId, ProcessingStage.TRANSLATE, 0, 40, "Google Translate GTX API দিয়ে দ্রুত বাংলায় অনুবাদ শুরু হচ্ছে...", onProgressUpdate)
 
-                val translationStartTime = System.currentTimeMillis()
-                val gtxItems = segments.map { seg ->
-                    val sTime = SubtitleExtractor.formatSrtTimestamp(seg.startMs)
-                    val eTime = SubtitleExtractor.formatSrtTimestamp(seg.endMs)
-                    com.example.translation.SubtitleItem(
-                        index = seg.index + 1,
-                        startTimeStr = sTime,
-                        endTimeStr = eTime,
-                        startTimeMs = seg.startMs,
-                        endTimeMs = seg.endMs,
-                        originalText = seg.sourceText
-                    )
+                val isAlreadyBangla = segments.any { seg -> seg.sourceText.any { ch -> ch in '\u0980'..'\u09FF' } }
+                if (isAlreadyBangla) {
+                    reportStage(projectId, ProcessingStage.TRANSLATE, 100, 55, "✓ সাবটাইটেল ইতোমধ্যে বাংলায় রয়েছে, নর্মালাইজেশন সম্পন্ন...", onProgressUpdate)
+                    segments = segments.map { seg -> seg.copy(translatedText = BanglaNaturalizer.naturalize(seg.sourceText)) }
+                    repository.saveSegments(segments)
+                } else {
+                    var gtxSuccess = false
+
+                    // Tier 1: Try Fast Online Google GTX API
+                    try {
+                        reportStage(projectId, ProcessingStage.TRANSLATE, 0, 40, "অনলাইন Google Translate API দিয়ে বাংলায় অনুবাদ শুরু হচ্ছে...", onProgressUpdate)
+
+                        val translationStartTime = System.currentTimeMillis()
+                        val gtxItems = segments.map { seg ->
+                            val sTime = SubtitleExtractor.formatSrtTimestamp(seg.startMs)
+                            val eTime = SubtitleExtractor.formatSrtTimestamp(seg.endMs)
+                            com.example.translation.SubtitleItem(
+                                index = seg.index + 1,
+                                startTimeStr = sTime,
+                                endTimeStr = eTime,
+                                startTimeMs = seg.startMs,
+                                endTimeMs = seg.endMs,
+                                originalText = seg.sourceText
+                            )
+                        }
+
+                        var lastReportedOverall = 40
+                        com.example.translation.GtxSubtitleTranslator.translateSubtitlesToBangla(gtxItems) { current, total ->
+                            checkCancelled()
+                            val stageProg = (current.toFloat() / total.toFloat())
+                            val overall = maxOf(lastReportedOverall, 40 + (stageProg * 15).toInt())
+                            lastReportedOverall = overall
+                            val sample = gtxItems.getOrNull(current - 1)?.translatedText?.take(22) ?: ""
+                            reportStage(
+                                projectId,
+                                ProcessingStage.TRANSLATE,
+                                (stageProg * 100).toInt(),
+                                overall,
+                                "অনলাইন অনুবাদ (GTX): $current/$total (\"$sample...\")",
+                                onProgressUpdate
+                            )
+                        }
+
+                        // Verify that GTX actually produced authentic Bengali text
+                        val banglaCount = gtxItems.count { it.translatedText.any { ch -> ch in '\u0980'..'\u09FF' } }
+                        if (banglaCount > 0) {
+                            gtxSuccess = true
+                            // Apply rule-based BanglaNaturalizer normalization to all lines!
+                            segments = segments.mapIndexed { idx, seg ->
+                                val rawTrans = gtxItems.getOrNull(idx)?.translatedText?.trim()?.takeIf { it.isNotEmpty() } ?: seg.sourceText
+                                val natural = BanglaNaturalizer.naturalize(rawTrans)
+                                seg.copy(translatedText = natural)
+                            }
+                            repository.saveSegments(segments)
+
+                            val transElapsed = System.currentTimeMillis() - translationStartTime
+                            Log.i(TAG, "GTX Translation & Normalization Complete in ${transElapsed}ms for ${segments.size} cues")
+                            reportStage(
+                                projectId,
+                                ProcessingStage.TRANSLATE,
+                                100,
+                                55,
+                                "✓ অনলাইন অনুবাদ ও নর্মালাইজেশন সম্পন্ন (${segments.size} সংলাপ - GTX API)",
+                                onProgressUpdate
+                            )
+                        } else {
+                            Log.w(TAG, "GTX API did not return Bengali text, falling back to offline ML Kit")
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "GTX online translation failed: ${e.message}, switching to offline translation")
+                    }
+
+                    // Tier 2: Offline ML Kit Fallback with Rule-Based Normalization!
+                    if (!gtxSuccess) {
+                        checkCancelled()
+                        reportStage(projectId, ProcessingStage.TRANSLATE, 0, 40, "অনলাইন API কাজ করেনি, অফলাইন ML Kit মডেলে অনুবাদ ও নর্মালাইজেশন শুরু হচ্ছে...", onProgressUpdate)
+
+                        val offlineTranslator = SubtitleBatchTranslator(context)
+                        try {
+                            val prepared = offlineTranslator.prepareModel()
+                            if (prepared || offlineTranslator.isModelDownloaded()) {
+                                var lastReportedOverall = 40
+                                segments = offlineTranslator.translateSegments(segments) { current, total, sample ->
+                                    checkCancelled()
+                                    val stageProg = (current.toFloat() / total.toFloat())
+                                    val overall = maxOf(lastReportedOverall, 40 + (stageProg * 12).toInt())
+                                    lastReportedOverall = overall
+                                    reportStage(
+                                        projectId,
+                                        ProcessingStage.TRANSLATE,
+                                        (stageProg * 100).toInt(),
+                                        overall,
+                                        "অফলাইন অনুবাদ (ML Kit + নর্মালাইজেশন): $current/$total (\"${sample.take(20)}...\")",
+                                        onProgressUpdate
+                                    )
+                                }
+                                repository.saveSegments(segments)
+                                Log.i(TAG, "Offline ML Kit translation pass complete")
+                            }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Offline ML Kit translation note: ${e.message}")
+                        } finally {
+                            offlineTranslator.close()
+                        }
+                    }
+
+                    // Tier 3: Guaranteed Offline Dialogue Engine + BanglaNaturalizer
+                    val unTranslatedCount = segments.count { it.translatedText.isNullOrBlank() }
+                    if (unTranslatedCount > 0) {
+                        checkCancelled()
+                        reportStage(projectId, ProcessingStage.TRANSLATE, 0, 48, "অফলাইন ডায়ালগ ইঞ্জিন ও নর্মালাইজেশন বিকল্প কার্যকর করা হচ্ছে...", onProgressUpdate)
+                        segments = segments.mapIndexed { idx, seg ->
+                            checkCancelled()
+                            val text = if (!seg.translatedText.isNullOrBlank()) {
+                                seg.translatedText!!
+                            } else {
+                                OfflineDialogueTranslator.translate(seg.sourceText)
+                            }
+                            val natural = BanglaNaturalizer.naturalize(text)
+                            seg.copy(translatedText = natural)
+                        }
+                        repository.saveSegments(segments)
+                        reportStage(
+                            projectId,
+                            ProcessingStage.TRANSLATE,
+                            100,
+                            55,
+                            "✓ অফলাইন ডায়ালগ ইঞ্জিন ও নর্মালাইজেশন সম্পন্ন (${segments.size} সংলাপ)",
+                            onProgressUpdate
+                        )
+                        Log.i(TAG, "OfflineDialogueTranslator finished for $unTranslatedCount segments")
+                    } else {
+                        reportStage(
+                            projectId,
+                            ProcessingStage.TRANSLATE,
+                            100,
+                            55,
+                            "✓ অনুবাদ ও নর্মালাইজেশন সম্পন্ন (${segments.size} সংলাপ)",
+                            onProgressUpdate
+                        )
+                    }
                 }
-
-                var lastReportedOverall = 40
-                com.example.translation.GtxSubtitleTranslator.translateSubtitlesToBangla(gtxItems) { current, total ->
-                    checkCancelled()
-                    val stageProg = (current.toFloat() / total.toFloat())
-                    val overall = maxOf(lastReportedOverall, 40 + (stageProg * 15).toInt())
-                    lastReportedOverall = overall
-                    val sample = gtxItems.getOrNull(current - 1)?.translatedText?.take(22) ?: ""
-                    reportStage(
-                        projectId,
-                        ProcessingStage.TRANSLATE,
-                        (stageProg * 100).toInt(),
-                        overall,
-                        "বাংলায় অনুবাদ: $current/$total (\"$sample...\")",
-                        onProgressUpdate
-                    )
-                }
-
-                segments = segments.mapIndexed { idx, seg ->
-                    val trans = gtxItems.getOrNull(idx)?.translatedText?.trim()?.takeIf { it.isNotEmpty() } ?: seg.sourceText
-                    seg.copy(translatedText = trans)
-                }
-                repository.saveSegments(segments)
-
-                val transElapsed = System.currentTimeMillis() - translationStartTime
-                Log.i(TAG, "GTX Translation Complete in ${transElapsed}ms for ${segments.size} cues")
-                reportStage(
-                    projectId,
-                    ProcessingStage.TRANSLATE,
-                    100,
-                    55,
-                    "✓ Translation Complete: ${segments.size} dialogue cues in authentic Bangla (GTX API)",
-                    onProgressUpdate
-                )
             }
 
             // STAGE 4: Generate Bangla Subtitles & JSON transcript (55% - 65%)
@@ -515,8 +626,16 @@ class DubbingPipeline(
                 }
             }
 
+            val resolvedFinalVideoUri = VideoUriResolver.resolvePlayableVideoUri(
+                context = context,
+                projectId = projectId,
+                videoTitle = videoTitle,
+                savedUriString = workingVideoUri.toString(),
+                projectDirPath = projectDir.absolutePath
+            ) ?: workingVideoUri
+
             project = project.copy(
-                videoUriString = workingVideoUri.toString(),
+                videoUriString = resolvedFinalVideoUri.toString(),
                 currentStage = ProcessingStage.COMPLETE,
                 progressPercent = 100,
                 statusMessage = "Offline AI Dubbing Complete",

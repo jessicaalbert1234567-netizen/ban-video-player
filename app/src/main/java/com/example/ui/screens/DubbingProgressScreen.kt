@@ -40,6 +40,10 @@ fun DubbingProgressScreen(
     val isFailed = currentStage == ProcessingStage.FAILED
     val isCancelled = currentStage == ProcessingStage.CANCELLED
 
+    LaunchedEffect(projectId) {
+        viewModel.loadProject(projectId)
+    }
+
     var maxObservedPercent by remember { mutableIntStateOf(0) }
     val overallPercent = maxOf(
         maxObservedPercent,
@@ -332,7 +336,7 @@ fun DubbingProgressScreen(
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(
                             onClick = {
-                                project?.let { viewModel.selectProjectForPlayback(it) }
+                                viewModel.selectProjectForPlaybackById(projectId)
                                 onNavigateToPlayer()
                             },
                             shape = RoundedCornerShape(12.dp),

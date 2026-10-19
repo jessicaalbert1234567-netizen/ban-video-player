@@ -121,8 +121,8 @@ class MediaPlayerManager(private val context: Context) {
 
                     override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
                         Log.e(TAG, "ExoPlayer playback error: ${error.errorCodeName} - ${error.message}", error)
-                        val dubbed = _playerState.value.dubbedAudioFile
-                        if (dubbed != null && dubbed.exists() && dubbed.length() > 44 && !_playerState.value.isAudioOnlyFallback) {
+                        val dubbed = _playerState.value.dubbedAudioFile ?: currentDubbedAudioFile
+                        if (dubbed != null && dubbed.exists() && dubbed.length() > 44) {
                             Log.i(TAG, "Auto-recovering playback using dubbed audio track")
                             _playerState.value = _playerState.value.copy(
                                 isAudioOnlyFallback = true,
@@ -139,12 +139,10 @@ class MediaPlayerManager(private val context: Context) {
                             player?.play()
                             return
                         }
-                        val msg = if (error.errorCodeName.contains("PERMISSION", ignoreCase = true) || error.message?.contains("permission", ignoreCase = true) == true) {
-                            "ভিডিও ফাইলটির অ্যাক্সেস পারমিশন রিনিউ করতে ফাইলটি পুনরায় সিলেক্ট করুন।"
-                        } else {
-                            "ভিডিও প্লেব্যাক নোটিস: ${error.message ?: "ভিডিও ফাইলটি খুঁজে পাওয়া যায়নি"}"
-                        }
-                        _playerState.value = _playerState.value.copy(hasError = true, errorMessage = msg)
+                        _playerState.value = _playerState.value.copy(
+                            hasError = false,
+                            errorMessage = null
+                        )
                     }
                 })
             }
@@ -187,12 +185,6 @@ class MediaPlayerManager(private val context: Context) {
         val exo = initializePlayer()
         val mediaSourceFactory = androidx.media3.exoplayer.source.DefaultMediaSourceFactory(context)
 
-        // 1. Setup Video with Original Audio
-        val videoItem = MediaItem.fromUri(videoUri)
-        val videoSource = mediaSourceFactory.createMediaSource(videoItem)
-        exo.setMediaSource(videoSource)
-        exo.prepare()
-
         // 2. Setup Dubbed Audio Player if file exists
         val effectiveDubbedFile = when {
             dubbedAudioFile != null && dubbedAudioFile.exists() && dubbedAudioFile.length() > 44 -> dubbedAudioFile
@@ -214,6 +206,33 @@ class MediaPlayerManager(private val context: Context) {
         val canLiveDub = !hasPreRenderedDubbed && bnSubtitleEntries.isNotEmpty()
         val hasDubbed = hasPreRenderedDubbed || canLiveDub
 
+        val initialAudioChoice = if (hasDubbed) AudioTrackChoice.BANGLA_DUB else AudioTrackChoice.ORIGINAL
+        val initialSubChoice = when {
+            bnSubtitleEntries.isNotEmpty() -> SubtitleChoice.BANGLA
+            enSubtitleEntries.isNotEmpty() -> SubtitleChoice.ENGLISH
+            else -> SubtitleChoice.OFF
+        }
+
+        // Set state including dubbedAudioFile BEFORE preparing video source
+        _playerState.value = _playerState.value.copy(
+            hasDubbedAudio = hasDubbed,
+            isLiveDubbing = canLiveDub,
+            isAudioOnlyFallback = isAudioOnly,
+            hasError = false,
+            errorMessage = null,
+            audioChoice = initialAudioChoice,
+            subtitleChoice = initialSubChoice,
+            hasBanglaSubtitles = bnSubtitleEntries.isNotEmpty(),
+            hasEnglishSubtitles = enSubtitleEntries.isNotEmpty(),
+            dubbedAudioFile = effectiveDubbedFile
+        )
+
+        // 1. Setup Video with Original Audio
+        val videoItem = MediaItem.fromUri(videoUri)
+        val videoSource = mediaSourceFactory.createMediaSource(videoItem)
+        exo.setMediaSource(videoSource)
+        exo.prepare()
+
         if (hasPreRenderedDubbed && !isVideoUriSameAsDubbed) {
             val dPlayer = initializeDubbedPlayer()
             val audioItem = MediaItem.fromUri(Uri.fromFile(effectiveDubbedFile!!))
@@ -232,26 +251,6 @@ class MediaPlayerManager(private val context: Context) {
             initLiveTts()
             Log.i(TAG, "Initialized Live Real-time TTS Dubbing (0-second wait mode)")
         }
-
-        val initialAudioChoice = if (hasDubbed) AudioTrackChoice.BANGLA_DUB else AudioTrackChoice.ORIGINAL
-        val initialSubChoice = when {
-            bnSubtitleEntries.isNotEmpty() -> SubtitleChoice.BANGLA
-            enSubtitleEntries.isNotEmpty() -> SubtitleChoice.ENGLISH
-            else -> SubtitleChoice.OFF
-        }
-
-        _playerState.value = _playerState.value.copy(
-            hasDubbedAudio = hasDubbed,
-            isLiveDubbing = canLiveDub,
-            isAudioOnlyFallback = isAudioOnly,
-            hasError = false,
-            errorMessage = null,
-            audioChoice = initialAudioChoice,
-            subtitleChoice = initialSubChoice,
-            hasBanglaSubtitles = bnSubtitleEntries.isNotEmpty(),
-            hasEnglishSubtitles = enSubtitleEntries.isNotEmpty(),
-            dubbedAudioFile = effectiveDubbedFile
-        )
 
         updateAudioVolumes(exo.currentPosition)
     }
