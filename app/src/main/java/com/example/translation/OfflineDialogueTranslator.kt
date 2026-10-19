@@ -239,17 +239,24 @@ object OfflineDialogueTranslator {
         // 3. Fallback word-level translation for remaining English tokens
         val tokens = working.split(Regex("(?<=\\b|\\s|(?=[.,!?]))|(?<=[.,!?])"))
         val sb = StringBuilder()
+        var translatedBengali = false
         for (token in tokens) {
             val clean = token.lowercase(Locale.ENGLISH).trim()
             val mapped = VOCABULARY[clean]
             if (mapped != null) {
                 sb.append(mapped)
+                translatedBengali = true
             } else {
                 sb.append(token)
             }
         }
 
         val result = sb.toString().trim()
-        return BanglaNaturalizer.naturalize(if (result.isNotBlank()) result else trimmed)
+        val hasBengaliChar = result.any { it in '\u0980'..'\u09FF' }
+        return if (hasBengaliChar) {
+            BanglaNaturalizer.naturalize(result)
+        } else {
+            "" // Strictly do not masquerade untranslated English as Bengali
+        }
     }
 }

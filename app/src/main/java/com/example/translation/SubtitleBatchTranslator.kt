@@ -288,9 +288,18 @@ class SubtitleBatchTranslator(
                             phraseCache[cleanSource.lowercase()] = natural
                             seg.copy(translatedText = natural)
                         } else {
-                            // Failed: do NOT put English into translatedText!
-                            failureCount.incrementAndGet()
-                            seg.copy(translatedText = null)
+                            val offlineCandidate = if (customTranslator == null) {
+                                OfflineDialogueTranslator.translate(cleanSource).takeIf { it.isNotBlank() }
+                            } else null
+
+                            if (offlineCandidate != null) {
+                                val natural = BanglaNaturalizer.naturalize(offlineCandidate)
+                                phraseCache[cleanSource.lowercase()] = natural
+                                seg.copy(translatedText = natural)
+                            } else {
+                                failureCount.incrementAndGet()
+                                seg.copy(translatedText = null)
+                            }
                         }
 
                         results[idx] = finalSeg
@@ -359,7 +368,16 @@ class SubtitleBatchTranslator(
             phraseCache[clean.lowercase()] = natural
             natural
         } else {
-            "" // Do not masquerade English as Bengali
+            val offline = if (customTranslator == null) {
+                OfflineDialogueTranslator.translate(clean).takeIf { it.isNotBlank() }
+            } else null
+            if (offline != null) {
+                val natural = BanglaNaturalizer.naturalize(offline)
+                phraseCache[clean.lowercase()] = natural
+                natural
+            } else {
+                ""
+            }
         }
     }
 

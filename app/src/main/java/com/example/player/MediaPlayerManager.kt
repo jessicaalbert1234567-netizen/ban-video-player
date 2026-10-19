@@ -100,7 +100,14 @@ class MediaPlayerManager(private val context: Context) {
 
     fun initializePlayer(): ExoPlayer {
         if (player == null) {
-            player = ExoPlayer.Builder(context).build().apply {
+            val trackSelector = androidx.media3.exoplayer.trackselection.DefaultTrackSelector(context).apply {
+                parameters = buildUponParameters()
+                    .setExceedRendererCapabilitiesIfNecessary(true)
+                    .build()
+            }
+            player = ExoPlayer.Builder(context)
+                .setTrackSelector(trackSelector)
+                .build().apply {
                 repeatMode = Player.REPEAT_MODE_OFF
                 playWhenReady = true
                 addListener(object : Player.Listener {
@@ -121,6 +128,29 @@ class MediaPlayerManager(private val context: Context) {
 
                     override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
                         Log.e(TAG, "ExoPlayer playback error: ${error.errorCodeName} - ${error.message}", error)
+                        // If error is caused by unsupported audio codec in MKV/MP4 container (e.g. AC3/DTS):
+                        val isAudioDecoderIssue = error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_DECODER_INIT_FAILED ||
+                                error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_DECODER_QUERY_FAILED ||
+                                error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_AUDIO_TRACK_INIT_FAILED ||
+                                error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_AUDIO_TRACK_WRITE_FAILED ||
+                                error.errorCodeName.contains("AUDIO", ignoreCase = true) ||
+                                error.message?.contains("audio", ignoreCase = true) == true
+
+                        if (isAudioDecoderIssue && player != null) {
+                            Log.i(TAG, "Container audio decoder issue detected. Disabling container audio to preserve uninterrupted video playback!")
+                            try {
+                                player?.trackSelectionParameters = player?.trackSelectionParameters
+                                    ?.buildUpon()
+                                    ?.setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_AUDIO, true)
+                                    ?.build() ?: androidx.media3.common.TrackSelectionParameters.DEFAULT_WITHOUT_CONTEXT
+                                player?.prepare()
+                                player?.play()
+                                return
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Could not disable container audio: ${e.message}")
+                            }
+                        }
+
                         val dubbed = _playerState.value.dubbedAudioFile ?: currentDubbedAudioFile
                         if (dubbed != null && dubbed.exists() && dubbed.length() > 44) {
                             Log.i(TAG, "Auto-recovering playback using dubbed audio track")

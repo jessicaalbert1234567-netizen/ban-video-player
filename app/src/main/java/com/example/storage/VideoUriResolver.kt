@@ -67,25 +67,26 @@ object VideoUriResolver {
             }
         }
 
-        // 2. Second priority: If savedUriString is a local file URI
+        // 2. Second priority: If savedUriString is a local file URI or content URI
         if (!savedUriString.isNullOrBlank()) {
             try {
                 val parsedUri = Uri.parse(savedUriString)
                 if (parsedUri.scheme == "file") {
                     val f = File(parsedUri.path ?: "")
-                    if (f.exists() && f.length() > 1024) {
+                    if (f.exists() && f.length() > 0) {
                         Log.i(TAG, "Resolved video from existing file URI: ${f.absolutePath}")
                         return parsedUri
                     }
                 } else if (parsedUri.scheme == "content") {
-                    // Check if content URI permission is still valid
+                    takePersistablePermission(context, parsedUri)
                     var canRead = false
                     try {
-                        context.contentResolver.openFileDescriptor(parsedUri, "r")?.use {
-                            canRead = true
-                        }
-                    } catch (_: Exception) {
-                        canRead = false
+                        context.contentResolver.openInputStream(parsedUri)?.use { canRead = true }
+                    } catch (_: Exception) {}
+                    if (!canRead) {
+                        try {
+                            context.contentResolver.openFileDescriptor(parsedUri, "r")?.use { canRead = true }
+                        } catch (_: Exception) {}
                     }
                     if (canRead) {
                         Log.i(TAG, "Resolved video from verified persistent content URI: $parsedUri")
@@ -109,7 +110,7 @@ object VideoUriResolver {
             for (pDir in publicDirs) {
                 if (pDir.exists()) {
                     val directFile = File(pDir, videoTitle)
-                    if (directFile.exists() && directFile.length() > 1024) {
+                    if (directFile.exists() && directFile.length() > 0) {
                         Log.i(TAG, "Auto-located video file from storage: ${directFile.absolutePath}")
                         return Uri.fromFile(directFile)
                     }
@@ -147,6 +148,15 @@ object VideoUriResolver {
             } catch (e: Exception) {
                 Log.w(TAG, "MediaStore search note: ${e.message}")
             }
+        }
+
+        // 5. Ultimate fallback: If savedUriString is present, trust it rather than null
+        if (!savedUriString.isNullOrBlank()) {
+            try {
+                val fallbackUri = Uri.parse(savedUriString)
+                Log.i(TAG, "Using savedUriString as ultimate video playback target: $fallbackUri")
+                return fallbackUri
+            } catch (_: Exception) {}
         }
 
         Log.w(TAG, "Could not locate source video file for $videoTitle (id=$projectId)")

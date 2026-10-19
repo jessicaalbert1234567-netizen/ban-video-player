@@ -168,6 +168,9 @@ fun PlayerScreen(
                 PlayerView(ctx).apply {
                     player = playerManager.initializePlayer()
                     useController = false
+                    setShutterBackgroundColor(android.graphics.Color.TRANSPARENT)
+                    useArtwork = false
+                    keepScreenOn = true
                     resizeMode = playerState.resizeMode.mode
                     layoutParams = FrameLayout.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,

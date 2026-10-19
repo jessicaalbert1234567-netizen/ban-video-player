@@ -626,13 +626,17 @@ class DubbingPipeline(
                 }
             }
 
-            val resolvedFinalVideoUri = VideoUriResolver.resolvePlayableVideoUri(
-                context = context,
-                projectId = projectId,
-                videoTitle = videoTitle,
-                savedUriString = workingVideoUri.toString(),
-                projectDirPath = projectDir.absolutePath
-            ) ?: workingVideoUri
+            val resolvedFinalVideoUri = when {
+                localVideoFile.exists() && localVideoFile.length() > 1024 -> Uri.fromFile(localVideoFile)
+                workingVideoUri.toString().isNotBlank() -> workingVideoUri
+                else -> VideoUriResolver.resolvePlayableVideoUri(
+                    context = context,
+                    projectId = projectId,
+                    videoTitle = videoTitle,
+                    savedUriString = workingVideoUri.toString(),
+                    projectDirPath = projectDir.absolutePath
+                ) ?: workingVideoUri
+            }
 
             project = project.copy(
                 videoUriString = resolvedFinalVideoUri.toString(),

@@ -929,8 +929,15 @@ class DubbingViewModel(application: Application) : AndroidViewModel(application)
                 }
             }
 
-            val effectiveMediaUri: Uri? = when {
-                videoUri != null -> videoUri
+            val resolvedVideoUri: Uri? = videoUri ?: if (!latest.videoUriString.isNullOrBlank()) {
+                try {
+                    Uri.parse(latest.videoUriString)
+                } catch (_: Exception) {
+                    null
+                }
+            } else null
+
+            val effectiveMediaUri: Uri? = resolvedVideoUri ?: when {
                 dubbedFile != null -> Uri.fromFile(dubbedFile)
                 effectiveSourceAudio != null -> Uri.fromFile(effectiveSourceAudio)
                 else -> null
