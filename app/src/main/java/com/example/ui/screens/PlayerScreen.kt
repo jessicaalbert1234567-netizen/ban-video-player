@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.media.AudioManager
 import android.net.Uri
+import android.view.LayoutInflater
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -162,14 +163,11 @@ fun PlayerScreen(
             .fillMaxSize()
             .background(Color.Black)
     ) {
-        // 1. Media3 Video Viewport with VLC-Style Resize Modes
+        // 1. Media3 Video Viewport with VLC-Style Resize Modes (TextureView enabled for Compose)
         AndroidView(
             factory = { ctx ->
-                PlayerView(ctx).apply {
+                (LayoutInflater.from(ctx).inflate(com.example.R.layout.media_player_view, null) as PlayerView).apply {
                     player = playerManager.initializePlayer()
-                    useController = false
-                    setShutterBackgroundColor(android.graphics.Color.TRANSPARENT)
-                    useArtwork = false
                     keepScreenOn = true
                     resizeMode = playerState.resizeMode.mode
                     layoutParams = FrameLayout.LayoutParams(
@@ -179,7 +177,9 @@ fun PlayerScreen(
                 }
             },
             update = { playerView ->
-                playerView.player = playerManager.player
+                if (playerView.player != playerManager.player) {
+                    playerView.player = playerManager.player
+                }
                 playerView.resizeMode = playerState.resizeMode.mode
             },
             modifier = Modifier.fillMaxSize()

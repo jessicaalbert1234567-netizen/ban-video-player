@@ -262,6 +262,8 @@ class MediaPlayerManager(private val context: Context) {
         val videoSource = mediaSourceFactory.createMediaSource(videoItem)
         exo.setMediaSource(videoSource)
         exo.prepare()
+        exo.playWhenReady = true
+        exo.play()
 
         if (hasPreRenderedDubbed && !isVideoUriSameAsDubbed) {
             val dPlayer = initializeDubbedPlayer()
@@ -269,7 +271,9 @@ class MediaPlayerManager(private val context: Context) {
             val audioSource = mediaSourceFactory.createMediaSource(audioItem)
             dPlayer.setMediaSource(audioSource)
             dPlayer.prepare()
+            dPlayer.playWhenReady = true
             dPlayer.seekTo(exo.currentPosition)
+            dPlayer.play()
             Log.i(TAG, "Initialized secondary dubbed player for real-time dynamic track switching: ${effectiveDubbedFile.absolutePath}")
         } else {
             dubbedAudioPlayer?.stop()

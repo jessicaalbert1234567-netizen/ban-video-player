@@ -79,19 +79,8 @@ object VideoUriResolver {
                     }
                 } else if (parsedUri.scheme == "content") {
                     takePersistablePermission(context, parsedUri)
-                    var canRead = false
-                    try {
-                        context.contentResolver.openInputStream(parsedUri)?.use { canRead = true }
-                    } catch (_: Exception) {}
-                    if (!canRead) {
-                        try {
-                            context.contentResolver.openFileDescriptor(parsedUri, "r")?.use { canRead = true }
-                        } catch (_: Exception) {}
-                    }
-                    if (canRead) {
-                        Log.i(TAG, "Resolved video from verified persistent content URI: $parsedUri")
-                        return parsedUri
-                    }
+                    Log.i(TAG, "Resolved video from persistent content URI: $parsedUri")
+                    return parsedUri
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Error checking savedUriString: ${e.message}")

@@ -236,4 +236,38 @@ class ExampleRobolectricTest {
         playerManager.setSubtitleChoice(com.example.player.SubtitleChoice.BANGLA)
         assertEquals(com.example.player.SubtitleChoice.BANGLA, playerManager.playerState.value.subtitleChoice)
     }
+
+    @Test
+    fun testOfflineDialogueTranslatorNaturalization() {
+        val hello = com.example.translation.OfflineDialogueTranslator.translate("Hello")
+        assertTrue("Hello should translate to Bengali greeting", hello.contains("হ্যালো"))
+
+        val howAreYou = com.example.translation.OfflineDialogueTranslator.translate("How are you?")
+        assertTrue("How are you should translate to কেমন আছো", howAreYou.contains("কেমন আছো"))
+
+        val letsGo = com.example.translation.OfflineDialogueTranslator.translate("Let's go!")
+        assertTrue("Let's go should translate to চলো যাই", letsGo.contains("চলো যাই"))
+
+        val helpMe = com.example.translation.OfflineDialogueTranslator.translate("Help me!")
+        assertTrue("Help me should translate to সাহায্য করো", helpMe.contains("সাহায্য করো"))
+
+        // Untranslatable tokens should return empty string and never masquerade as Bengali
+        val untranslatable = com.example.translation.OfflineDialogueTranslator.translate("Zyxwvutsrqponmlkjihgfedcba")
+        assertEquals("", untranslatable)
+    }
+
+    @Test
+    fun testVideoUriResolverPreservesPersistentContentUri() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val contentUriString = "content://media/external/video/media/12345"
+        val resolved = com.example.storage.VideoUriResolver.resolvePlayableVideoUri(
+            context = context,
+            projectId = "test_proj_id",
+            videoTitle = "my_movie.mkv",
+            savedUriString = contentUriString,
+            projectDirPath = null
+        )
+        org.junit.Assert.assertNotNull(resolved)
+        assertEquals(contentUriString, resolved.toString())
+    }
 }
