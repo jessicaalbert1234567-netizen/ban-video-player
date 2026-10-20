@@ -367,48 +367,85 @@ fun DubbingProgressScreen(
                         }
                     }
                 } else if (isFailed) {
-                    Button(
-                        onClick = onNavigateBack,
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(50.dp)
-                            .testTag("failed_back_button")
-                    ) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Back to Home", fontWeight = FontWeight.Bold)
-                    }
-                } else {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        OutlinedButton(
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
                             onClick = {
-                                viewModel.cancelActiveDubbing()
-                                onNavigateBack()
+                                viewModel.selectProjectForPlaybackById(projectId)
+                                onNavigateToPlayer()
                             },
                             shape = RoundedCornerShape(12.dp),
                             modifier = Modifier
-                                .weight(1f)
-                                .height(48.dp)
-                                .testTag("cancel_dubbing_button")
+                                .fillMaxWidth()
+                                .height(50.dp)
+                                .testTag("play_video_anyway_button")
                         ) {
-                            Text("Cancel", color = ErrorRed)
+                            Icon(Icons.Default.PlayArrow, contentDescription = null)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("ভিডিও প্লে করুন (Play Video)", fontWeight = FontWeight.Bold)
                         }
 
-                        Button(
+                        OutlinedButton(
                             onClick = onNavigateBack,
                             shape = RoundedCornerShape(12.dp),
                             modifier = Modifier
-                                .weight(1.3f)
+                                .fillMaxWidth()
                                 .height(48.dp)
-                                .testTag("background_mode_button")
+                                .testTag("failed_back_button")
                         ) {
-                            Icon(Icons.Default.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Run in Background")
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("হোম এ ফিরে যান (Back to Home)")
+                        }
+                    }
+                } else {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Button(
+                            onClick = {
+                                viewModel.selectProjectForPlaybackById(projectId)
+                                onNavigateToPlayer()
+                            },
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(50.dp)
+                                .testTag("preview_play_video_button")
+                        ) {
+                            Icon(Icons.Default.PlayArrow, contentDescription = null)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("ভিডিও প্রিভিউ / প্লে করুন (Play Video)", fontWeight = FontWeight.Bold)
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = {
+                                    viewModel.cancelActiveDubbing()
+                                    onNavigateBack()
+                                },
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(48.dp)
+                                    .testTag("cancel_dubbing_button")
+                            ) {
+                                Text("Cancel", color = ErrorRed)
+                            }
+
+                            Button(
+                                onClick = onNavigateBack,
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .weight(1.3f)
+                                    .height(48.dp)
+                                    .testTag("background_mode_button")
+                            ) {
+                                Icon(Icons.Default.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Run in Background")
+                            }
                         }
                     }
                 }

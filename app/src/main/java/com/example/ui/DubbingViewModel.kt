@@ -832,6 +832,29 @@ class DubbingViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun selectDirectVideoForPlayback(videoUri: Uri) {
+        viewModelScope.launch {
+            com.example.storage.VideoUriResolver.takePersistablePermission(app, videoUri)
+            val fileName = queryFileName(videoUri) ?: "ভিডিও প্লেয়ার"
+            val tempProjectId = UUID.randomUUID().toString()
+            val project = DubbingProject(
+                id = tempProjectId,
+                title = fileName,
+                videoUriString = videoUri.toString(),
+                projectDirPath = storageManager.getProjectDir(tempProjectId).absolutePath,
+                currentStage = ProcessingStage.COMPLETE,
+                statusMessage = "সরাসরি ভিডিও প্লেয়ার"
+            )
+            _selectedProject.value = project
+            playerManager.setupMedia(
+                videoUri = videoUri,
+                dubbedAudioFile = null,
+                srtFile = null,
+                sourceSrtFile = null
+            )
+        }
+    }
+
     fun selectProjectForPlaybackById(projectId: String) {
         viewModelScope.launch {
             val proj = repository.findProject(projectId) ?: _selectedProject.value

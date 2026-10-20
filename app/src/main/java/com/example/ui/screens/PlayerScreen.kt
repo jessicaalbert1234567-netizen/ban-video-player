@@ -135,10 +135,11 @@ fun PlayerScreen(
         }
     }
 
-    // Pause player when navigating away from player screen
+    // Pause player and reset orientation when navigating away from player screen
     DisposableEffect(Unit) {
         onDispose {
             playerManager.player?.pause()
+            activity?.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         }
     }
 
@@ -168,6 +169,9 @@ fun PlayerScreen(
             factory = { ctx ->
                 (LayoutInflater.from(ctx).inflate(com.example.R.layout.media_player_view, null) as PlayerView).apply {
                     player = playerManager.initializePlayer()
+                    useController = false
+                    useArtwork = false
+                    setShutterBackgroundColor(android.graphics.Color.TRANSPARENT)
                     keepScreenOn = true
                     resizeMode = playerState.resizeMode.mode
                     layoutParams = FrameLayout.LayoutParams(
@@ -511,6 +515,30 @@ fun PlayerScreen(
                         )
                     }
 
+                    // Screen Rotation / Orientation Toggle Button
+                    IconButton(
+                        onClick = {
+                            activity?.let { act ->
+                                val isLandscape = act.resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+                                val newOrientation = if (isLandscape) {
+                                    android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                                } else {
+                                    android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                                }
+                                act.requestedOrientation = newOrientation
+                                val label = if (isLandscape) "Screen: Portrait" else "Screen: Landscape"
+                                showHud(GestureHudType.RESIZE, label, 1.0f)
+                            }
+                        },
+                        modifier = Modifier.testTag("player_rotation_button")
+                    ) {
+                        Icon(
+                            Icons.Default.ScreenRotation,
+                            contentDescription = "Screen Rotation",
+                            tint = Color.White
+                        )
+                    }
+
                     // Save / Export Audio Track Button
                     IconButton(
                         onClick = {
@@ -639,6 +667,33 @@ fun PlayerScreen(
                             color = Color.White,
                             fontSize = 12.sp
                         )
+
+                        // Quick Rotation Toggle Button right on the timeline
+                        IconButton(
+                            onClick = {
+                                activity?.let { act ->
+                                    val isLandscape = act.resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+                                    val newOrientation = if (isLandscape) {
+                                        android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                                    } else {
+                                        android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                                    }
+                                    act.requestedOrientation = newOrientation
+                                    val label = if (isLandscape) "স্ক্রিন: পোর্ট্রেট" else "স্ক্রিন: ল্যান্ডস্কেপ"
+                                    showHud(GestureHudType.RESIZE, label, 1.0f)
+                                }
+                            },
+                            modifier = Modifier
+                                .size(36.dp)
+                                .testTag("timeline_rotation_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.ScreenRotation,
+                                contentDescription = "স্ক্রিন ঘোরান (Rotate)",
+                                tint = Color.White,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
                     }
 
                     // Selectors Row: Audio & Subtitle & Mode Chips

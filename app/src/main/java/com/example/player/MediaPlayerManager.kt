@@ -127,17 +127,15 @@ class MediaPlayerManager(private val context: Context) {
                     }
 
                     override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
-                        Log.e(TAG, "ExoPlayer playback error: ${error.errorCodeName} - ${error.message}", error)
-                        // If error is caused by unsupported audio codec in MKV/MP4 container (e.g. AC3/DTS):
-                        val isAudioDecoderIssue = error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_DECODER_INIT_FAILED ||
-                                error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_DECODER_QUERY_FAILED ||
-                                error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_AUDIO_TRACK_INIT_FAILED ||
-                                error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_AUDIO_TRACK_WRITE_FAILED ||
-                                error.errorCodeName.contains("AUDIO", ignoreCase = true) ||
-                                error.message?.contains("audio", ignoreCase = true) == true
+                        Log.e(TAG, "ExoPlayer playback error: ${error.errorCodeName} (code=${error.errorCode}) - ${error.message}", error)
 
-                        if (isAudioDecoderIssue && player != null) {
-                            Log.i(TAG, "Container audio decoder issue detected. Disabling container audio to preserve uninterrupted video playback!")
+                        val isAudioOnlyFile = currentVideoUri?.path?.let { p ->
+                            p.endsWith(".wav") || p.endsWith(".m4a") || p.endsWith(".mp3") || p.endsWith(".aac")
+                        } ?: false
+
+                        // If the media is a video (e.g. MKV, MP4, etc.), never replace the video with an audio-only stream!
+                        if (!isAudioOnlyFile && player != null) {
+                            Log.i(TAG, "Playback issue on video container detected. Disabling container audio track so video renders smoothly.")
                             try {
                                 player?.trackSelectionParameters = player?.trackSelectionParameters
                                     ?.buildUpon()
@@ -151,24 +149,28 @@ class MediaPlayerManager(private val context: Context) {
                             }
                         }
 
-                        val dubbed = _playerState.value.dubbedAudioFile ?: currentDubbedAudioFile
-                        if (dubbed != null && dubbed.exists() && dubbed.length() > 44) {
-                            Log.i(TAG, "Auto-recovering playback using dubbed audio track")
-                            _playerState.value = _playerState.value.copy(
-                                isAudioOnlyFallback = true,
-                                hasError = false,
-                                errorMessage = null
-                            )
-                            val audioItem = MediaItem.fromUri(Uri.fromFile(dubbed))
-                            val audioSource = androidx.media3.exoplayer.source.DefaultMediaSourceFactory(context).createMediaSource(audioItem)
-                            dubbedAudioPlayer?.stop()
-                            dubbedAudioPlayer?.release()
-                            dubbedAudioPlayer = null
-                            player?.setMediaSource(audioSource)
-                            player?.prepare()
-                            player?.play()
-                            return
+                        // Only for genuine audio-only playback files
+                        if (isAudioOnlyFile) {
+                            val dubbed = _playerState.value.dubbedAudioFile ?: currentDubbedAudioFile
+                            if (dubbed != null && dubbed.exists() && dubbed.length() > 44) {
+                                Log.i(TAG, "Audio file fallback to dubbed audio track")
+                                _playerState.value = _playerState.value.copy(
+                                    isAudioOnlyFallback = true,
+                                    hasError = false,
+                                    errorMessage = null
+                                )
+                                val audioItem = MediaItem.fromUri(Uri.fromFile(dubbed))
+                                val audioSource = androidx.media3.exoplayer.source.DefaultMediaSourceFactory(context).createMediaSource(audioItem)
+                                dubbedAudioPlayer?.stop()
+                                dubbedAudioPlayer?.release()
+                                dubbedAudioPlayer = null
+                                player?.setMediaSource(audioSource)
+                                player?.prepare()
+                                player?.play()
+                                return
+                            }
                         }
+
                         _playerState.value = _playerState.value.copy(
                             hasError = false,
                             errorMessage = null

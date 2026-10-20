@@ -13,6 +13,7 @@ import androidx.activity.viewModels
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import androidx.navigation.NavType
@@ -39,29 +40,40 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             MyApplicationTheme {
-                RequestNotificationPermission()
+                RequestAppPermissions()
                 AppNavigation(viewModel = viewModel)
             }
         }
     }
 
     @Composable
-    private fun RequestNotificationPermission() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            val permissionLauncher = rememberLauncherForActivityResult(
-                contract = ActivityResultContracts.RequestPermission()
-            ) { isGranted ->
-                // Handled gracefully
+    private fun RequestAppPermissions() {
+        val permissionsToRequest: Array<String> = remember {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                arrayOf(
+                    Manifest.permission.READ_MEDIA_VIDEO,
+                    Manifest.permission.READ_MEDIA_AUDIO,
+                    Manifest.permission.POST_NOTIFICATIONS
+                )
+            } else {
+                arrayOf(
+                    Manifest.permission.READ_EXTERNAL_STORAGE
+                )
             }
+        }
 
-            LaunchedEffect(Unit) {
-                if (ContextCompat.checkSelfPermission(
-                        this@MainActivity,
-                        Manifest.permission.POST_NOTIFICATIONS
-                    ) != PackageManager.PERMISSION_GRANTED
-                ) {
-                    permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                }
+        val permissionLauncher = rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.RequestMultiplePermissions()
+        ) { results ->
+            // Permissions handled gracefully
+        }
+
+        LaunchedEffect(Unit) {
+            val missingPermissions = permissionsToRequest.filter { perm: String ->
+                ContextCompat.checkSelfPermission(this@MainActivity, perm) != PackageManager.PERMISSION_GRANTED
+            }
+            if (missingPermissions.isNotEmpty()) {
+                permissionLauncher.launch(missingPermissions.toTypedArray())
             }
         }
     }
