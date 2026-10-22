@@ -41,7 +41,35 @@ object VideoUriResolver {
     ): Uri? {
         val storageManager = StorageManager(context)
 
-        // 1. First priority: Direct local file inside project directory (source_video.* or video.*)
+        // 1. First priority: Check if savedUriString is directly accessible and playable
+        if (!savedUriString.isNullOrBlank()) {
+            try {
+                val parsedUri = Uri.parse(savedUriString)
+                if (parsedUri.scheme == "file") {
+                    val f = File(parsedUri.path ?: "")
+                    if (f.exists() && f.length() > 1024) {
+                        Log.i(TAG, "Resolved video from existing file URI: ${f.absolutePath} (${f.length()} bytes)")
+                        return parsedUri
+                    }
+                } else if (parsedUri.scheme == "content") {
+                    takePersistablePermission(context, parsedUri)
+                    var canRead = false
+                    try {
+                        context.contentResolver.openAssetFileDescriptor(parsedUri, "r")?.use { afd ->
+                            canRead = afd.length > 0 || afd.length == android.content.res.AssetFileDescriptor.UNKNOWN_LENGTH
+                        }
+                    } catch (_: Exception) {}
+                    if (canRead) {
+                        Log.i(TAG, "Resolved video from verified persistent content URI: $parsedUri")
+                        return parsedUri
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Error checking savedUriString accessibility: ${e.message}")
+            }
+        }
+
+        // 2. Second priority: Direct local file inside project directory (source_video.* or video.*)
         val projectDirs = listOfNotNull(
             projectDirPath?.let { File(it) },
             storageManager.getProjectDir(projectId),
@@ -52,7 +80,7 @@ object VideoUriResolver {
         for (dir in projectDirs) {
             if (dir.exists()) {
                 val candidate = dir.listFiles()?.firstOrNull { file ->
-                    file.isFile && file.length() > 1024 && (
+                    file.isFile && file.length() > 5000 && (
                         file.name.startsWith("source_video") ||
                         file.name.startsWith("video") ||
                         file.extension.lowercase() in listOf("mp4", "mkv", "webm", "avi", "mov", "3gp", "ts")
@@ -61,29 +89,9 @@ object VideoUriResolver {
                        !file.name.endsWith(".mp3") && !file.name.endsWith(".tmp")
                 }
                 if (candidate != null) {
-                    Log.i(TAG, "Found local cached video in project dir: ${candidate.absolutePath}")
+                    Log.i(TAG, "Found local cached video in project dir: ${candidate.absolutePath} (${candidate.length()} bytes)")
                     return Uri.fromFile(candidate)
                 }
-            }
-        }
-
-        // 2. Second priority: If savedUriString is a local file URI or content URI
-        if (!savedUriString.isNullOrBlank()) {
-            try {
-                val parsedUri = Uri.parse(savedUriString)
-                if (parsedUri.scheme == "file") {
-                    val f = File(parsedUri.path ?: "")
-                    if (f.exists() && f.length() > 0) {
-                        Log.i(TAG, "Resolved video from existing file URI: ${f.absolutePath}")
-                        return parsedUri
-                    }
-                } else if (parsedUri.scheme == "content") {
-                    takePersistablePermission(context, parsedUri)
-                    Log.i(TAG, "Resolved video from persistent content URI: $parsedUri")
-                    return parsedUri
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "Error checking savedUriString: ${e.message}")
             }
         }
 

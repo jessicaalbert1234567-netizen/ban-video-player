@@ -98,11 +98,15 @@ class MediaPlayerManager(private val context: Context) {
         }
     }
 
+    private var errorRecoveryAttempts = 0
+
     fun initializePlayer(): ExoPlayer {
         if (player == null) {
             val trackSelector = androidx.media3.exoplayer.trackselection.DefaultTrackSelector(context).apply {
                 parameters = buildUponParameters()
                     .setExceedRendererCapabilitiesIfNecessary(true)
+                    .setAllowAudioMixedMimeTypeAdaptiveness(true)
+                    .setAllowVideoMixedMimeTypeAdaptiveness(true)
                     .build()
             }
             player = ExoPlayer.Builder(context)
@@ -121,6 +125,30 @@ class MediaPlayerManager(private val context: Context) {
                         }
                     }
 
+                    override fun onPlaybackStateChanged(playbackState: Int) {
+                        if (playbackState == Player.STATE_READY) {
+                            errorRecoveryAttempts = 0
+                        }
+                        val isPlaying = player?.isPlaying ?: false
+                        val playWhenReady = player?.playWhenReady ?: false
+                        val active = isPlaying || (playWhenReady && (playbackState == Player.STATE_READY || playbackState == Player.STATE_BUFFERING))
+                        _playerState.value = _playerState.value.copy(isPlaying = active)
+                    }
+
+                    override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                        val state = player?.playbackState ?: Player.STATE_IDLE
+                        val active = (player?.isPlaying ?: false) || (playWhenReady && state != Player.STATE_ENDED && state != Player.STATE_IDLE)
+                        _playerState.value = _playerState.value.copy(isPlaying = active)
+                        if (playWhenReady) {
+                            dubbedAudioPlayer?.playWhenReady = true
+                            dubbedAudioPlayer?.play()
+                        } else {
+                            dubbedAudioPlayer?.playWhenReady = false
+                            dubbedAudioPlayer?.pause()
+                            liveTts?.stop()
+                        }
+                    }
+
                     override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
                         _playerState.value = _playerState.value.copy(playbackSpeed = playbackParameters.speed)
                         dubbedAudioPlayer?.setPlaybackSpeed(playbackParameters.speed)
@@ -133,19 +161,21 @@ class MediaPlayerManager(private val context: Context) {
                             p.endsWith(".wav") || p.endsWith(".m4a") || p.endsWith(".mp3") || p.endsWith(".aac")
                         } ?: false
 
-                        // If the media is a video (e.g. MKV, MP4, etc.), never replace the video with an audio-only stream!
-                        if (!isAudioOnlyFile && player != null) {
-                            Log.i(TAG, "Playback issue on video container detected. Disabling container audio track so video renders smoothly.")
+                        // If media is a video (MKV/MP4), recover by disabling container audio/text tracks if they fail
+                        if (!isAudioOnlyFile && player != null && errorRecoveryAttempts < 3) {
+                            errorRecoveryAttempts++
+                            Log.i(TAG, "Playback issue on video container detected. Disabling problematic tracks to keep video rendering smoothly (attempt $errorRecoveryAttempts/3).")
                             try {
                                 player?.trackSelectionParameters = player?.trackSelectionParameters
                                     ?.buildUpon()
                                     ?.setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_AUDIO, true)
+                                    ?.setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_TEXT, true)
                                     ?.build() ?: androidx.media3.common.TrackSelectionParameters.DEFAULT_WITHOUT_CONTEXT
                                 player?.prepare()
                                 player?.play()
                                 return
                             } catch (e: Exception) {
-                                Log.w(TAG, "Could not disable container audio: ${e.message}")
+                                Log.w(TAG, "Could not recover video playback: ${e.message}")
                             }
                         }
 
@@ -173,7 +203,8 @@ class MediaPlayerManager(private val context: Context) {
 
                         _playerState.value = _playerState.value.copy(
                             hasError = false,
-                            errorMessage = null
+                            errorMessage = null,
+                            isPlaying = false
                         )
                     }
                 })
@@ -201,8 +232,7 @@ class MediaPlayerManager(private val context: Context) {
         if (currentVideoUri == videoUri &&
             currentDubbedAudioFile?.absolutePath == dubbedAudioFile?.absolutePath &&
             player != null &&
-            player?.playbackState != Player.STATE_IDLE &&
-            player?.playbackState != Player.STATE_ENDED
+            (player?.mediaItemCount ?: 0) > 0
         ) {
             Log.d(TAG, "setupMedia: Video and audio already initialized for $videoUri, maintaining state")
             return
@@ -412,13 +442,28 @@ class MediaPlayerManager(private val context: Context) {
     }
 
     fun togglePlayPause() {
-        val exo = player ?: return
-        if (exo.isPlaying) {
-            exo.pause()
-            dubbedAudioPlayer?.pause()
-        } else {
+        val exo = player ?: initializePlayer()
+        val isCurrentlyPlaying = exo.isPlaying || (exo.playWhenReady && (exo.playbackState == Player.STATE_READY || exo.playbackState == Player.STATE_BUFFERING))
+        val shouldPlay = !isCurrentlyPlaying
+
+        if (shouldPlay) {
+            if (exo.playbackState == Player.STATE_IDLE) {
+                exo.prepare()
+            } else if (exo.playbackState == Player.STATE_ENDED) {
+                exo.seekTo(0)
+            }
+            exo.playWhenReady = true
             exo.play()
+            dubbedAudioPlayer?.playWhenReady = true
             dubbedAudioPlayer?.play()
+            _playerState.value = _playerState.value.copy(isPlaying = true)
+        } else {
+            exo.playWhenReady = false
+            exo.pause()
+            dubbedAudioPlayer?.playWhenReady = false
+            dubbedAudioPlayer?.pause()
+            liveTts?.stop()
+            _playerState.value = _playerState.value.copy(isPlaying = false)
         }
     }
 

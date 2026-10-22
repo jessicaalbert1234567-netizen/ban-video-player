@@ -17,6 +17,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -127,8 +129,8 @@ fun PlayerScreen(
         }
     }
 
-    // Ensure media and subtitles are always loaded immediately upon entering player
-    LaunchedEffect(project?.id, project?.updatedAt) {
+    // Ensure media and subtitles are loaded when entering player for a project
+    LaunchedEffect(project?.id) {
         val currentProj = project ?: viewModel.allProjects.value.firstOrNull()
         if (currentProj != null) {
             viewModel.selectProjectForPlayback(currentProj)
@@ -696,26 +698,34 @@ fun PlayerScreen(
                         }
                     }
 
-                    // Selectors Row: Audio & Subtitle & Mode Chips
-                    Row(
+                    // Selectors: Audio Track & Subtitles Quick Selectors
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(12.dp))
-                            .background(Color.Black.copy(alpha = 0.7f))
+                            .background(Color.Black.copy(alpha = 0.75f))
                             .padding(horizontal = 12.dp, vertical = 8.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        // Audio Selection Chips
-                        Column {
+                        // Audio Selection Row
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
                             Text(
-                                text = "AUDIO TRACK",
+                                text = "AUDIO",
                                 color = MaterialTheme.colorScheme.primary,
-                                fontSize = 10.sp,
+                                fontSize = 11.sp,
                                 fontWeight = FontWeight.Bold,
-                                letterSpacing = 1.sp
+                                modifier = Modifier.width(52.dp)
                             )
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
                                 FilterChip(
                                     selected = playerState.audioChoice == AudioTrackChoice.BANGLA_DUB,
                                     onClick = { playerManager.setAudioChoice(AudioTrackChoice.BANGLA_DUB) },
@@ -737,16 +747,25 @@ fun PlayerScreen(
                             }
                         }
 
-                        // Subtitle Selection Chips
-                        Column {
+                        // Subtitle Selection Row
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
                             Text(
-                                text = "SUBTITLES",
+                                text = "SUBS",
                                 color = MaterialTheme.colorScheme.primary,
-                                fontSize = 10.sp,
+                                fontSize = 11.sp,
                                 fontWeight = FontWeight.Bold,
-                                letterSpacing = 1.sp
+                                modifier = Modifier.width(52.dp)
                             )
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
                                 FilterChip(
                                     selected = playerState.subtitleChoice == SubtitleChoice.BANGLA,
                                     onClick = { playerManager.setSubtitleChoice(SubtitleChoice.BANGLA) },
