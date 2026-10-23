@@ -152,8 +152,17 @@ object SubtitleExtractor {
             try { extractor.release() } catch (_: Exception) {}
         }
 
-        // Fallback to direct Matroska parser if cues list is empty
+        // Fallback to ffmpeg or direct Matroska parser if cues list is empty
         if (cues.isEmpty()) {
+            try {
+                val ffmpegCues = extractCuesViaFfmpeg(context, videoUri, trackIndex)
+                if (ffmpegCues.isNotEmpty()) {
+                    return@withContext adjustCueTimestamps(ffmpegCues)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "FFmpeg subtitle extraction fallback failed: ${e.message}")
+            }
+
             try {
                 val mkvCues = extractMatroskaCues(context, videoUri, trackIndex)
                 if (mkvCues.isNotEmpty()) {
@@ -546,8 +555,59 @@ object SubtitleExtractor {
     }
 
     // -------------------------------------------------------------
-    // Direct Matroska (.mkv) EBML Container Parser
+    // Direct Matroska (.mkv) EBML Container & FFmpeg Parser
     // -------------------------------------------------------------
+
+    private fun extractCuesViaFfmpeg(context: Context, videoUri: Uri, trackIndex: Int): List<SubtitleCue> {
+        val tempFile = if (videoUri.scheme == "file" && videoUri.path != null) {
+            File(videoUri.path!!)
+        } else {
+            try {
+                val cacheFile = File(context.cacheDir, "temp_sub_${System.currentTimeMillis()}.mkv")
+                context.contentResolver.openInputStream(videoUri)?.use { input ->
+                    cacheFile.outputStream().use { output ->
+                        input.copyTo(output)
+                    }
+                }
+                cacheFile
+            } catch (_: Exception) {
+                null
+            }
+        } ?: return emptyList()
+
+        return try {
+            val srtOutput = StringBuilder()
+            // Map the specified subtitle track or first subtitle stream
+            val cmd = arrayOf(
+                "ffmpeg", "-y",
+                "-i", tempFile.absolutePath,
+                "-map", "0:s:0",
+                "-f", "srt",
+                "-"
+            )
+            val process = ProcessBuilder(*cmd)
+                .redirectErrorStream(false)
+                .start()
+            val reader = process.inputStream.bufferedReader(Charsets.UTF_8)
+            var line = reader.readLine()
+            while (line != null) {
+                srtOutput.append(line).append("\n")
+                line = reader.readLine()
+            }
+            val exitCode = process.waitFor()
+            if (exitCode == 0 && srtOutput.isNotBlank()) {
+                parseSubtitleContent(srtOutput.toString())
+            } else {
+                emptyList()
+            }
+        } catch (_: Throwable) {
+            emptyList()
+        } finally {
+            if (videoUri.scheme != "file") {
+                try { tempFile.delete() } catch (_: Exception) {}
+            }
+        }
+    }
 
     private fun inspectMatroskaTracks(context: Context, videoUri: Uri): List<SubtitleTrackInfo> {
         val stream = context.contentResolver.openInputStream(videoUri) ?: return emptyList()
@@ -566,19 +626,15 @@ object SubtitleExtractor {
     }
 
     /**
-     * Minimal streaming Matroska EBML parser for subtitle extraction.
+     * Streaming Matroska EBML parser for subtitle extraction.
      */
     private class MatroskaEbmlReader(private val input: InputStream) {
 
         fun findSubtitleTracks(): List<SubtitleTrackInfo> {
             val tracks = mutableListOf<SubtitleTrackInfo>()
             try {
-                // Seek to Segment (0x18538067) and Tracks (0x1654AE6B)
                 val buffer = ByteArray(64 * 1024)
-                var bytesRead = input.read(buffer)
-                var offset = 0
-
-                // Quick scan in header buffer for subtitle codecs
+                val bytesRead = input.read(buffer)
                 val headerStr = String(buffer, 0, maxOf(0, bytesRead), Charsets.ISO_8859_1)
                 if (headerStr.contains("S_TEXT/UTF8") || headerStr.contains("S_TEXT/ASS") || headerStr.contains("S_TEXT/SSA")) {
                     val codec = when {
@@ -608,15 +664,94 @@ object SubtitleExtractor {
         }
 
         fun extractCuesForTrack(trackIndex: Int): List<SubtitleCue> {
-            // If direct stream scan is needed, read all available bytes and find text patterns
             val cues = mutableListOf<SubtitleCue>()
             try {
-                val fullText = input.bufferedReader(Charsets.UTF_8).use { it.readText() }
+                val bytes = input.readBytes()
+                val fullText = String(bytes, Charsets.UTF_8)
                 if (fullText.contains("-->") || fullText.contains("Dialogue:")) {
                     return parseSubtitleContent(fullText)
                 }
-            } catch (_: Exception) {}
+
+                // EBML SimpleBlock (0xA3) & Block (0xA1) scanner
+                var i = 0
+                var cueIndex = 1
+                var clusterTimeMs = 0L
+
+                while (i < bytes.size - 4) {
+                    // Timecode element 0xE7 inside Cluster
+                    if (bytes[i] == 0xE7.toByte() && i + 2 < bytes.size) {
+                        val (tcLen, vLen) = readEbmlVint(bytes, i + 1)
+                        if (tcLen in 1..8 && i + 1 + vLen + tcLen.toInt() <= bytes.size) {
+                            var tc = 0L
+                            for (b in 0 until tcLen.toInt()) {
+                                tc = (tc shl 8) or (bytes[i + 1 + vLen + b].toLong() and 0xFF)
+                            }
+                            clusterTimeMs = tc
+                            i += 1 + vLen + tcLen.toInt()
+                            continue
+                        }
+                    }
+
+                    // SimpleBlock (0xA3) or Block (0xA1)
+                    if ((bytes[i] == 0xA3.toByte() || bytes[i] == 0xA1.toByte()) && i + 4 < bytes.size) {
+                        val (blockSize, vLen) = readEbmlVint(bytes, i + 1)
+                        val blockStart = i + 1 + vLen
+                        val blockEnd = blockStart + blockSize.toInt()
+                        if (blockSize > 4 && blockEnd <= bytes.size) {
+                            val (_, trkLen) = readEbmlVint(bytes, blockStart)
+                            val timeOffset = blockStart + trkLen
+                            if (timeOffset + 3 <= blockEnd) {
+                                val relTime = ((bytes[timeOffset].toInt() shl 8) or (bytes[timeOffset + 1].toInt() and 0xFF)).toShort()
+                                val payloadOffset = timeOffset + 3
+                                val payloadLen = blockEnd - payloadOffset
+                                if (payloadLen in 2..500) {
+                                    val text = String(bytes, payloadOffset, payloadLen, Charsets.UTF_8).trim()
+                                    if (isPrintableSubtitleText(text)) {
+                                        val startMs = maxOf(0L, clusterTimeMs + relTime)
+                                        val duration = estimateCueDuration(text)
+                                        cues.add(SubtitleCue(cueIndex++, startMs, startMs + duration, text))
+                                    }
+                                }
+                            }
+                            i = blockEnd
+                            continue
+                        }
+                    }
+                    i++
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "MatroskaEbmlReader extractCuesForTrack error: ${e.message}")
+            }
             return cues
+        }
+
+        private fun readEbmlVint(bytes: ByteArray, offset: Int): Pair<Long, Int> {
+            if (offset >= bytes.size) return Pair(0L, 0)
+            val b0 = bytes[offset].toInt() and 0xFF
+            if (b0 == 0) return Pair(0L, 1)
+            var numBytes = 1
+            var mask = 0x80
+            while ((b0 and mask) == 0 && numBytes <= 8) {
+                mask = mask ushr 1
+                numBytes++
+            }
+            if (numBytes > 8 || offset + numBytes > bytes.size) return Pair(0L, 1)
+            var value = (b0 and (mask - 1)).toLong()
+            for (idx in 1 until numBytes) {
+                value = (value shl 8) or (bytes[offset + idx].toLong() and 0xFF)
+            }
+            return Pair(value, numBytes)
+        }
+
+        private fun isPrintableSubtitleText(str: String): Boolean {
+            if (str.length < 2) return false
+            var printable = 0
+            for (c in str) {
+                if (c in ' '..'~' || c in '\u0980'..'\u09FF' || c == '\n' || c == '\r' || c == '\t') {
+                    printable++
+                }
+            }
+            return (printable.toFloat() / str.length.toFloat()) > 0.85f
         }
     }
 }

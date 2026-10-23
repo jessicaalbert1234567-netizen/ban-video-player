@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import android.app.Activity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -15,11 +16,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.ads.AdMobBanner
+import com.example.ads.AdMobManager
 import com.example.dubbing.ProcessingStage
+import com.example.security.AntiTamperGuard
 import com.example.ui.DubbingViewModel
 import com.example.ui.theme.ErrorRed
 import com.example.ui.theme.SuccessGreen
@@ -32,6 +38,7 @@ fun DubbingProgressScreen(
     onNavigateBack: () -> Unit,
     onNavigateToPlayer: () -> Unit
 ) {
+    val context = LocalContext.current
     val progressState by viewModel.pipelineState.collectAsState()
     val project by viewModel.selectedProject.collectAsState()
 
@@ -69,7 +76,20 @@ fun DubbingProgressScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Offline Dubbing", fontWeight = FontWeight.Bold) },
+                title = {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            painter = painterResource(id = com.example.R.drawable.ic_nimpata_leaf),
+                            contentDescription = "Nimpata Logo",
+                            tint = Color.Unspecified,
+                            modifier = Modifier.size(26.dp)
+                        )
+                        Text("Nimpata Dubbing", fontWeight = FontWeight.Bold)
+                    }
+                },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack, modifier = Modifier.testTag("progress_back_button")) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
@@ -90,6 +110,11 @@ fun DubbingProgressScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp),
             contentPadding = PaddingValues(vertical = 12.dp)
         ) {
+            // AdMob Banner 2 (Dubbing Process Top Banner)
+            item {
+                AdMobBanner(adUnitId = AntiTamperGuard.getBanner2UnitId())
+            }
+
             // Video Header Card
             item {
                 Card(
@@ -329,6 +354,11 @@ fun DubbingProgressScreen(
                 }
             }
 
+            // AdMob Banner 3 (Dubbing Process Lower Banner)
+            item {
+                AdMobBanner(adUnitId = AntiTamperGuard.getBanner3UnitId())
+            }
+
             // Bottom Actions
             item {
                 Spacer(modifier = Modifier.height(12.dp))
@@ -336,8 +366,16 @@ fun DubbingProgressScreen(
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(
                             onClick = {
-                                viewModel.selectProjectForPlaybackById(projectId)
-                                onNavigateToPlayer()
+                                val activity = context as? Activity
+                                if (activity != null) {
+                                    AdMobManager.showRewardedAd(activity) {
+                                        viewModel.selectProjectForPlaybackById(projectId)
+                                        onNavigateToPlayer()
+                                    }
+                                } else {
+                                    viewModel.selectProjectForPlaybackById(projectId)
+                                    onNavigateToPlayer()
+                                }
                             },
                             shape = RoundedCornerShape(12.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen),
@@ -370,8 +408,16 @@ fun DubbingProgressScreen(
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(
                             onClick = {
-                                viewModel.selectProjectForPlaybackById(projectId)
-                                onNavigateToPlayer()
+                                val activity = context as? Activity
+                                if (activity != null) {
+                                    AdMobManager.showRewardedAd(activity) {
+                                        viewModel.selectProjectForPlaybackById(projectId)
+                                        onNavigateToPlayer()
+                                    }
+                                } else {
+                                    viewModel.selectProjectForPlaybackById(projectId)
+                                    onNavigateToPlayer()
+                                }
                             },
                             shape = RoundedCornerShape(12.dp),
                             modifier = Modifier
@@ -401,8 +447,16 @@ fun DubbingProgressScreen(
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Button(
                             onClick = {
-                                viewModel.selectProjectForPlaybackById(projectId)
-                                onNavigateToPlayer()
+                                val activity = context as? Activity
+                                if (activity != null) {
+                                    AdMobManager.showRewardedAd(activity) {
+                                        viewModel.selectProjectForPlaybackById(projectId)
+                                        onNavigateToPlayer()
+                                    }
+                                } else {
+                                    viewModel.selectProjectForPlaybackById(projectId)
+                                    onNavigateToPlayer()
+                                }
                             },
                             shape = RoundedCornerShape(12.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),

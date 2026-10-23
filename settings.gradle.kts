@@ -22,6 +22,6 @@ dependencyResolutionManagement {
   }
 }
 
-rootProject.name = "Offline AI Dubbing Player"
+rootProject.name = "Nimpata Bangla Dubbing"
 
 include(":app")

@@ -20,6 +20,8 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.*
+import androidx.compose.ui.res.painterResource
+import com.example.ads.AdMobManager
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -107,6 +109,7 @@ fun PlayerScreen(
 
     // Double tap feedback
     var showDoubleTapFeedback by remember { mutableStateOf<String?>(null) }
+    var hasShownInitialAd by remember { mutableStateOf(false) }
 
     val configuration = LocalConfiguration.current
     val screenWidthPx = remember(configuration) {
@@ -468,15 +471,26 @@ fun PlayerScreen(
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
                     }
 
-                    Text(
-                        text = project?.title ?: "Video Player",
-                        style = MaterialTheme.typography.titleMedium.copy(
-                            color = Color.White,
-                            fontWeight = FontWeight.SemiBold
-                        ),
+                    Row(
                         modifier = Modifier.weight(1f),
-                        maxLines = 1
-                    )
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            painter = painterResource(id = com.example.R.drawable.ic_nimpata_leaf),
+                            contentDescription = "Nimpata",
+                            tint = Color.Unspecified,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = project?.title ?: "Nimpata Player",
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                color = Color.White,
+                                fontWeight = FontWeight.SemiBold
+                            ),
+                            maxLines = 1
+                        )
+                    }
 
                     // Audio Track Selector Button
                     IconButton(
@@ -569,6 +583,32 @@ fun PlayerScreen(
                         )
                     }
 
+                    // Open in Dedicated VLC-grade PlayerActivity
+                    IconButton(
+                        onClick = {
+                            val rawUri = project?.videoUriString
+                            if (!rawUri.isNullOrBlank()) {
+                                val vUri = Uri.parse(rawUri)
+                                playerManager.player?.pause()
+                                val intent = com.example.player.PlayerActivity.createIntent(
+                                    context = context,
+                                    videoUri = vUri,
+                                    title = project?.title,
+                                    dubbedAudioPath = project?.dubbedAudioPath,
+                                    srtPath = project?.subtitleSrtPath
+                                )
+                                context.startActivity(intent)
+                            }
+                        },
+                        modifier = Modifier.testTag("player_open_vlc_activity_button")
+                    ) {
+                        Icon(
+                            Icons.Default.Launch,
+                            contentDescription = "Open in VLC Player",
+                            tint = Color.White
+                        )
+                    }
+
                     // Playback Speed Button
                     IconButton(onClick = { showSpeedDialog = true }) {
                         Text(
@@ -608,7 +648,21 @@ fun PlayerScreen(
                         }
 
                         IconButton(
-                            onClick = { playerManager.togglePlayPause() },
+                            onClick = {
+                                if (!playerState.isPlaying && !hasShownInitialAd) {
+                                    hasShownInitialAd = true
+                                    val act = context as? Activity
+                                    if (act != null) {
+                                        AdMobManager.showRewardedAd(act) {
+                                            playerManager.togglePlayPause()
+                                        }
+                                    } else {
+                                        playerManager.togglePlayPause()
+                                    }
+                                } else {
+                                    playerManager.togglePlayPause()
+                                }
+                            },
                             modifier = Modifier
                                 .size(72.dp)
                                 .clip(CircleShape)

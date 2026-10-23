@@ -1,7 +1,13 @@
 package com.example.ui.screens
 
+import android.app.Activity
+import android.content.Intent
 import android.net.Uri
 import android.util.Log
+import androidx.compose.ui.res.painterResource
+import com.example.ads.AdMobBanner
+import com.example.ads.AdMobManager
+import com.example.security.AntiTamperGuard
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -83,14 +89,14 @@ fun HomeScreen(
         }
     }
 
-    // Direct Video Player Launcher: Open & Play ANY video directly without dubbing wait
+    // Direct Video Player Launcher: Open & Play ANY video directly in VLC-grade PlayerActivity
     val directVideoPlayerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
         if (uri != null) {
             com.example.storage.VideoUriResolver.takePersistablePermission(context, uri)
-            viewModel.selectDirectVideoForPlayback(uri)
-            onNavigateToPlayer()
+            val intent = com.example.player.PlayerActivity.createIntent(context, uri)
+            context.startActivity(intent)
         }
     }
 
@@ -129,22 +135,70 @@ fun HomeScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    Column {
-                        Text(
-                            text = "AutoMkvDubber",
-                            style = MaterialTheme.typography.titleLarge.copy(
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 20.sp
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            painter = painterResource(id = com.example.R.drawable.ic_nimpata_leaf),
+                            contentDescription = "Nimpata Logo",
+                            tint = Color.Unspecified,
+                            modifier = Modifier.size(32.dp)
+                        )
+                        Column {
+                            Text(
+                                text = "Nimpata Bangla Dubbing",
+                                style = MaterialTheme.typography.titleMedium.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 16.sp
+                                )
                             )
-                        )
-                        Text(
-                            text = "স্বয়ংক্রিয় বাংলা ভিডিও ডাবিং",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                            Text(
+                                text = "নিমপাতা এআই বাংলা ডাবিং",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 11.sp
+                            )
+                        }
                     }
                 },
                 actions = {
+                    // "ফলো মি" (Follow Me) Button linking to Facebook
+                    Button(
+                        onClick = {
+                            try {
+                                val intent = Intent(
+                                    Intent.ACTION_VIEW,
+                                    Uri.parse("https://www.facebook.com/share/19sfESx5pQ/")
+                                )
+                                context.startActivity(intent)
+                            } catch (e: Exception) {
+                                Log.w("HomeScreen", "Could not open follow URL: ${e.message}")
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                        ),
+                        shape = RoundedCornerShape(20.dp),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                        modifier = Modifier
+                            .padding(end = 2.dp)
+                            .testTag("follow_me_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ThumbUp,
+                            contentDescription = "Follow Me",
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "ফলো মি",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 11.sp
+                        )
+                    }
+
                     IconButton(
                         onClick = onNavigateToTest,
                         modifier = Modifier.testTag("nav_test_button")
@@ -173,6 +227,53 @@ fun HomeScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp),
             contentPadding = PaddingValues(vertical = 12.dp)
         ) {
+            // CRITICAL NOTICE CARD: English subtitle requirement for MKV dubbing
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = Color(0xFF1B5E20).copy(alpha = 0.15f)
+                    ),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Icon(
+                            painter = painterResource(id = com.example.R.drawable.ic_nimpata_leaf),
+                            contentDescription = "Neem Leaf",
+                            tint = Color.Unspecified,
+                            modifier = Modifier.size(36.dp)
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "জরুরি নির্দেশনা",
+                                style = MaterialTheme.typography.labelLarge.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            )
+                            Text(
+                                text = "ডাবিং সফল হওয়ার জন্য mkv ভিডিও ফাইল এর ভিতর ইংরেজি সাবটাইটেল থাকতে হবে",
+                                style = MaterialTheme.typography.bodyMedium.copy(
+                                    fontWeight = FontWeight.Medium
+                                ),
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    }
+                }
+            }
+
+            // AdMob Banner 1 (Empty Space Banner)
+            item {
+                AdMobBanner(adUnitId = AntiTamperGuard.getBanner1UnitId())
+            }
+
             // OPTION 1: Main Hero Card — Select MKV Video (Auto Dubbing)
             item {
                 Card(
@@ -535,8 +636,16 @@ fun HomeScreen(
                     ProjectCard(
                         project = project,
                         onPlay = {
-                            viewModel.selectProjectForPlayback(project)
-                            onNavigateToPlayer()
+                            val activity = context as? Activity
+                            if (activity != null) {
+                                AdMobManager.showRewardedAd(activity) {
+                                    viewModel.selectProjectForPlayback(project)
+                                    onNavigateToPlayer()
+                                }
+                            } else {
+                                viewModel.selectProjectForPlayback(project)
+                                onNavigateToPlayer()
+                            }
                         },
                         onReDub = {
                             viewModel.reDubProject(project, onNavigateToProgress)
@@ -552,6 +661,11 @@ fun HomeScreen(
                         }
                     )
                 }
+            }
+
+            // Bottom AdMob Banner (Banner 4)
+            item {
+                AdMobBanner(adUnitId = AntiTamperGuard.getBanner4UnitId())
             }
         }
     }

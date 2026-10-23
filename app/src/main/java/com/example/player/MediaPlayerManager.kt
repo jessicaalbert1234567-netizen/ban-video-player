@@ -102,6 +102,24 @@ class MediaPlayerManager(private val context: Context) {
 
     fun initializePlayer(): ExoPlayer {
         if (player == null) {
+            val channelMixingProcessor = androidx.media3.common.audio.ChannelMixingAudioProcessor()
+            val renderersFactory = object : androidx.media3.exoplayer.DefaultRenderersFactory(context) {
+                override fun buildAudioSink(
+                    ctx: Context,
+                    enableFloatOutput: Boolean,
+                    enableAudioTrackPlaybackParams: Boolean
+                ): androidx.media3.exoplayer.audio.AudioSink {
+                    return androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(ctx)
+                        .setAudioProcessors(arrayOf(channelMixingProcessor))
+                        .setEnableFloatOutput(enableFloatOutput)
+                        .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
+                        .build()
+                }
+            }.apply {
+                setExtensionRendererMode(androidx.media3.exoplayer.DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
+                setEnableDecoderFallback(true)
+            }
+
             val trackSelector = androidx.media3.exoplayer.trackselection.DefaultTrackSelector(context).apply {
                 parameters = buildUponParameters()
                     .setExceedRendererCapabilitiesIfNecessary(true)
@@ -109,8 +127,15 @@ class MediaPlayerManager(private val context: Context) {
                     .setAllowVideoMixedMimeTypeAdaptiveness(true)
                     .build()
             }
-            player = ExoPlayer.Builder(context)
+
+            val audioAttributes = androidx.media3.common.AudioAttributes.Builder()
+                .setContentType(androidx.media3.common.C.AUDIO_CONTENT_TYPE_MOVIE)
+                .setUsage(androidx.media3.common.C.USAGE_MEDIA)
+                .build()
+
+            player = ExoPlayer.Builder(context, renderersFactory)
                 .setTrackSelector(trackSelector)
+                .setAudioAttributes(audioAttributes, /* handleAudioFocus= */ true)
                 .build().apply {
                 repeatMode = Player.REPEAT_MODE_OFF
                 playWhenReady = true

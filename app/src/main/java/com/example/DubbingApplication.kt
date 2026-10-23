@@ -43,6 +43,10 @@ class DubbingApplication : Application() {
         settingsManager = SettingsManager(this)
         dubbingPipeline = DubbingPipeline(this, repository, storageManager, settingsManager)
         playerManager = MediaPlayerManager(this)
+
+        // Initialize Anti-Tamper Security & AdMob Ads
+        com.example.security.AntiTamperGuard.verifyIntegrity(this)
+        com.example.ads.AdMobManager.initialize(this)
     }
 
     companion object {
