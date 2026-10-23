@@ -9,8 +9,10 @@ import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.provider.OpenableColumns
 import android.util.Log
 import android.view.GestureDetector
 import android.view.MotionEvent
@@ -31,28 +33,24 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
-import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
-import androidx.media3.common.TrackGroup
 import androidx.media3.common.TrackSelectionOverride
-import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
-import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.audio.AudioSink
-import androidx.media3.exoplayer.audio.DefaultAudioSink
-import androidx.media3.exoplayer.source.MediaSource
-import androidx.media3.exoplayer.source.ProgressiveMediaSource
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
+import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.example.R
 import com.example.ads.AdMobManager
+import com.example.subtitle.SubtitleCue
+import com.example.subtitle.SubtitleExtractor
 import java.io.File
 import java.util.Locale
 import kotlin.math.abs
@@ -67,16 +65,16 @@ enum class PlayerAudioMode(val label: String, val description: String) {
  * Production-ready VLC-grade Offline Video Player Activity using AndroidX Media3 ExoPlayer.
  *
  * Features & Architecture:
- * 1. Robust Software/Hardware Decoding: DefaultRenderersFactory with EXTENSION_RENDERER_MODE_PREFER
- *    and decoder fallback enabled for 10-bit HEVC (Main 10), Hi10P (H.264 10-bit), AV1, and legacy codecs.
- * 2. Multichannel Audio Downmixing: Automatic 5.1/7.1 to stereo downmixing via ChannelMixingAudioProcessor.
+ * 1. Robust Software/Hardware Decoding: VlcGradeRenderersFactory with EXTENSION_RENDERER_MODE_PREFER
+ *    and automatic software decoder fallback for 10-bit HEVC (Main 10, yuv420p10le), Hi10P, and legacy codecs.
+ * 2. Multichannel Audio Downmixing: Automatic 5.1/7.1 HE-AAC/AAC/AC3 & float PCM to 16-bit Stereo via
+ *    UniversalStereoAudioProcessor and decoder channel hints.
  * 3. Dual-Player Smart Audio Ducking: Simultaneous playback of video ambient soundtrack and Bangla speech,
- *    ducking original background audio to 30% during speech so ambient cars, music, footsteps, and explosions
+ *    ducking original background audio to 32% during speech so ambient cars, music, footsteps, and explosions
  *    remain audible behind clear Bangla dubbing.
- * 4. Multi-track Audio & Embedded Subtitle Management: DefaultTrackSelector with instant track switching.
+ * 4. Multi-track Audio & Embedded/External Subtitle Management: DefaultTrackSelector + DefaultMediaSourceFactory.
  * 5. Local Storage / SAF: Handles content:// and file:// local URIs seamlessly with persistable permissions.
  * 6. VLC Gestures: Brightness (left swipe), Volume (right swipe), Scrub (horizontal swipe), Double tap seek.
- * 7. Crash-proof ComponentActivity architecture avoiding AppCompat theme conflicts.
  */
 @UnstableApi
 class PlayerActivity : ComponentActivity() {
@@ -122,13 +120,21 @@ class PlayerActivity : ComponentActivity() {
     private var videoTitle: String? = null
     private var dubbedAudioPath: String? = null
     private var srtPath: String? = null
+    private var launchedWithExplicitDub: Boolean = false
 
     private var currentAudioMode = PlayerAudioMode.SMART_DUB
+    private val bnSubtitleCues = mutableListOf<SubtitleCue>()
 
     // Playback state restoration across lifecycles
     private var startPositionMs: Long = 0L
     private var startPlayWhenReady: Boolean = true
     private var isAdShownOrSkipped: Boolean = false
+    private var isWaitingForAd: Boolean = false
+
+    // Decoder recovery state
+    private var forceSoftwareVideoDecoder: Boolean = false
+    private var errorRecoveryAttempts: Int = 0
+    private var zeroFrameChecks: Int = 0
 
     // UI View References
     private lateinit var playerRoot: View
@@ -180,7 +186,7 @@ class PlayerActivity : ComponentActivity() {
     private val updateProgressRunnable = object : Runnable {
         override fun run() {
             updateTimeline()
-            handler.postDelayed(this, 1000L)
+            handler.postDelayed(this, 500L)
         }
     }
 
@@ -215,7 +221,10 @@ class PlayerActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         releasePlayer()
+        forceSoftwareVideoDecoder = false
+        errorRecoveryAttempts = 0
         parseIntentData(intent)
+        txtVideoTitle.text = videoTitle
         initializePlayer()
     }
 
@@ -230,11 +239,6 @@ class PlayerActivity : ComponentActivity() {
             else -> null
         }
 
-        videoTitle = intent.getStringExtra(EXTRA_TITLE) ?: videoUri?.lastPathSegment ?: "Offline Video"
-        dubbedAudioPath = intent.getStringExtra(EXTRA_DUBBED_AUDIO_PATH)
-        srtPath = intent.getStringExtra(EXTRA_SRT_PATH)
-
-        // Take persistable permission if content URI
         videoUri?.let { uri ->
             if (uri.scheme == "content") {
                 try {
@@ -244,6 +248,68 @@ class PlayerActivity : ComponentActivity() {
                     )
                 } catch (_: Exception) {}
             }
+        }
+
+        val resolvedDisplayName = videoUri?.let { queryDisplayName(it) }
+        videoTitle = intent.getStringExtra(EXTRA_TITLE)?.takeIf { it.isNotBlank() }
+            ?: resolvedDisplayName
+            ?: videoUri?.lastPathSegment
+            ?: "Offline Video"
+
+        dubbedAudioPath = intent.getStringExtra(EXTRA_DUBBED_AUDIO_PATH)
+        srtPath = intent.getStringExtra(EXTRA_SRT_PATH)
+        launchedWithExplicitDub = !dubbedAudioPath.isNullOrBlank()
+
+        val titleForLookup = resolvedDisplayName ?: videoTitle ?: ""
+        if (titleForLookup.isNotBlank() && (dubbedAudioPath.isNullOrBlank() || srtPath.isNullOrBlank())) {
+            val baseTitle = titleForLookup.substringBeforeLast(".")
+            val publicDownloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            val fileTranslatoDir = File(publicDownloads, "FileTranslato")
+            val banglaDubbingDir = File(publicDownloads, "BanglaDubbing")
+
+            if (dubbedAudioPath.isNullOrBlank()) {
+                val candidateAudio = File(fileTranslatoDir, "${baseTitle}_bangla_dubbed_audio.wav")
+                if (candidateAudio.exists() && candidateAudio.length() > 44) {
+                    dubbedAudioPath = candidateAudio.absolutePath
+                }
+            }
+            if (srtPath.isNullOrBlank()) {
+                val candidateSrt1 = File(fileTranslatoDir, "${baseTitle}_bangla.srt")
+                val candidateSrt2 = File(banglaDubbingDir, "${baseTitle}_bangla.srt")
+                if (candidateSrt1.exists() && candidateSrt1.length() > 0) {
+                    srtPath = candidateSrt1.absolutePath
+                } else if (candidateSrt2.exists() && candidateSrt2.length() > 0) {
+                    srtPath = candidateSrt2.absolutePath
+                }
+            }
+        }
+
+        bnSubtitleCues.clear()
+        srtPath?.let { path ->
+            val f = File(path)
+            if (f.exists() && f.length() > 0) {
+                try {
+                    bnSubtitleCues.addAll(SubtitleExtractor.parseSubtitleContent(f.readText(Charsets.UTF_8)))
+                } catch (e: Exception) {
+                    Log.w(TAG, "Could not parse SRT for smart ducking: ${e.message}")
+                }
+            }
+        }
+    }
+
+    private fun queryDisplayName(uri: Uri): String? {
+        if (uri.scheme == "file") {
+            return uri.path?.let { File(it).name }
+        }
+        return try {
+            contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (idx != -1) cursor.getString(idx) else null
+                } else null
+            }
+        } catch (_: Exception) {
+            null
         }
     }
 
@@ -302,7 +368,8 @@ class PlayerActivity : ComponentActivity() {
 
         btnForward10.setOnClickListener {
             player?.let { p ->
-                val newPos = minOf(p.duration, p.currentPosition + 10_000L)
+                val dur = p.duration.coerceAtLeast(0L)
+                val newPos = if (dur > 0) minOf(dur, p.currentPosition + 10_000L) else p.currentPosition + 10_000L
                 p.seekTo(newPos)
                 dubbedPlayer?.seekTo(newPos)
                 showSeekHud(newPos, 10_000L)
@@ -374,32 +441,10 @@ class PlayerActivity : ComponentActivity() {
         })
     }
 
-    /**
-     * Initializes Media3 ExoPlayer with:
-     * - DefaultRenderersFactory configured to EXTENSION_RENDERER_MODE_PREFER
-     * - Enable decoder fallback for 10-bit HEVC, Hi10P, AV1, and custom codecs
-     * - Stereo downmixing AudioSink using ChannelMixingAudioProcessor
-     * - AudioAttributes with handleAudioFocus=true
-     * - Secondary synchronized dubbedPlayer for real-time Smart Ducking
-     */
-    private fun createUniversalAudioSink(
-        ctx: Context,
-        enableAudioTrackPlaybackParams: Boolean
-    ): AudioSink {
-        val channelMixingProcessor = androidx.media3.common.audio.ChannelMixingAudioProcessor().apply {
-            putChannelMixingMatrix(androidx.media3.common.audio.ChannelMixingMatrix.create(8, 2)) // 7.1 -> Stereo
-            putChannelMixingMatrix(androidx.media3.common.audio.ChannelMixingMatrix.create(6, 2)) // 5.1 -> Stereo
-            putChannelMixingMatrix(androidx.media3.common.audio.ChannelMixingMatrix.create(5, 2)) // 5.0 -> Stereo
-            putChannelMixingMatrix(androidx.media3.common.audio.ChannelMixingMatrix.create(4, 2)) // Quad -> Stereo
-            putChannelMixingMatrix(androidx.media3.common.audio.ChannelMixingMatrix.create(3, 2)) // 3.0 -> Stereo
-            putChannelMixingMatrix(androidx.media3.common.audio.ChannelMixingMatrix.create(1, 2)) // Mono -> Stereo
-        }
-
-        return DefaultAudioSink.Builder(ctx)
-            .setAudioProcessors(arrayOf(channelMixingProcessor))
-            .setEnableFloatOutput(false) // Universal 16-bit PCM for hardware DAC compatibility
-            .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
-            .build()
+    private fun createExtractorsFactory(): DefaultExtractorsFactory {
+        return DefaultExtractorsFactory()
+            .setConstantBitrateSeekingEnabled(true)
+            .setConstantBitrateSeekingAlwaysEnabled(true)
     }
 
     private fun initializePlayer() {
@@ -411,39 +456,34 @@ class PlayerActivity : ComponentActivity() {
         }
 
         try {
-            // 1. AudioSink with universal multichannel downmixing and 16-bit PCM
-            val renderersFactory = object : DefaultRenderersFactory(this) {
-                override fun buildAudioSink(
-                    context: Context,
-                    enableFloatOutput: Boolean,
-                    enableAudioTrackPlaybackParams: Boolean
-                ): AudioSink {
-                    return createUniversalAudioSink(context, enableAudioTrackPlaybackParams)
-                }
-            }.apply {
-                setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
-                setEnableDecoderFallback(true)
-            }
+            val renderersFactory = VlcGradeRenderersFactory(this) { forceSoftwareVideoDecoder }
 
-            // 2. TrackSelector with capability exceeding and audio track enablement
             trackSelector = DefaultTrackSelector(this).apply {
                 parameters = buildUponParameters()
                     .setExceedRendererCapabilitiesIfNecessary(true)
+                    .setExceedVideoConstraintsIfNecessary(true)
+                    .setExceedAudioConstraintsIfNecessary(true)
                     .setAllowAudioMixedMimeTypeAdaptiveness(true)
+                    .setAllowAudioMixedSampleRateAdaptiveness(true)
+                    .setAllowAudioMixedChannelCountAdaptiveness(true)
                     .setAllowVideoMixedMimeTypeAdaptiveness(true)
+                    .setAllowVideoNonSeamlessAdaptiveness(true)
+                    .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, false)
                     .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
                     .build()
             }
 
-            // 4. Audio Attributes with automatic focus management
             val audioAttributes = AudioAttributes.Builder()
                 .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
                 .setUsage(C.USAGE_MEDIA)
                 .build()
 
-            // 5. Build ExoPlayer
+            val dataSourceFactory = DefaultDataSource.Factory(this)
+            val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory, createExtractorsFactory())
+
             player = ExoPlayer.Builder(this, renderersFactory)
                 .setTrackSelector(trackSelector!!)
+                .setMediaSourceFactory(mediaSourceFactory)
                 .setAudioAttributes(audioAttributes, /* handleAudioFocus= */ true)
                 .build().apply {
                     repeatMode = Player.REPEAT_MODE_OFF
@@ -454,11 +494,8 @@ class PlayerActivity : ComponentActivity() {
             playerView.player = player
             playerView.resizeMode = resizeModes[currentResizeModeIndex]
 
-            // 6. Build MediaSource with local SAF / file support
-            val dataSourceFactory = DefaultDataSource.Factory(this)
             val mediaItemBuilder = MediaItem.Builder().setUri(targetUri)
 
-            // Attach external subtitle if provided
             srtPath?.let { sPath ->
                 val srtFile = File(sPath)
                 if (srtFile.exists() && srtFile.length() > 0) {
@@ -466,82 +503,86 @@ class PlayerActivity : ComponentActivity() {
                         .setMimeType(MimeTypes.APPLICATION_SUBRIP)
                         .setLanguage("ben")
                         .setLabel("অনূদিত বাংলা সাবটাইটেল (Bangla Dub)")
-                        .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
+                        .setSelectionFlags(if (launchedWithExplicitDub) C.SELECTION_FLAG_DEFAULT else 0)
                         .build()
                     mediaItemBuilder.setSubtitleConfigurations(listOf(subConfig))
                 }
             }
 
-            val mainMediaSource = ProgressiveMediaSource.Factory(dataSourceFactory)
-                .createMediaSource(mediaItemBuilder.build())
-
+            val mainMediaSource = mediaSourceFactory.createMediaSource(mediaItemBuilder.build())
             player?.setMediaSource(mainMediaSource)
             player?.prepare()
 
-            // 7. Setup Secondary Dubbed Audio Player for Smart Dubbing
             val dubbedFile = dubbedAudioPath?.let { File(it) }
             if (dubbedFile != null && dubbedFile.exists() && dubbedFile.length() > 44) {
-                val dubbedRenderersFactory = object : DefaultRenderersFactory(this) {
-                    override fun buildAudioSink(
-                        context: Context,
-                        enableFloatOutput: Boolean,
-                        enableAudioTrackPlaybackParams: Boolean
-                    ): AudioSink {
-                        return createUniversalAudioSink(context, enableAudioTrackPlaybackParams)
+                val dubbedRenderersFactory = VlcGradeRenderersFactory(this)
+                dubbedPlayer = ExoPlayer.Builder(this, dubbedRenderersFactory)
+                    .setMediaSourceFactory(mediaSourceFactory)
+                    .build().apply {
+                        val audioItem = MediaItem.fromUri(Uri.fromFile(dubbedFile))
+                        val audioSource = mediaSourceFactory.createMediaSource(audioItem)
+                        setMediaSource(audioSource)
+                        prepare()
+                        playWhenReady = startPlayWhenReady
+                        seekTo(startPositionMs)
                     }
-                }.apply {
-                    setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
-                    setEnableDecoderFallback(true)
-                }
-                dubbedPlayer = ExoPlayer.Builder(this, dubbedRenderersFactory).build().apply {
-                    val audioItem = MediaItem.fromUri(Uri.fromFile(dubbedFile))
-                    val audioSource = ProgressiveMediaSource.Factory(dataSourceFactory).createMediaSource(audioItem)
-                    setMediaSource(audioSource)
-                    prepare()
-                    playWhenReady = startPlayWhenReady
-                    seekTo(startPositionMs)
-                }
-                currentAudioMode = PlayerAudioMode.SMART_DUB
-                Log.i(TAG, "Dubbed audio player initialized for smart ambient ducking: ${dubbedFile.absolutePath}")
+                currentAudioMode = if (launchedWithExplicitDub) PlayerAudioMode.SMART_DUB else PlayerAudioMode.ORIGINAL_ONLY
+                Log.i(TAG, "Dubbed audio player initialized (mode=$currentAudioMode): ${dubbedFile.absolutePath}")
             } else {
                 dubbedPlayer = null
                 currentAudioMode = PlayerAudioMode.ORIGINAL_ONLY
             }
 
-            applyAudioModeVolumes()
+            applyAudioModeVolumes(startPositionMs)
 
             if (startPositionMs > 0) {
                 player?.seekTo(startPositionMs)
                 dubbedPlayer?.seekTo(startPositionMs)
             }
 
-            // 8. Rewarded Ad gate before starting playback
             if (!isAdShownOrSkipped) {
                 isAdShownOrSkipped = true
+                isWaitingForAd = true
                 player?.pause()
                 dubbedPlayer?.pause()
                 btnPlayPause.setImageResource(R.drawable.ic_play_arrow)
                 AdMobManager.showRewardedAd(this) {
+                    isWaitingForAd = false
+                    startPlayWhenReady = true
+                    if (player == null) {
+                        initializePlayer()
+                    }
+                    player?.playWhenReady = true
                     player?.play()
+                    dubbedPlayer?.playWhenReady = true
                     dubbedPlayer?.play()
                     btnPlayPause.setImageResource(R.drawable.ic_pause)
                 }
             }
 
+            handler.removeCallbacks(updateProgressRunnable)
             handler.post(updateProgressRunnable)
             resetControlsHideTimer()
 
-            Log.i(TAG, "ExoPlayer initialized with VLC-grade decoding, stereo downmixing, and Smart Dubbing")
+            Log.i(TAG, "ExoPlayer initialized with VLC-grade 10-bit HEVC decoding, stereo downmixing, and Smart Dubbing")
         } catch (e: Exception) {
             Log.e(TAG, "ExoPlayer initialization failed: ${e.message}", e)
             Toast.makeText(this, "ভিডিও প্লেয়ার শুরু করতে সমস্যা হয়েছে: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
 
+    private fun rebuildPlayerWithSoftwareVideoFallback() {
+        val currentPos = player?.currentPosition?.coerceAtLeast(0L) ?: startPositionMs
+        startPositionMs = currentPos
+        startPlayWhenReady = true
+        releasePlayer()
+        initializePlayer()
+    }
+
     private fun releasePlayer() {
         player?.let { p ->
-            startPositionMs = p.currentPosition
-            startPlayWhenReady = p.playWhenReady
+            startPositionMs = p.currentPosition.coerceAtLeast(0L)
+            startPlayWhenReady = if (isWaitingForAd) true else p.playWhenReady
             p.stop()
             p.release()
         }
@@ -558,10 +599,6 @@ class PlayerActivity : ComponentActivity() {
         handler.removeCallbacks(updateProgressRunnable)
         handler.removeCallbacks(hideControlsRunnable)
     }
-
-    // -------------------------------------------------------------
-    // Lifecycle Management (API 24+)
-    // -------------------------------------------------------------
 
     override fun onStart() {
         super.onStart()
@@ -600,10 +637,6 @@ class PlayerActivity : ComponentActivity() {
         releasePlayer()
     }
 
-    // -------------------------------------------------------------
-    // Player Event Listener
-    // -------------------------------------------------------------
-
     private inner class PlayerEventListener : Player.Listener {
         override fun onPlaybackStateChanged(playbackState: Int) {
             when (playbackState) {
@@ -612,6 +645,7 @@ class PlayerActivity : ComponentActivity() {
                 }
                 Player.STATE_READY -> {
                     progressBuffering.visibility = View.GONE
+                    errorRecoveryAttempts = 0
                     updateTimeline()
                 }
                 Player.STATE_ENDED -> {
@@ -637,11 +671,36 @@ class PlayerActivity : ComponentActivity() {
 
         override fun onPlayerError(error: PlaybackException) {
             progressBuffering.visibility = View.GONE
-            Log.e(TAG, "Player playback error: [${error.errorCodeName}] ${error.message}", error)
-            if (error.errorCode == PlaybackException.ERROR_CODE_AUDIO_TRACK_INIT_FAILED) {
-                Log.w(TAG, "AudioTrack init failed; attempting playback recovery with standard 16-bit PCM")
+            Log.e(TAG, "Player playback error: [${error.errorCodeName}] (code=${error.errorCode}) ${error.message}", error)
+
+            val isVideoCodecError = error.errorCode == PlaybackException.ERROR_CODE_DECODER_INIT_FAILED ||
+                    error.errorCode == PlaybackException.ERROR_CODE_DECODING_FAILED ||
+                    error.errorCode == PlaybackException.ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES ||
+                    error.errorCode == PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED
+
+            if (isVideoCodecError && !forceSoftwareVideoDecoder) {
+                Log.w(TAG, "Video decoder error; switching to software video decoder for 10-bit HEVC compatibility")
+                forceSoftwareVideoDecoder = true
+                rebuildPlayerWithSoftwareVideoFallback()
+                return
+            }
+
+            if (errorRecoveryAttempts < 3) {
+                errorRecoveryAttempts++
+                Log.w(TAG, "Attempting playback recovery ($errorRecoveryAttempts/3) with 2-channel stereo audio constraint")
                 try {
+                    val savedPos = player?.currentPosition?.coerceAtLeast(0L) ?: startPositionMs
+                    trackSelector?.let { ts ->
+                        ts.setParameters(
+                            ts.buildUponParameters()
+                                .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, false)
+                                .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
+                                .setMaxAudioChannelCount(2)
+                        )
+                    }
                     player?.prepare()
+                    if (savedPos > 0L) player?.seekTo(savedPos)
+                    player?.playWhenReady = true
                     player?.play()
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to recover playback: ${e.message}")
@@ -650,30 +709,31 @@ class PlayerActivity : ComponentActivity() {
         }
     }
 
-    // -------------------------------------------------------------
-    // VLC Multi-Track Management (Audio & Subtitles)
-    // -------------------------------------------------------------
+    private data class AudioOptionItem(
+        val title: String,
+        val subtitle: String,
+        val mode: PlayerAudioMode? = null,
+        val trackOverride: TrackSelectionOverride? = null
+    )
 
     private fun showAudioTrackSelectionDialog() {
         val p = player ?: return
         val ts = trackSelector ?: return
         val currentTracks = p.currentTracks
 
-        val audioOptions = mutableListOf<Triple<String, String, TrackSelectionOverride?>>()
+        val audioOptions = mutableListOf<AudioOptionItem>()
         var selectedItemIndex = 0
 
-        // 1. Smart Audio Modes (if dubbed audio is available)
         if (dubbedPlayer != null) {
             for (mode in PlayerAudioMode.values()) {
-                val isSelected = (currentAudioMode == mode)
-                if (isSelected) {
+                if (currentAudioMode == mode) {
                     selectedItemIndex = audioOptions.size
                 }
-                audioOptions.add(Triple(mode.label, mode.description, null))
+                audioOptions.add(AudioOptionItem(mode.label, mode.description, mode = mode))
             }
         }
 
-        // 2. Video internal audio tracks (MKV multi-language)
+        var internalTrackNum = 1
         for (group in currentTracks.groups) {
             if (group.type == C.TRACK_TYPE_AUDIO) {
                 val mediaTrackGroup = group.mediaTrackGroup
@@ -681,18 +741,40 @@ class PlayerActivity : ComponentActivity() {
                     val format = mediaTrackGroup.getFormat(i)
                     val lang = format.language ?: "und"
                     val channels = format.channelCount
-                    val mime = format.sampleMimeType?.substringAfterLast("/")?.uppercase(Locale.ROOT) ?: "AUDIO"
-                    val label = when {
-                        !format.label.isNullOrBlank() -> format.label!!
-                        lang == "ben" || lang == "bn" -> "ভিডিও অরিজিনাল বাংলা অডিও"
-                        lang == "eng" || lang == "en" -> "English ($channels-ch $mime)"
-                        else -> "মূল ভিডিও অডিও #${audioOptions.size + 1} [$lang, $channels-ch $mime]"
+                    val chLabel = when (channels) {
+                        6 -> "5.1"
+                        8 -> "7.1"
+                        2 -> "Stereo"
+                        1 -> "Mono"
+                        else -> "${channels}-ch"
                     }
+                    val mime = format.sampleMimeType?.substringAfterLast("/")?.uppercase(Locale.ROOT) ?: "AUDIO"
+                    val langName = when (lang.lowercase(Locale.ROOT)) {
+                        "ben", "bn" -> "বাংলা (Bangla)"
+                        "hin", "hi" -> "Hindi (হিন্দি)"
+                        "mal", "ml" -> "Malayalam (মালায়ালাম)"
+                        "tam", "ta" -> "Tamil (তামিল)"
+                        "tel", "te" -> "Telugu (তেলেগু)"
+                        "eng", "en" -> "English (ইংরেজি)"
+                        else -> lang.uppercase(Locale.ROOT)
+                    }
+                    val label = if (!format.label.isNullOrBlank()) {
+                        "${format.label} [$langName • $chLabel $mime]"
+                    } else {
+                        "মূল অডিও #$internalTrackNum: $langName ($chLabel $mime)"
+                    }
+                    internalTrackNum++
 
                     if (dubbedPlayer == null && group.isTrackSelected(i)) {
                         selectedItemIndex = audioOptions.size
                     }
-                    audioOptions.add(Triple(label, "ভিডিওর অভ্যন্তরীণ অডিও ট্র্যাক", TrackSelectionOverride(mediaTrackGroup, i)))
+                    audioOptions.add(
+                        AudioOptionItem(
+                            title = label,
+                            subtitle = "ভিডিওর অভ্যন্তরীণ অডিও ট্র্যাক",
+                            trackOverride = TrackSelectionOverride(mediaTrackGroup, i)
+                        )
+                    )
                 }
             }
         }
@@ -702,25 +784,26 @@ class PlayerActivity : ComponentActivity() {
             return
         }
 
-        val items = audioOptions.map { it.first }.toTypedArray()
+        val items = audioOptions.map { it.title }.toTypedArray()
         AlertDialog.Builder(this)
             .setTitle("অডিও ট্র্যাক নির্বাচন করুন (Smart Audio & Multi-Track)")
             .setSingleChoiceItems(items, selectedItemIndex) { dialog, which ->
                 val chosen = audioOptions[which]
-                when (which) {
-                    0 -> if (dubbedPlayer != null) setAudioMode(PlayerAudioMode.SMART_DUB)
-                    1 -> if (dubbedPlayer != null) setAudioMode(PlayerAudioMode.ORIGINAL_ONLY)
-                    2 -> if (dubbedPlayer != null) setAudioMode(PlayerAudioMode.BANGLA_ONLY)
-                    else -> {
-                        chosen.third?.let { override ->
-                            ts.setParameters(
-                                ts.buildUponParameters()
-                                    .setOverrideForType(override)
-                            )
-                        }
+                if (chosen.mode != null) {
+                    setAudioMode(chosen.mode)
+                } else if (chosen.trackOverride != null) {
+                    ts.setParameters(
+                        ts.buildUponParameters()
+                            .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
+                            .setOverrideForType(chosen.trackOverride)
+                    )
+                    if (dubbedPlayer != null && currentAudioMode == PlayerAudioMode.BANGLA_ONLY) {
+                        setAudioMode(PlayerAudioMode.SMART_DUB)
+                    } else {
+                        applyAudioModeVolumes(p.currentPosition.coerceAtLeast(0L))
                     }
                 }
-                Toast.makeText(this, "নির্বাচিত অডিও: ${chosen.first}", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "নির্বাচিত অডিও: ${chosen.title}", Toast.LENGTH_SHORT).show()
                 dialog.dismiss()
             }
             .setNegativeButton("বাতিল", null)
@@ -729,10 +812,10 @@ class PlayerActivity : ComponentActivity() {
 
     private fun setAudioMode(mode: PlayerAudioMode) {
         currentAudioMode = mode
-        applyAudioModeVolumes()
+        applyAudioModeVolumes(player?.currentPosition?.coerceAtLeast(0L) ?: 0L)
     }
 
-    private fun applyAudioModeVolumes() {
+    private fun applyAudioModeVolumes(currentPosMs: Long = player?.currentPosition?.coerceAtLeast(0L) ?: 0L) {
         val p = player ?: return
         val dp = dubbedPlayer
         if (dp == null) {
@@ -742,9 +825,12 @@ class PlayerActivity : ComponentActivity() {
 
         when (currentAudioMode) {
             PlayerAudioMode.SMART_DUB -> {
-                // Smart Ducking: Original video audio lowered to 0.32f so ambient sounds, music,
-                // and sound effects remain clearly heard alongside the clear 1.0f Bangla speech!
-                p.volume = 0.32f
+                val isSpeaking = if (bnSubtitleCues.isEmpty()) {
+                    true
+                } else {
+                    bnSubtitleCues.any { currentPosMs in (it.startMs - 40L)..(it.endMs + 80L) }
+                }
+                p.volume = if (isSpeaking) 0.32f else 1.0f
                 dp.volume = 1.0f
             }
             PlayerAudioMode.ORIGINAL_ONLY -> {
@@ -764,7 +850,6 @@ class PlayerActivity : ComponentActivity() {
         val currentTracks = p.currentTracks
 
         val subtitleOptions = mutableListOf<Pair<String, TrackSelectionOverride?>>()
-        // Option 1: Off
         subtitleOptions.add(Pair("সাবটাইটেল বন্ধ (Off)", null))
         var selectedIndex = 0
 
@@ -797,7 +882,6 @@ class PlayerActivity : ComponentActivity() {
             .setSingleChoiceItems(items, selectedIndex) { dialog, which ->
                 val choice = subtitleOptions[which]
                 if (choice.second == null) {
-                    // Turn subtitles off
                     ts.setParameters(
                         ts.buildUponParameters()
                             .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
@@ -817,18 +901,27 @@ class PlayerActivity : ComponentActivity() {
             .show()
     }
 
-    // -------------------------------------------------------------
-    // UI Helpers & Timeline
-    // -------------------------------------------------------------
-
     private fun togglePlayPause() {
-        player?.let { p ->
-            if (p.isPlaying) {
-                p.pause()
-                dubbedPlayer?.pause()
-            } else {
-                p.play()
-                dubbedPlayer?.play()
+        val p = player ?: run {
+            initializePlayer()
+            return
+        }
+        if (p.isPlaying) {
+            p.pause()
+            dubbedPlayer?.pause()
+        } else {
+            if (p.playbackState == Player.STATE_IDLE) {
+                p.prepare()
+            } else if (p.playbackState == Player.STATE_ENDED) {
+                p.seekTo(0)
+            }
+            p.playWhenReady = true
+            p.play()
+            dubbedPlayer?.let { dp ->
+                if (dp.playbackState == Player.STATE_IDLE) dp.prepare()
+                dp.seekTo(p.currentPosition.coerceAtLeast(0L))
+                dp.playWhenReady = true
+                dp.play()
             }
         }
     }
@@ -876,8 +969,8 @@ class PlayerActivity : ComponentActivity() {
 
     private fun updateTimeline() {
         val p = player ?: return
-        val currentMs = p.currentPosition
-        val durationMs = p.duration
+        val currentMs = p.currentPosition.coerceAtLeast(0L)
+        val durationMs = p.duration.coerceAtLeast(0L)
 
         txtTimeCurrent.text = formatTime(currentMs)
         if (durationMs > 0) {
@@ -886,15 +979,34 @@ class PlayerActivity : ComponentActivity() {
             seekBar.progress = progress
         }
 
-        // Resync secondary dubbed audio player if drift exceeds 120ms
+        if (p.isPlaying && !forceSoftwareVideoDecoder && currentMs > 1500L) {
+            val hasVideo = p.currentTracks.groups.any { it.type == C.TRACK_TYPE_VIDEO && it.isSelected }
+            val renderedFrames = p.videoDecoderCounters?.renderedOutputBufferCount ?: -1
+            if (hasVideo && renderedFrames == 0) {
+                zeroFrameChecks++
+                if (zeroFrameChecks >= 3) {
+                    Log.w(TAG, "0 video frames rendered on hardware decoder; switching to software decoder for 10-bit HEVC")
+                    zeroFrameChecks = 0
+                    forceSoftwareVideoDecoder = true
+                    rebuildPlayerWithSoftwareVideoFallback()
+                    return
+                }
+            } else if (renderedFrames > 0) {
+                zeroFrameChecks = 0
+            }
+        }
+
         dubbedPlayer?.let { dp ->
+            if (p.isPlaying && !dp.isPlaying && dp.playbackState == Player.STATE_READY) {
+                dp.play()
+            }
             val drift = abs(currentMs - dp.currentPosition)
             if (drift > 120L) {
                 dp.seekTo(currentMs)
             }
         }
 
-        applyAudioModeVolumes()
+        applyAudioModeVolumes(currentMs)
     }
 
     private fun formatTime(ms: Long): String {
@@ -932,10 +1044,6 @@ class PlayerActivity : ComponentActivity() {
         controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
-
-    // -------------------------------------------------------------
-    // VLC Gestures: Brightness, Volume, Scrub, Double-Tap Seek
-    // -------------------------------------------------------------
 
     @SuppressLint("ClickableViewAccessibility")
     private fun setupGestureDetector() {
@@ -989,17 +1097,17 @@ class PlayerActivity : ComponentActivity() {
                 MotionEvent.ACTION_MOVE -> {
                     val deltaX = event.x - initialTouchX
                     val deltaY = event.y - initialTouchY
-                    val screenWidth = playerRoot.width.toFloat()
-                    val screenHeight = playerRoot.height.toFloat()
+                    val screenWidth = playerRoot.width.toFloat().coerceAtLeast(1f)
+                    val screenHeight = playerRoot.height.toFloat().coerceAtLeast(1f)
 
                     if (!isSwipeGesture && (abs(deltaX) > 40f || abs(deltaY) > 40f)) {
                         isSwipeGesture = true
                         gestureMode = if (abs(deltaX) > abs(deltaY)) {
-                            3 // Horizontal seek
+                            3
                         } else if (initialTouchX < screenWidth / 2f) {
-                            1 // Left vertical: Brightness
+                            1
                         } else {
-                            2 // Right vertical: Volume
+                            2
                         }
                     }
 
@@ -1037,7 +1145,7 @@ class PlayerActivity : ComponentActivity() {
     }
 
     private fun adjustVolume(factorDelta: Float) {
-        val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+        val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
         val currentVol = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
         val deltaSteps = (factorDelta * maxVol * 0.5f).toInt()
         val newVol = (currentVol + deltaSteps).coerceIn(0, maxVol)
@@ -1085,7 +1193,7 @@ class PlayerActivity : ComponentActivity() {
         hudText.text = "$sign (${formatTime(targetMs)})"
         hudProgress.progress = if (p.duration > 0) ((targetMs * 100L) / p.duration).toInt() else 0
         hudContainer.visibility = View.VISIBLE
-        handler.removeCallbacksAndMessages(null)
+        handler.removeCallbacks(hideControlsRunnable)
         handler.postDelayed({ hudContainer.visibility = View.GONE }, 1200L)
     }
 }

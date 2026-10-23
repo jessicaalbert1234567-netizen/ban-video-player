@@ -2,8 +2,8 @@ package com.example.dubbing
 
 import android.content.Context
 import android.net.Uri
+import android.provider.OpenableColumns
 import android.util.Log
-import androidx.core.net.toUri
 import com.example.asr.EnglishAsrEngine
 import com.example.audio.AudioSynchronizer
 import com.example.audio.MediaCodecAudioExtractor
@@ -11,25 +11,20 @@ import com.example.audio.WavUtils
 import com.example.database.DubbingProject
 import com.example.database.ProjectRepository
 import com.example.database.TranscriptSegmentEntity
-import com.example.settings.ProcessingMode
 import com.example.settings.SettingsManager
 import com.example.storage.StorageManager
 import com.example.storage.VideoUriResolver
 import com.example.subtitle.SubtitleExtractor
 import com.example.subtitle.SubtitleGenerator
 import com.example.translation.BanglaNaturalizer
-import com.example.translation.EnglishToBanglaTranslator
 import com.example.translation.OfflineDialogueTranslator
 import com.example.translation.SubtitleBatchTranslator
 import com.example.tts.BanglaTtsEngine
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
@@ -60,6 +55,22 @@ class DubbingPipeline(
         activeJobCancelled = true
     }
 
+    private fun queryContentSizeBytes(uri: Uri): Long {
+        if (uri.scheme == "file") {
+            return uri.path?.let { File(it).length() } ?: -1L
+        }
+        return try {
+            context.contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val idx = cursor.getColumnIndex(OpenableColumns.SIZE)
+                    if (idx != -1 && !cursor.isNull(idx)) cursor.getLong(idx) else -1L
+                } else -1L
+            } ?: -1L
+        } catch (_: Exception) {
+            -1L
+        }
+    }
+
     suspend fun executePipeline(
         projectId: String,
         videoUri: Uri,
@@ -87,43 +98,51 @@ class DubbingPipeline(
         if (localVideoFile.exists() && localVideoFile.length() > 1024) {
             workingVideoUri = Uri.fromFile(localVideoFile)
         } else {
-            try {
-                withContext(Dispatchers.IO) {
-                    val tempCopyFile = File(projectDir, "source_video.tmp")
-                    if (videoUri.scheme == "file") {
-                        val srcFile = File(videoUri.path ?: "")
-                        if (srcFile.exists() && srcFile.canonicalPath != localVideoFile.canonicalPath) {
-                            srcFile.copyTo(tempCopyFile, overwrite = true)
-                        }
-                    } else {
-                        context.contentResolver.openInputStream(videoUri)?.use { input ->
-                            tempCopyFile.outputStream().use { output ->
-                                val buffer = ByteArray(128 * 1024)
-                                var bytesRead: Int
-                                while (input.read(buffer).also { bytesRead = it } != -1) {
-                                    output.write(buffer, 0, bytesRead)
+            // Only cache small videos (< 60 MB) to avoid blocking startup or exhausting storage on 1 GB+ MKV movies
+            val sourceSize = queryContentSizeBytes(videoUri)
+            val maxCacheSizeBytes = 60L * 1024L * 1024L
+            if (sourceSize in 1025L..maxCacheSizeBytes) {
+                val tempCopyFile = File(projectDir, "source_video.tmp")
+                try {
+                    withContext(Dispatchers.IO) {
+                        if (videoUri.scheme == "file") {
+                            val srcFile = File(videoUri.path ?: "")
+                            if (srcFile.exists() && srcFile.canonicalPath != localVideoFile.canonicalPath) {
+                                srcFile.copyTo(tempCopyFile, overwrite = true)
+                            }
+                        } else {
+                            context.contentResolver.openInputStream(videoUri)?.use { input ->
+                                tempCopyFile.outputStream().use { output ->
+                                    val buffer = ByteArray(128 * 1024)
+                                    var bytesRead: Int
+                                    while (input.read(buffer).also { bytesRead = it } != -1) {
+                                        output.write(buffer, 0, bytesRead)
+                                    }
+                                    output.flush()
                                 }
-                                output.flush()
+                            }
+                        }
+                        if (tempCopyFile.exists() && tempCopyFile.length() > 1024) {
+                            if (localVideoFile.exists()) {
+                                localVideoFile.delete()
+                            }
+                            val renamed = tempCopyFile.renameTo(localVideoFile)
+                            if (!renamed) {
+                                tempCopyFile.copyTo(localVideoFile, overwrite = true)
+                                tempCopyFile.delete()
                             }
                         }
                     }
-                    if (tempCopyFile.exists() && tempCopyFile.length() > 1024) {
-                        if (localVideoFile.exists()) {
-                            localVideoFile.delete()
-                        }
-                        val renamed = tempCopyFile.renameTo(localVideoFile)
-                        if (!renamed) {
-                            tempCopyFile.copyTo(localVideoFile, overwrite = true)
-                            tempCopyFile.delete()
-                        }
+                    if (localVideoFile.exists() && localVideoFile.length() > 1024) {
+                        workingVideoUri = Uri.fromFile(localVideoFile)
+                        Log.i(TAG, "Cached small source video to project storage: ${localVideoFile.absolutePath}")
                     }
+                } catch (e: Exception) {
+                    try { if (tempCopyFile.exists()) tempCopyFile.delete() } catch (_: Exception) {}
+                    Log.w(TAG, "Skipping local video cache (${e.message}), using persistent source URI directly")
                 }
-                if (localVideoFile.exists() && localVideoFile.length() > 1024) {
-                    workingVideoUri = Uri.fromFile(localVideoFile)
-                    Log.i(TAG, "Successfully cached source video to project storage: ${localVideoFile.absolutePath} (${localVideoFile.length()} bytes)")
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "Could not cache source video locally: ${e.message}, falling back to original URI", e)
+            } else {
+                Log.i(TAG, "Source video is large (${sourceSize / (1024 * 1024)} MB); streaming directly from persistent URI without copying")
             }
         }
 
@@ -157,7 +176,6 @@ class DubbingPipeline(
             val mode = settingsManager.processingMode.value
             Log.d(TAG, "Starting pipeline for $projectId in mode: $mode, reDubOnly=$isReDubOnly")
 
-            // Determine resumption stage
             val startingStage = if (isReDubOnly) {
                 ProcessingStage.TRANSLATE
             } else {
@@ -177,7 +195,6 @@ class DubbingPipeline(
                     onProgressUpdate
                 )
 
-                // Instantly obtain video duration from metadata without slow audio decoding
                 val retrievedDurationMs = try {
                     val retriever = android.media.MediaMetadataRetriever()
                     retriever.setDataSource(context, workingVideoUri)
@@ -186,7 +203,7 @@ class DubbingPipeline(
                     durStr?.toLongOrNull() ?: 0L
                 } catch (_: Exception) { 0L }
 
-                val maxCueEndMs = providedSubtitleCues.maxOfOrNull { it.endMs } ?: 0L
+                val maxCueEndMs = providedSubtitleCues!!.maxOfOrNull { it.endMs } ?: 0L
                 val calculatedDuration = maxOf(retrievedDurationMs, maxCueEndMs + 1000L)
 
                 project = project.copy(
@@ -248,11 +265,10 @@ class DubbingPipeline(
                 repository.saveSegments(segments)
 
                 val sourceSrtFile = File(projectDir, "subtitle_en_source.srt")
-                com.example.subtitle.SubtitleExtractor.exportToSrt(providedSubtitleCues, sourceSrtFile)
+                SubtitleExtractor.exportToSrt(providedSubtitleCues, sourceSrtFile)
 
-                // Save English subtitle in device Downloads folder as well
                 val baseVideoTitle = videoTitle.substringBeforeLast(".")
-                com.example.subtitle.SubtitleExtractor.saveSrtToPublicDownloads(
+                SubtitleExtractor.saveSrtToPublicDownloads(
                     context,
                     "${baseVideoTitle}_English",
                     sourceSrtFile.readText()
@@ -339,11 +355,9 @@ class DubbingPipeline(
                             )
                         }
 
-                        // Verify that GTX actually produced authentic Bengali text
                         val banglaCount = gtxItems.count { it.translatedText.any { ch -> ch in '\u0980'..'\u09FF' } }
                         if (banglaCount > 0) {
                             gtxSuccess = true
-                            // Apply rule-based BanglaNaturalizer normalization to all lines!
                             segments = segments.mapIndexed { idx, seg ->
                                 val rawTrans = gtxItems.getOrNull(idx)?.translatedText?.trim()?.takeIf { it.isNotEmpty() } ?: seg.sourceText
                                 val natural = BanglaNaturalizer.naturalize(rawTrans)
@@ -368,7 +382,7 @@ class DubbingPipeline(
                         Log.w(TAG, "GTX online translation failed: ${e.message}, switching to offline translation")
                     }
 
-                    // Tier 2: Offline ML Kit Fallback with Rule-Based Normalization!
+                    // Tier 2: Offline ML Kit Fallback with Rule-Based Normalization
                     if (!gtxSuccess) {
                         checkCancelled()
                         reportStage(projectId, ProcessingStage.TRANSLATE, 0, 40, "অনলাইন API কাজ করেনি, অফলাইন ML Kit মডেলে অনুবাদ ও নর্মালাইজেশন শুরু হচ্ছে...", onProgressUpdate)
@@ -407,7 +421,7 @@ class DubbingPipeline(
                     if (unTranslatedCount > 0) {
                         checkCancelled()
                         reportStage(projectId, ProcessingStage.TRANSLATE, 0, 48, "অফলাইন ডায়ালগ ইঞ্জিন ও নর্মালাইজেশন বিকল্প কার্যকর করা হচ্ছে...", onProgressUpdate)
-                        segments = segments.mapIndexed { idx, seg ->
+                        segments = segments.map { seg ->
                             checkCancelled()
                             val text = if (!seg.translatedText.isNullOrBlank()) {
                                 seg.translatedText!!
@@ -448,10 +462,9 @@ class DubbingPipeline(
                 SubtitleGenerator.generateSrt(segments, srtFile)
                 SubtitleGenerator.generateTranscriptJson("en", "bn", segments, transcriptJsonFile)
 
-                // Save translated Bengali SRT directly to device public Download/FileTranslato folder
                 val baseVideoTitle = videoTitle.substringBeforeLast(".")
                 val bnSrtContent = srtFile.readText()
-                val downloadedFile = com.example.subtitle.SubtitleExtractor.saveSrtToPublicDownloads(
+                val downloadedFile = SubtitleExtractor.saveSrtToPublicDownloads(
                     context,
                     "${baseVideoTitle}_bangla",
                     bnSrtContent
@@ -499,7 +512,6 @@ class DubbingPipeline(
                             continue
                         }
 
-                        // Use already naturalized translated text directly (no redundant naturalization)
                         val rawText = seg.translatedText?.trim()?.ifEmpty { null } ?: ""
                         val textToSpeak = rawText.filter { it != '\u0000' && !it.isISOControl() || it == '\n' || it == '\t' }
 
@@ -519,12 +531,11 @@ class DubbingPipeline(
                         }
                         ttsSegments.add(seg.copy(audioSegmentPath = segAudioFile.absolutePath))
 
-                        // Periodically save segment audio paths to database every 10 items
-                        if ((i + 1) % 10 == 0 || i == segments.size - 1) {
+                        // Periodically save segment audio paths to database every 50 items to minimize SQLite I/O on 2,000+ cue movies
+                        if ((i + 1) % 50 == 0 || i == segments.size - 1) {
                             repository.saveSegments(ttsSegments)
                         }
 
-                        // Stage timing diagnostics: Every 25 subtitles, log elapsed time & avg ms/segment
                         if ((i + 1) % 25 == 0 || i == segments.size - 1) {
                             val elapsed = System.currentTimeMillis() - ttsStartTime
                             val avg = elapsed.toDouble() / (i + 1)
@@ -602,7 +613,6 @@ class DubbingPipeline(
             // STAGE 7: Finalize & Complete (95% - 100%)
             reportStage(projectId, ProcessingStage.FINALIZE, 50, 95, "Verifying output files...", onProgressUpdate)
 
-            // Strict Output Verification: verify existence, size, and validity of every output artifact
             if (!transcriptJsonFile.exists() || transcriptJsonFile.length() == 0L) {
                 throw IllegalStateException("Output verification failed: English/Bangla transcript JSON file is missing or empty (Stage: Subtitle & Transcript Generation).")
             }

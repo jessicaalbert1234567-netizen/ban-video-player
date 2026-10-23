@@ -5,6 +5,7 @@ import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.net.Uri
+import android.os.Build
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -39,13 +40,23 @@ class MediaCodecAudioExtractor(private val context: Context) : AudioExtractor {
             var audioTrackIndex = -1
             var inputFormat: MediaFormat? = null
 
+            // Prefer stereo track if multiple audio tracks exist, or fallback to first audio track (e.g. 5.1 HE-AAC)
             for (i in 0 until numTracks) {
                 val format = extractor.getTrackFormat(i)
                 val mime = format.getString(MediaFormat.KEY_MIME) ?: ""
                 if (mime.startsWith("audio/")) {
-                    audioTrackIndex = i
-                    inputFormat = format
-                    break
+                    if (audioTrackIndex == -1) {
+                        audioTrackIndex = i
+                        inputFormat = format
+                    }
+                    val ch = if (format.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
+                        format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                    } else 2
+                    if (ch in 1..2) {
+                        audioTrackIndex = i
+                        inputFormat = format
+                        break
+                    }
                 }
             }
 
@@ -56,7 +67,7 @@ class MediaCodecAudioExtractor(private val context: Context) : AudioExtractor {
             extractor.selectTrack(audioTrackIndex)
             val mime = inputFormat.getString(MediaFormat.KEY_MIME)!!
             val durationUs = if (inputFormat.containsKey(MediaFormat.KEY_DURATION)) {
-                inputFormat.getLong(MediaFormat.KEY_DURATION)
+                inputFormat.getLong(MediaFormat.KEY_DURATION).coerceAtLeast(1_000_000L)
             } else {
                 1_000_000L
             }
@@ -76,6 +87,20 @@ class MediaCodecAudioExtractor(private val context: Context) : AudioExtractor {
             } else {
                 android.media.AudioFormat.ENCODING_PCM_16BIT
             }
+
+            // Configure decoder hints for 5.1 HE-AAC / multichannel downmixing and 16-bit PCM
+            try {
+                inputFormat.setInteger(MediaFormat.KEY_MAX_OUTPUT_CHANNEL_COUNT, 2)
+                if (Build.VERSION.SDK_INT >= 28) {
+                    inputFormat.setInteger("aac-max-output-channel_count", 2)
+                }
+                if (Build.VERSION.SDK_INT >= 24) {
+                    inputFormat.setInteger(
+                        MediaFormat.KEY_PCM_ENCODING,
+                        android.media.AudioFormat.ENCODING_PCM_16BIT
+                    )
+                }
+            } catch (_: Exception) {}
 
             codec = MediaCodec.createDecoderByType(mime)
             codec.configure(inputFormat, null, null, 0)
@@ -101,7 +126,9 @@ class MediaCodecAudioExtractor(private val context: Context) : AudioExtractor {
                         if (sampleSize < 0) {
                             codec.queueInputBuffer(inIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                         } else {
-                            val presentationTimeUs = extractor.sampleTime
+                            // Clamp negative start timestamps (e.g., MKV start: -0.105000) to >= 0L
+                            val rawPtsUs = extractor.sampleTime
+                            val presentationTimeUs = maxOf(0L, rawPtsUs)
                             codec.queueInputBuffer(inIndex, 0, sampleSize, presentationTimeUs, 0)
                             extractor.advance()
 
@@ -210,7 +237,8 @@ class MediaCodecAudioExtractor(private val context: Context) : AudioExtractor {
                 if (isFloat) {
                     var sum = 0.0f
                     for (ch in 0 until sourceChannels) {
-                        sum += bb.getFloat(frameOffset + (ch * 4))
+                        val v = bb.getFloat(frameOffset + (ch * 4))
+                        if (!v.isNaN() && !v.isInfinite()) sum += v
                     }
                     val avgFloat = (sum / sourceChannels).coerceIn(-1.0f, 1.0f)
                     val shortVal = (avgFloat * 32767.0f).toInt().coerceIn(-32768, 32767).toShort()
@@ -243,7 +271,6 @@ class FfmpegAudioExtractor(private val context: Context) : AudioExtractor {
         outputWavFile: File,
         onProgress: (Float) -> Unit
     ): Result<File> {
-        // Run with progress reporting
         return fallbackExtractor.extractAudio(videoUri, outputWavFile, onProgress)
     }
 }

@@ -8,15 +8,15 @@
     android:background="@android:color/black"
     android:keepScreenOn="true">
 
-    <!-- Media3 ExoPlayer View (VLC-grade renderer) -->
+    <!-- Media3 ExoPlayer View (VLC-grade renderer with TextureView for 10-bit HEVC & SDR compatibility) -->
     <androidx.media3.ui.PlayerView
         android:id="@+id/player_view"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        app:surface_type="surface_view"
+        app:surface_type="texture_view"
         app:use_controller="false"
         app:resize_mode="fit"
-        app:shutter_background_color="@android:color/black" />
+        app:shutter_background_color="@android:color/transparent" />
 
     <!-- Center Buffering Spinner -->
     <ProgressBar
