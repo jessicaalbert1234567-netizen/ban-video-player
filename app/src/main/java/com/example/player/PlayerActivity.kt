@@ -382,6 +382,26 @@ class PlayerActivity : ComponentActivity() {
      * - AudioAttributes with handleAudioFocus=true
      * - Secondary synchronized dubbedPlayer for real-time Smart Ducking
      */
+    private fun createUniversalAudioSink(
+        ctx: Context,
+        enableAudioTrackPlaybackParams: Boolean
+    ): AudioSink {
+        val channelMixingProcessor = androidx.media3.common.audio.ChannelMixingAudioProcessor().apply {
+            putChannelMixingMatrix(androidx.media3.common.audio.ChannelMixingMatrix.create(8, 2)) // 7.1 -> Stereo
+            putChannelMixingMatrix(androidx.media3.common.audio.ChannelMixingMatrix.create(6, 2)) // 5.1 -> Stereo
+            putChannelMixingMatrix(androidx.media3.common.audio.ChannelMixingMatrix.create(5, 2)) // 5.0 -> Stereo
+            putChannelMixingMatrix(androidx.media3.common.audio.ChannelMixingMatrix.create(4, 2)) // Quad -> Stereo
+            putChannelMixingMatrix(androidx.media3.common.audio.ChannelMixingMatrix.create(3, 2)) // 3.0 -> Stereo
+            putChannelMixingMatrix(androidx.media3.common.audio.ChannelMixingMatrix.create(1, 2)) // Mono -> Stereo
+        }
+
+        return DefaultAudioSink.Builder(ctx)
+            .setAudioProcessors(arrayOf(channelMixingProcessor))
+            .setEnableFloatOutput(false) // Universal 16-bit PCM for hardware DAC compatibility
+            .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
+            .build()
+    }
+
     private fun initializePlayer() {
         if (player != null) return
         val targetUri = videoUri ?: run {
@@ -391,24 +411,21 @@ class PlayerActivity : ComponentActivity() {
         }
 
         try {
-            // 1. AudioSink with standard 16-bit PCM for universal Android AudioTrack compatibility
+            // 1. AudioSink with universal multichannel downmixing and 16-bit PCM
             val renderersFactory = object : DefaultRenderersFactory(this) {
                 override fun buildAudioSink(
                     context: Context,
                     enableFloatOutput: Boolean,
                     enableAudioTrackPlaybackParams: Boolean
                 ): AudioSink {
-                    return DefaultAudioSink.Builder(context)
-                        .setEnableFloatOutput(false) // Force 16-bit PCM for universal hardware compatibility
-                        .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
-                        .build()
+                    return createUniversalAudioSink(context, enableAudioTrackPlaybackParams)
                 }
             }.apply {
                 setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
                 setEnableDecoderFallback(true)
             }
 
-            // 2. TrackSelector with capability exceeding and explicit audio track enablement
+            // 2. TrackSelector with capability exceeding and audio track enablement
             trackSelector = DefaultTrackSelector(this).apply {
                 parameters = buildUponParameters()
                     .setExceedRendererCapabilitiesIfNecessary(true)
@@ -470,11 +487,11 @@ class PlayerActivity : ComponentActivity() {
                         enableFloatOutput: Boolean,
                         enableAudioTrackPlaybackParams: Boolean
                     ): AudioSink {
-                        return DefaultAudioSink.Builder(context)
-                            .setEnableFloatOutput(false)
-                            .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
-                            .build()
+                        return createUniversalAudioSink(context, enableAudioTrackPlaybackParams)
                     }
+                }.apply {
+                    setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
+                    setEnableDecoderFallback(true)
                 }
                 dubbedPlayer = ExoPlayer.Builder(this, dubbedRenderersFactory).build().apply {
                     val audioItem = MediaItem.fromUri(Uri.fromFile(dubbedFile))

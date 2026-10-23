@@ -100,6 +100,27 @@ class MediaPlayerManager(private val context: Context) {
 
     private var errorRecoveryAttempts = 0
 
+    private fun createUniversalAudioSink(
+        ctx: Context,
+        enableAudioTrackPlaybackParams: Boolean
+    ): androidx.media3.exoplayer.audio.AudioSink {
+        val channelMixingProcessor = androidx.media3.common.audio.ChannelMixingAudioProcessor().apply {
+            // Standard downmixing for surround/multichannel down to stereo
+            putChannelMixingMatrix(androidx.media3.common.audio.ChannelMixingMatrix.create(8, 2)) // 7.1 -> Stereo
+            putChannelMixingMatrix(androidx.media3.common.audio.ChannelMixingMatrix.create(6, 2)) // 5.1 -> Stereo
+            putChannelMixingMatrix(androidx.media3.common.audio.ChannelMixingMatrix.create(5, 2)) // 5.0 -> Stereo
+            putChannelMixingMatrix(androidx.media3.common.audio.ChannelMixingMatrix.create(4, 2)) // Quad -> Stereo
+            putChannelMixingMatrix(androidx.media3.common.audio.ChannelMixingMatrix.create(3, 2)) // 3.0 -> Stereo
+            putChannelMixingMatrix(androidx.media3.common.audio.ChannelMixingMatrix.create(1, 2)) // Mono -> Stereo
+        }
+
+        return androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(ctx)
+            .setAudioProcessors(arrayOf(channelMixingProcessor))
+            .setEnableFloatOutput(false) // Universal 16-bit PCM for hardware DAC compatibility
+            .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
+            .build()
+    }
+
     fun initializePlayer(): ExoPlayer {
         if (player == null) {
             val renderersFactory = object : androidx.media3.exoplayer.DefaultRenderersFactory(context) {
@@ -108,10 +129,7 @@ class MediaPlayerManager(private val context: Context) {
                     enableFloatOutput: Boolean,
                     enableAudioTrackPlaybackParams: Boolean
                 ): androidx.media3.exoplayer.audio.AudioSink {
-                    return androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(ctx)
-                        .setEnableFloatOutput(false) // Force standard 16-bit PCM for universal AudioTrack compatibility
-                        .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
-                        .build()
+                    return createUniversalAudioSink(ctx, enableAudioTrackPlaybackParams)
                 }
             }.apply {
                 setExtensionRendererMode(androidx.media3.exoplayer.DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
@@ -244,10 +262,7 @@ class MediaPlayerManager(private val context: Context) {
                     enableFloatOutput: Boolean,
                     enableAudioTrackPlaybackParams: Boolean
                 ): androidx.media3.exoplayer.audio.AudioSink {
-                    return androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(ctx)
-                        .setEnableFloatOutput(false)
-                        .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
-                        .build()
+                    return createUniversalAudioSink(ctx, enableAudioTrackPlaybackParams)
                 }
             }
             dubbedAudioPlayer = ExoPlayer.Builder(context, renderersFactory).build().apply {

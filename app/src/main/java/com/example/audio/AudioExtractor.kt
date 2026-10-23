@@ -61,15 +61,20 @@ class MediaCodecAudioExtractor(private val context: Context) : AudioExtractor {
                 1_000_000L
             }
 
-            val sourceSampleRate = if (inputFormat.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
+            var sourceSampleRate = if (inputFormat.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
                 inputFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
             } else {
                 44100
             }
-            val sourceChannels = if (inputFormat.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
+            var sourceChannels = if (inputFormat.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
                 inputFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
             } else {
                 2
+            }
+            var pcmEncoding = if (inputFormat.containsKey(MediaFormat.KEY_PCM_ENCODING)) {
+                inputFormat.getInteger(MediaFormat.KEY_PCM_ENCODING)
+            } else {
+                android.media.AudioFormat.ENCODING_PCM_16BIT
             }
 
             codec = MediaCodec.createDecoderByType(mime)
@@ -112,18 +117,31 @@ class MediaCodecAudioExtractor(private val context: Context) : AudioExtractor {
 
                 // Drain output buffers
                 val outIndex = codec.dequeueOutputBuffer(bufferInfo, kTimeOutUs)
-                if (outIndex >= 0) {
+                if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    val newFormat = codec.outputFormat
+                    if (newFormat.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
+                        sourceSampleRate = newFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                    }
+                    if (newFormat.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
+                        sourceChannels = newFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                    }
+                    if (newFormat.containsKey(MediaFormat.KEY_PCM_ENCODING)) {
+                        pcmEncoding = newFormat.getInteger(MediaFormat.KEY_PCM_ENCODING)
+                    }
+                    Log.i(TAG, "Decoder output format changed: sampleRate=$sourceSampleRate, channels=$sourceChannels, encoding=$pcmEncoding")
+                } else if (outIndex >= 0) {
                     val outputBuffer = codec.getOutputBuffer(outIndex)
                     if (outputBuffer != null && bufferInfo.size > 0) {
                         outputBuffer.position(bufferInfo.offset)
                         outputBuffer.limit(bufferInfo.offset + bufferInfo.size)
 
-                        // Convert decoded PCM (may be stereo/any sample rate) to 16kHz mono 16-bit PCM
+                        // Convert decoded PCM (may be stereo/5.1/any sample rate/float) to 16kHz mono 16-bit PCM
                         writeResampledMonoPcm(
                             outputBuffer,
                             fos,
                             sourceSampleRate,
                             sourceChannels,
+                            pcmEncoding,
                             WavUtils.DEFAULT_SAMPLE_RATE
                         )
                     }
@@ -159,37 +177,52 @@ class MediaCodecAudioExtractor(private val context: Context) : AudioExtractor {
     }
 
     /**
-     * Resamples multi-channel PCM or non-16kHz PCM to 16,000 Hz 16-bit Mono.
+     * Resamples multi-channel PCM (mono, stereo, 5.1, 7.1) or float PCM to 16,000 Hz 16-bit Mono.
      */
     private fun writeResampledMonoPcm(
         sourceBuffer: ByteBuffer,
         fos: FileOutputStream,
         sourceSampleRate: Int,
         sourceChannels: Int,
+        pcmEncoding: Int,
         targetSampleRate: Int = 16000
     ) {
         val bb = sourceBuffer.order(ByteOrder.LITTLE_ENDIAN)
-        val numSourceSamples = bb.remaining() / (2 * sourceChannels)
-        if (numSourceSamples <= 0) return
+        val isFloat = pcmEncoding == android.media.AudioFormat.ENCODING_PCM_FLOAT
+        val bytesPerSample = if (isFloat) 4 else 2
+        val bytesPerFrame = bytesPerSample * sourceChannels
+        if (bytesPerFrame <= 0) return
 
-        // Downsample ratio
+        val numSourceFrames = bb.remaining() / bytesPerFrame
+        if (numSourceFrames <= 0) return
+
         val step = sourceSampleRate.toDouble() / targetSampleRate.toDouble()
-        val outSamples = (numSourceSamples / step).toInt()
+        val outSamples = (numSourceFrames / step).toInt().coerceAtLeast(1)
         val outBytes = ByteArray(outSamples * 2)
         val outBb = ByteBuffer.wrap(outBytes).order(ByteOrder.LITTLE_ENDIAN)
 
         var srcPos = 0.0
-        while (srcPos < numSourceSamples && outBb.hasRemaining()) {
+        while (srcPos < numSourceFrames && outBb.hasRemaining()) {
             val srcIdx = srcPos.toInt()
-            val sampleByteOffset = bb.position() + (srcIdx * 2 * sourceChannels)
+            val frameOffset = bb.position() + (srcIdx * bytesPerFrame)
 
-            if (sampleByteOffset + (2 * sourceChannels) <= bb.limit()) {
-                var monoSample = 0
-                for (ch in 0 until sourceChannels) {
-                    monoSample += bb.getShort(sampleByteOffset + (ch * 2))
+            if (frameOffset + bytesPerFrame <= bb.limit()) {
+                if (isFloat) {
+                    var sum = 0.0f
+                    for (ch in 0 until sourceChannels) {
+                        sum += bb.getFloat(frameOffset + (ch * 4))
+                    }
+                    val avgFloat = (sum / sourceChannels).coerceIn(-1.0f, 1.0f)
+                    val shortVal = (avgFloat * 32767.0f).toInt().coerceIn(-32768, 32767).toShort()
+                    outBb.putShort(shortVal)
+                } else {
+                    var sum = 0
+                    for (ch in 0 until sourceChannels) {
+                        sum += bb.getShort(frameOffset + (ch * 2)).toInt()
+                    }
+                    val avgShort = (sum / sourceChannels).coerceIn(-32768, 32767).toShort()
+                    outBb.putShort(avgShort)
                 }
-                monoSample /= sourceChannels
-                outBb.putShort(monoSample.toShort())
             }
             srcPos += step
         }
