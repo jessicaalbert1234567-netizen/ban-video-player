@@ -1,0 +1,183 @@
+name: Release APK & Publish version.json
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version_name:
+        description: 'Version Name (e.g. 1.1.0)'
+        required: true
+        default: '1.1.0'
+      version_code:
+        description: 'Version Code (must be higher than installed e.g. 2)'
+        required: true
+        default: '2'
+      mandatory:
+        description: 'Is this update mandatory?'
+        type: boolean
+        required: true
+        default: true
+      message:
+        description: 'Update Message in Bengali'
+        required: false
+        default: 'অ্যাপ ব্যবহার চালিয়ে যেতে সর্বশেষ ভার্সন ইনস্টল করুন।'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+        cache: gradle
+
+    - name: Set up Android SDK
+      run: |
+        yes | sdkmanager --licenses > /dev/null 2>&1 || true
+        sdkmanager --install "platform-tools" "platforms;android-36" "build-tools;36.0.0" > /dev/null || \
+        sdkmanager --install "platform-tools" "platforms;android-35" "build-tools;35.0.0" > /dev/null || true
+        yes | sdkmanager --licenses > /dev/null 2>&1 || true
+
+    - name: Grant execute permission for gradlew
+      run: |
+        if [ ! -f "gradlew" ]; then
+          gradle wrapper
+        fi
+        chmod +x gradlew
+
+    - name: Configure Release Signing Keystore
+      env:
+        KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+        KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+      run: |
+        if [ -n "$KEYSTORE_BASE64" ]; then
+          echo "Decoding release keystore from GitHub Secret KEYSTORE_BASE64..."
+          echo "$KEYSTORE_BASE64" | base64 -d > "${GITHUB_WORKSPACE}/my-upload-key.jks"
+        else
+          echo "No KEYSTORE_BASE64 secret found. Generating persistent release keystore for build..."
+          keytool -genkeypair -v -keystore "${GITHUB_WORKSPACE}/my-upload-key.jks" \
+            -storepass "${STORE_PASSWORD:-android}" \
+            -alias "upload" \
+            -keypass "${KEY_PASSWORD:-android}" \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=BanVideoPlayer,O=Netizen,C=BD"
+        fi
+
+    - name: Determine Version Code and Name
+      id: version_calc
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          V_NAME="${{ github.event.inputs.version_name }}"
+          V_CODE="${{ github.event.inputs.version_code }}"
+          IS_MANDATORY="${{ github.event.inputs.mandatory }}"
+          MSG="${{ github.event.inputs.message }}"
+          TAG="v${V_NAME}"
+        else
+          TAG="${{ github.ref_name }}"
+          V_NAME="${TAG#v}"
+          # Derive incremental version code if not provided
+          V_CODE="${{ github.run_number }}"
+          IS_MANDATORY="true"
+          MSG="অ্যাপ ব্যবহার চালিয়ে যেতে সর্বশেষ ভার্সন ইনস্টল করুন।"
+        fi
+
+        echo "version_name=$V_NAME" >> $GITHUB_OUTPUT
+        echo "version_code=$V_CODE" >> $GITHUB_OUTPUT
+        echo "mandatory=$IS_MANDATORY" >> $GITHUB_OUTPUT
+        echo "message=$MSG" >> $GITHUB_OUTPUT
+        echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+    - name: Update Version in build.gradle.kts
+      run: |
+        sed -i 's/versionCode = [0-9]*/versionCode = ${{ steps.version_calc.outputs.version_code }}/' app/build.gradle.kts
+        sed -i 's/versionName = "[^"]*"/versionName = "${{ steps.version_calc.outputs.version_name }}"/' app/build.gradle.kts
+
+    - name: Build Signed Release APK
+      env:
+        KEYSTORE_PATH: "${{ github.workspace }}/my-upload-key.jks"
+        STORE_PASSWORD: ${{ secrets.STORE_PASSWORD || 'android' }}
+        KEY_PASSWORD: ${{ secrets.KEY_PASSWORD || 'android' }}
+      run: |
+        ./gradlew assembleRelease --no-daemon --stacktrace
+
+    - name: Calculate Real SHA-256 & Generate version.json
+      id: gen_metadata
+      run: |
+        RELEASE_APK="app/build/outputs/apk/release/app-release.apk"
+        if [ ! -f "$RELEASE_APK" ]; then
+          echo "Error: $RELEASE_APK not found!"
+          exit 1
+        fi
+
+        # Duplicate to branded file name
+        cp "$RELEASE_APK" "ban-video-player-release.apk"
+
+        # Compute SHA-256
+        SHA256_HASH=$(sha256sum "$RELEASE_APK" | awk '{print $1}')
+        echo "Calculated SHA-256: $SHA256_HASH"
+        echo "sha256=$SHA256_HASH" >> $GITHUB_OUTPUT
+
+        TAG="${{ steps.version_calc.outputs.tag }}"
+        REPO="${{ github.repository }}"
+        APK_URL="https://github.com/${REPO}/releases/download/${TAG}/app-release.apk"
+
+        # Generate version.json
+        cat <<EOF > version.json
+        {
+          "versionCode": ${{ steps.version_calc.outputs.version_code }},
+          "versionName": "${{ steps.version_calc.outputs.version_name }}",
+          "mandatory": ${{ steps.version_calc.outputs.mandatory }},
+          "apkUrl": "${APK_URL}",
+          "sha256": "${SHA256_HASH}",
+          "message": "${{ steps.version_calc.outputs.message }}"
+        }
+        EOF
+
+        echo "Generated version.json:"
+        cat version.json
+
+    - name: Publish GitHub Release with app-release.apk and version.json
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ steps.version_calc.outputs.tag }}
+        name: "Release ${{ steps.version_calc.outputs.tag }} (${{ steps.version_calc.outputs.version_name }})"
+        draft: false
+        prerelease: false
+        make_latest: true
+        body: |
+          ## 📱 Nimpata Bangla Dubbing Video Player - ${{ steps.version_calc.outputs.tag }}
+          
+          ### 🚀 Update Details:
+          - **Version:** `v${{ steps.version_calc.outputs.version_name }}`
+          - **Version Code:** `${{ steps.version_calc.outputs.version_code }}`
+          - **Mandatory Update:** `${{ steps.version_calc.outputs.mandatory }}`
+          - **Message:** ${{ steps.version_calc.outputs.message }}
+          
+          ### 🔐 Security & Verification:
+          - **File:** `app-release.apk`
+          - **SHA-256:** `${{ steps.gen_metadata.outputs.sha256 }}`
+          
+          ### 📥 Download Assets:
+          - 📦 **[Download app-release.apk](https://github.com/${{ github.repository }}/releases/download/${{ steps.version_calc.outputs.tag }}/app-release.apk)**
+          - 📦 **[Download ban-video-player-release.apk](https://github.com/${{ github.repository }}/releases/download/${{ steps.version_calc.outputs.tag }}/ban-video-player-release.apk)**
+          - 📄 **[Download version.json](https://github.com/${{ github.repository }}/releases/download/${{ steps.version_calc.outputs.tag }}/version.json)**
+        files: |
+          app/build/outputs/apk/release/app-release.apk
+          ban-video-player-release.apk
+          version.json
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

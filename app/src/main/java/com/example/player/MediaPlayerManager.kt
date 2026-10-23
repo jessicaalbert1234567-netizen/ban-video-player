@@ -377,7 +377,9 @@ class MediaPlayerManager(private val context: Context) {
         when (choice) {
             AudioTrackChoice.BANGLA_DUB -> {
                 if (isSpeaking) {
-                    exo.volume = 0.12f
+                    // Smart Ducking: Original ambient audio at 0.32f keeps cars, storms, music,
+                    // footsteps, and explosions clearly audible behind the crisp 1.0f Bangla speech!
+                    exo.volume = 0.32f
                     if (isLive) {
                         val activeCue = bnSubtitleEntries.firstOrNull { currentPosMs in it.startMs..it.endMs }
                         if (activeCue != null && activeCue.startMs != lastSpokenCueStartMs) {
@@ -392,9 +394,10 @@ class MediaPlayerManager(private val context: Context) {
                         dPlayer?.volume = 1.0f
                     }
                 } else {
-                    exo.volume = 1.0f
+                    // Ambient / music scene between dialogues: original video sound at full 100% volume!
+                    exo.volume = if (bnSubtitleEntries.isEmpty()) 0.35f else 1.0f
                     if (!isLive) {
-                        dPlayer?.volume = 0.0f
+                        dPlayer?.volume = 1.0f
                     }
                 }
             }
@@ -423,7 +426,7 @@ class MediaPlayerManager(private val context: Context) {
     }
 
     private fun isDialogueActive(posMs: Long): Boolean {
-        if (bnSubtitleEntries.isEmpty()) return false
+        if (bnSubtitleEntries.isEmpty()) return true
         // Include small 40ms lead-in/lead-out for natural speech pacing
         return bnSubtitleEntries.any { posMs in (it.startMs - 40L)..(it.endMs + 80L) }
     }

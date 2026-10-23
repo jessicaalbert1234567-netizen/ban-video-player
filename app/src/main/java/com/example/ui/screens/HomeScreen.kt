@@ -94,9 +94,14 @@ fun HomeScreen(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
         if (uri != null) {
-            com.example.storage.VideoUriResolver.takePersistablePermission(context, uri)
-            val intent = com.example.player.PlayerActivity.createIntent(context, uri)
-            context.startActivity(intent)
+            try {
+                com.example.storage.VideoUriResolver.takePersistablePermission(context, uri)
+                val intent = com.example.player.PlayerActivity.createIntent(context, uri)
+                context.startActivity(intent)
+            } catch (e: Exception) {
+                Log.e("HomeScreen", "Error launching direct video player: ${e.message}", e)
+                android.widget.Toast.makeText(context, "ভিডিও প্লেয়ার খুলতে সমস্যা হয়েছে: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+            }
         }
     }
 

@@ -33,7 +33,8 @@ object AdMobManager {
     private const val TAG = "AdMobManager"
     private var rewardedAd: RewardedAd? = null
     private var isLoadingRewarded = false
-    private var isInitialized = false
+    var isInitialized = false
+        private set
 
     /**
      * Initializes Google Mobile Ads SDK on a background coroutine as recommended
@@ -45,8 +46,12 @@ object AdMobManager {
 
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                // Configure request settings
+                // Remove any stale or unsigned variations seed file from app_webview
+                purgeCorruptVariationsSeed(appContext)
+
+                // Configure request settings with emulator test device support
                 val requestConfig = RequestConfiguration.Builder()
+                    .setTestDeviceIds(listOf(AdRequest.DEVICE_ID_EMULATOR))
                     .build()
                 MobileAds.setRequestConfiguration(requestConfig)
 
@@ -60,6 +65,24 @@ object AdMobManager {
                 Log.w(TAG, "Non-fatal AdMob initialization warning: ${t.message}")
             }
         }
+    }
+
+    private fun purgeCorruptVariationsSeed(context: Context) {
+        try {
+            val dataDir = java.io.File(context.applicationInfo.dataDir)
+            val webviewDir = java.io.File(dataDir, "app_webview")
+            if (webviewDir.exists()) {
+                val seedFiles = listOf(
+                    java.io.File(webviewDir, "variations_seed"),
+                    java.io.File(webviewDir, "variations_seed_new")
+                )
+                for (file in seedFiles) {
+                    if (file.exists()) {
+                        file.delete()
+                    }
+                }
+            }
+        } catch (_: Throwable) {}
     }
 
     fun loadRewardedAd(context: Context) {
@@ -166,7 +189,11 @@ fun AdMobBanner(
                                 Log.d("AdMobBanner", "Banner ad failed to load (offline or no fill): ${error.message}")
                             }
                         }
-                        loadAd(AdRequest.Builder().build())
+                        if (AdMobManager.isInitialized) {
+                            loadAd(AdRequest.Builder().build())
+                        } else {
+                            AdMobManager.initialize(context)
+                        }
                     }
                 } catch (t: Throwable) {
                     Log.w("AdMobBanner", "Failed to instantiate AdView: ${t.message}")

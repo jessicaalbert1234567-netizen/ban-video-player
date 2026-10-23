@@ -27,21 +27,47 @@ import com.example.ui.screens.HomeScreen
 import com.example.ui.screens.ModelManagerScreen
 import com.example.ui.screens.PlayerScreen
 import com.example.ui.screens.SettingsScreen
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import com.example.update.AppUpdateManager
+import com.example.update.MandatoryUpdateScreen
+import com.example.update.UpdateUiState
 import com.example.ui.screens.TestPipelineScreen
 import com.example.ui.theme.MyApplicationTheme
 
 class MainActivity : ComponentActivity() {
 
     private val viewModel: DubbingViewModel by viewModels()
+    private lateinit var updateManager: AppUpdateManager
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        updateManager = AppUpdateManager(this)
 
         setContent {
             MyApplicationTheme {
-                RequestAppPermissions()
-                AppNavigation(viewModel = viewModel)
+                val updateState by updateManager.updateState.collectAsState()
+
+                LaunchedEffect(Unit) {
+                    updateManager.checkForUpdates()
+                }
+
+                when (val state = updateState) {
+                    is UpdateUiState.UpToDate -> {
+                        LaunchedEffect(Unit) {
+                            com.example.ads.AdMobManager.initialize(this@MainActivity)
+                        }
+                        RequestAppPermissions()
+                        AppNavigation(viewModel = viewModel)
+                    }
+                    else -> {
+                        MandatoryUpdateScreen(
+                            updateManager = updateManager,
+                            uiState = state
+                        )
+                    }
+                }
             }
         }
     }

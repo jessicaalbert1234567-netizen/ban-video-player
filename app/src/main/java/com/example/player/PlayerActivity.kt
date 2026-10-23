@@ -2,6 +2,7 @@ package com.example.player
 
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
 import android.media.AudioManager
@@ -23,9 +24,8 @@ import android.widget.ProgressBar
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
-import androidx.appcompat.app.AlertDialog
-import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -48,7 +48,6 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.source.MediaSource
-import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.ui.AspectRatioFrameLayout
@@ -59,21 +58,29 @@ import java.io.File
 import java.util.Locale
 import kotlin.math.abs
 
+enum class PlayerAudioMode(val label: String, val description: String) {
+    SMART_DUB("স্মার্ট অটো ডাব (পারিপার্শ্বিক অডিও সহ)", "বাংলা ডাবিং এবং ভিডিওর পেছনের ব্যাকগ্রাউন্ড সাউন্ড ও মিউজিক একসাথে চলবে"),
+    ORIGINAL_ONLY("শুধুমাত্র মূল ভিডিওর অডিও", "মূল ভিডিওর অরিজিনাল সাউন্ডট্র্যাক ১০০% ভলিউমে"),
+    BANGLA_ONLY("শুধুমাত্র বাংলা ডাবিং", "শুধুমাত্র অনূদিত বাংলা কণ্ঠ (মূল ভিডিও মিউট)")
+}
+
 /**
  * Production-ready VLC-grade Offline Video Player Activity using AndroidX Media3 ExoPlayer.
  *
- * Features:
+ * Features & Architecture:
  * 1. Robust Software/Hardware Decoding: DefaultRenderersFactory with EXTENSION_RENDERER_MODE_PREFER
  *    and decoder fallback enabled for 10-bit HEVC (Main 10), Hi10P (H.264 10-bit), AV1, and legacy codecs.
- * 2. Multichannel Audio Downmixing: Automatic 5.1/7.1 to stereo downmixing via ChannelMixingAudioProcessor
- *    to prevent silent audio or hardware crash on phone speakers and headphones.
- * 3. Multi-track Audio & Embedded Subtitle Management: DefaultTrackSelector with track switching.
- * 4. Local Storage / SAF: Handles content:// and file:// local URIs seamlessly with persistable permissions.
- * 5. VLC Gestures: Brightness (left swipe), Volume (right swipe), Scrub (horizontal swipe), Double tap seek.
- * 6. Rewarded Ad: Triggers Google AdMob rewarded ad before starting video playback.
+ * 2. Multichannel Audio Downmixing: Automatic 5.1/7.1 to stereo downmixing via ChannelMixingAudioProcessor.
+ * 3. Dual-Player Smart Audio Ducking: Simultaneous playback of video ambient soundtrack and Bangla speech,
+ *    ducking original background audio to 30% during speech so ambient cars, music, footsteps, and explosions
+ *    remain audible behind clear Bangla dubbing.
+ * 4. Multi-track Audio & Embedded Subtitle Management: DefaultTrackSelector with instant track switching.
+ * 5. Local Storage / SAF: Handles content:// and file:// local URIs seamlessly with persistable permissions.
+ * 6. VLC Gestures: Brightness (left swipe), Volume (right swipe), Scrub (horizontal swipe), Double tap seek.
+ * 7. Crash-proof ComponentActivity architecture avoiding AppCompat theme conflicts.
  */
 @UnstableApi
-class PlayerActivity : AppCompatActivity() {
+class PlayerActivity : ComponentActivity() {
 
     companion object {
         private const val TAG = "PlayerActivity"
@@ -93,21 +100,31 @@ class PlayerActivity : AppCompatActivity() {
             srtPath: String? = null
         ): Intent {
             return Intent(context, PlayerActivity::class.java).apply {
+                data = videoUri
                 putExtra(EXTRA_VIDEO_URI, videoUri.toString())
                 putExtra(EXTRA_TITLE, title)
                 putExtra(EXTRA_DUBBED_AUDIO_PATH, dubbedAudioPath)
                 putExtra(EXTRA_SRT_PATH, srtPath)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                if (context !is Activity) {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
             }
         }
     }
 
-    // Media3 ExoPlayer & Track Selector
+    // Media3 ExoPlayer (Primary: Video + Original Multichannel Audio)
     private var player: ExoPlayer? = null
+    // Media3 ExoPlayer (Secondary: Dubbed Bangla Speech Track for Real-time Smart Ducking)
+    private var dubbedPlayer: ExoPlayer? = null
+
     private var trackSelector: DefaultTrackSelector? = null
     private var videoUri: Uri? = null
     private var videoTitle: String? = null
     private var dubbedAudioPath: String? = null
     private var srtPath: String? = null
+
+    private var currentAudioMode = PlayerAudioMode.SMART_DUB
 
     // Playback state restoration across lifecycles
     private var startPositionMs: Long = 0L
@@ -207,8 +224,8 @@ class PlayerActivity : AppCompatActivity() {
         val dataUri = intent.data
 
         videoUri = when {
-            rawUriStr != null -> Uri.parse(rawUriStr)
             dataUri != null -> dataUri
+            rawUriStr != null -> try { Uri.parse(rawUriStr) } catch (_: Exception) { null }
             else -> null
         }
 
@@ -274,6 +291,7 @@ class PlayerActivity : AppCompatActivity() {
             player?.let { p ->
                 val newPos = maxOf(0L, p.currentPosition - 10_000L)
                 p.seekTo(newPos)
+                dubbedPlayer?.seekTo(newPos)
                 showSeekHud(newPos, -10_000L)
             }
             resetControlsHideTimer()
@@ -283,6 +301,7 @@ class PlayerActivity : AppCompatActivity() {
             player?.let { p ->
                 val newPos = minOf(p.duration, p.currentPosition + 10_000L)
                 p.seekTo(newPos)
+                dubbedPlayer?.seekTo(newPos)
                 showSeekHud(newPos, 10_000L)
             }
             resetControlsHideTimer()
@@ -336,6 +355,7 @@ class PlayerActivity : AppCompatActivity() {
                     if (duration > 0 && sb != null) {
                         val seekToMs = (duration * sb.progress) / 1000L
                         p.seekTo(seekToMs)
+                        dubbedPlayer?.seekTo(seekToMs)
                     }
                 }
                 resetControlsHideTimer()
@@ -349,16 +369,21 @@ class PlayerActivity : AppCompatActivity() {
      * - Enable decoder fallback for 10-bit HEVC, Hi10P, AV1, and custom codecs
      * - Stereo downmixing AudioSink using ChannelMixingAudioProcessor
      * - AudioAttributes with handleAudioFocus=true
+     * - Secondary synchronized dubbedPlayer for real-time Smart Ducking
      */
     private fun initializePlayer() {
         if (player != null) return
-        val targetUri = videoUri ?: return
+        val targetUri = videoUri ?: run {
+            Toast.makeText(this, "ভিডিও ফাইল খুঁজে পাওয়া যায়নি", Toast.LENGTH_SHORT).show()
+            finish()
+            return
+        }
 
         try {
             // 1. AudioSink with multichannel (5.1 / 7.1) downmixing to stereo
             val channelMixingProcessor = ChannelMixingAudioProcessor()
 
-            // 2. DefaultRenderersFactory configured for maximum decoding compatibility
+            // 2. DefaultRenderersFactory configured for maximum VLC-grade decoding compatibility
             val renderersFactory = object : DefaultRenderersFactory(this) {
                 override fun buildAudioSink(
                     context: Context,
@@ -425,34 +450,43 @@ class PlayerActivity : AppCompatActivity() {
             val mainMediaSource = ProgressiveMediaSource.Factory(dataSourceFactory)
                 .createMediaSource(mediaItemBuilder.build())
 
-            // If an external dubbed audio track was generated, merge it into the player
-            val finalSource: MediaSource = if (!dubbedAudioPath.isNullOrBlank()) {
-                val dubbedFile = File(dubbedAudioPath!!)
-                if (dubbedFile.exists() && dubbedFile.length() > 44) {
-                    val dubbedAudioSource = ProgressiveMediaSource.Factory(dataSourceFactory)
-                        .createMediaSource(MediaItem.fromUri(Uri.fromFile(dubbedFile)))
-                    MergingMediaSource(mainMediaSource, dubbedAudioSource)
-                } else {
-                    mainMediaSource
+            player?.setMediaSource(mainMediaSource)
+            player?.prepare()
+
+            // 7. Setup Secondary Dubbed Audio Player for Smart Dubbing
+            val dubbedFile = dubbedAudioPath?.let { File(it) }
+            if (dubbedFile != null && dubbedFile.exists() && dubbedFile.length() > 44) {
+                dubbedPlayer = ExoPlayer.Builder(this).build().apply {
+                    val audioItem = MediaItem.fromUri(Uri.fromFile(dubbedFile))
+                    val audioSource = ProgressiveMediaSource.Factory(dataSourceFactory).createMediaSource(audioItem)
+                    setMediaSource(audioSource)
+                    prepare()
+                    playWhenReady = startPlayWhenReady
+                    seekTo(startPositionMs)
                 }
+                currentAudioMode = PlayerAudioMode.SMART_DUB
+                Log.i(TAG, "Dubbed audio player initialized for smart ambient ducking: ${dubbedFile.absolutePath}")
             } else {
-                mainMediaSource
+                dubbedPlayer = null
+                currentAudioMode = PlayerAudioMode.ORIGINAL_ONLY
             }
 
-            player?.setMediaSource(finalSource)
-            player?.prepare()
+            applyAudioModeVolumes()
 
             if (startPositionMs > 0) {
                 player?.seekTo(startPositionMs)
+                dubbedPlayer?.seekTo(startPositionMs)
             }
 
-            // 7. Rewarded Ad gate before starting playback
+            // 8. Rewarded Ad gate before starting playback
             if (!isAdShownOrSkipped) {
                 isAdShownOrSkipped = true
                 player?.pause()
+                dubbedPlayer?.pause()
                 btnPlayPause.setImageResource(R.drawable.ic_play_arrow)
                 AdMobManager.showRewardedAd(this) {
                     player?.play()
+                    dubbedPlayer?.play()
                     btnPlayPause.setImageResource(R.drawable.ic_pause)
                 }
             }
@@ -460,7 +494,7 @@ class PlayerActivity : AppCompatActivity() {
             handler.post(updateProgressRunnable)
             resetControlsHideTimer()
 
-            Log.i(TAG, "ExoPlayer initialized with VLC-grade decoding & stereo downmixing")
+            Log.i(TAG, "ExoPlayer initialized with VLC-grade decoding, stereo downmixing, and Smart Dubbing")
         } catch (e: Exception) {
             Log.e(TAG, "ExoPlayer initialization failed: ${e.message}", e)
             Toast.makeText(this, "ভিডিও প্লেয়ার শুরু করতে সমস্যা হয়েছে: ${e.message}", Toast.LENGTH_LONG).show()
@@ -477,6 +511,13 @@ class PlayerActivity : AppCompatActivity() {
         player = null
         trackSelector = null
         playerView.player = null
+
+        dubbedPlayer?.let { dp ->
+            dp.stop()
+            dp.release()
+        }
+        dubbedPlayer = null
+
         handler.removeCallbacks(updateProgressRunnable)
         handler.removeCallbacks(hideControlsRunnable)
     }
@@ -506,6 +547,7 @@ class PlayerActivity : AppCompatActivity() {
             releasePlayer()
         } else {
             player?.pause()
+            dubbedPlayer?.pause()
         }
     }
 
@@ -549,7 +591,10 @@ class PlayerActivity : AppCompatActivity() {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             btnPlayPause.setImageResource(if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play_arrow)
             if (isPlaying) {
+                dubbedPlayer?.play()
                 resetControlsHideTimer()
+            } else {
+                dubbedPlayer?.pause()
             }
         }
 
@@ -573,9 +618,21 @@ class PlayerActivity : AppCompatActivity() {
         val ts = trackSelector ?: return
         val currentTracks = p.currentTracks
 
-        val audioTrackOptions = mutableListOf<Triple<String, TrackGroup, Int>>()
+        val audioOptions = mutableListOf<Triple<String, String, TrackSelectionOverride?>>()
         var selectedItemIndex = 0
 
+        // 1. Smart Audio Modes (if dubbed audio is available)
+        if (dubbedPlayer != null) {
+            for (mode in PlayerAudioMode.values()) {
+                val isSelected = (currentAudioMode == mode)
+                if (isSelected) {
+                    selectedItemIndex = audioOptions.size
+                }
+                audioOptions.add(Triple(mode.label, mode.description, null))
+            }
+        }
+
+        // 2. Video internal audio tracks (MKV multi-language)
         for (group in currentTracks.groups) {
             if (group.type == C.TRACK_TYPE_AUDIO) {
                 val mediaTrackGroup = group.mediaTrackGroup
@@ -586,38 +643,78 @@ class PlayerActivity : AppCompatActivity() {
                     val mime = format.sampleMimeType?.substringAfterLast("/")?.uppercase(Locale.ROOT) ?: "AUDIO"
                     val label = when {
                         !format.label.isNullOrBlank() -> format.label!!
-                        lang == "ben" || lang == "bn" -> "বাংলা অডিও (Bangla Dub)"
+                        lang == "ben" || lang == "bn" -> "ভিডিও অরিজিনাল বাংলা অডিও"
                         lang == "eng" || lang == "en" -> "English ($channels-ch $mime)"
-                        else -> "অডিও #${audioTrackOptions.size + 1} [$lang, $channels-ch $mime]"
+                        else -> "মূল ভিডিও অডিও #${audioOptions.size + 1} [$lang, $channels-ch $mime]"
                     }
 
-                    if (group.isTrackSelected(i)) {
-                        selectedItemIndex = audioTrackOptions.size
+                    if (dubbedPlayer == null && group.isTrackSelected(i)) {
+                        selectedItemIndex = audioOptions.size
                     }
-                    audioTrackOptions.add(Triple(label, mediaTrackGroup, i))
+                    audioOptions.add(Triple(label, "ভিডিওর অভ্যন্তরীণ অডিও ট্র্যাক", TrackSelectionOverride(mediaTrackGroup, i)))
                 }
             }
         }
 
-        if (audioTrackOptions.isEmpty()) {
+        if (audioOptions.isEmpty()) {
             Toast.makeText(this, "এই ভিডিওতে বিকল্প অডিও ট্র্যাক পাওয়া যায়নি", Toast.LENGTH_SHORT).show()
             return
         }
 
-        val items = audioTrackOptions.map { it.first }.toTypedArray()
+        val items = audioOptions.map { it.first }.toTypedArray()
         AlertDialog.Builder(this)
-            .setTitle("অডিও ট্র্যাক নির্বাচন করুন (Audio Track)")
+            .setTitle("অডিও ট্র্যাক নির্বাচন করুন (Smart Audio & Multi-Track)")
             .setSingleChoiceItems(items, selectedItemIndex) { dialog, which ->
-                val chosen = audioTrackOptions[which]
-                ts.setParameters(
-                    ts.buildUponParameters()
-                        .setOverrideForType(TrackSelectionOverride(chosen.second, chosen.third))
-                )
+                val chosen = audioOptions[which]
+                when (which) {
+                    0 -> if (dubbedPlayer != null) setAudioMode(PlayerAudioMode.SMART_DUB)
+                    1 -> if (dubbedPlayer != null) setAudioMode(PlayerAudioMode.ORIGINAL_ONLY)
+                    2 -> if (dubbedPlayer != null) setAudioMode(PlayerAudioMode.BANGLA_ONLY)
+                    else -> {
+                        chosen.third?.let { override ->
+                            ts.setParameters(
+                                ts.buildUponParameters()
+                                    .setOverrideForType(override)
+                            )
+                        }
+                    }
+                }
                 Toast.makeText(this, "নির্বাচিত অডিও: ${chosen.first}", Toast.LENGTH_SHORT).show()
                 dialog.dismiss()
             }
             .setNegativeButton("বাতিল", null)
             .show()
+    }
+
+    private fun setAudioMode(mode: PlayerAudioMode) {
+        currentAudioMode = mode
+        applyAudioModeVolumes()
+    }
+
+    private fun applyAudioModeVolumes() {
+        val p = player ?: return
+        val dp = dubbedPlayer
+        if (dp == null) {
+            p.volume = 1.0f
+            return
+        }
+
+        when (currentAudioMode) {
+            PlayerAudioMode.SMART_DUB -> {
+                // Smart Ducking: Original video audio lowered to 0.32f so ambient sounds, music,
+                // and sound effects remain clearly heard alongside the clear 1.0f Bangla speech!
+                p.volume = 0.32f
+                dp.volume = 1.0f
+            }
+            PlayerAudioMode.ORIGINAL_ONLY -> {
+                p.volume = 1.0f
+                dp.volume = 0.0f
+            }
+            PlayerAudioMode.BANGLA_ONLY -> {
+                p.volume = 0.0f
+                dp.volume = 1.0f
+            }
+        }
     }
 
     private fun showSubtitleTrackSelectionDialog() {
@@ -687,8 +784,10 @@ class PlayerActivity : AppCompatActivity() {
         player?.let { p ->
             if (p.isPlaying) {
                 p.pause()
+                dubbedPlayer?.pause()
             } else {
                 p.play()
+                dubbedPlayer?.play()
             }
         }
     }
@@ -703,6 +802,7 @@ class PlayerActivity : AppCompatActivity() {
         currentSpeedIndex = (currentSpeedIndex + 1) % SPEEDS.size
         val speed = SPEEDS[currentSpeedIndex]
         player?.playbackParameters = PlaybackParameters(speed)
+        dubbedPlayer?.playbackParameters = PlaybackParameters(speed)
         btnSpeed.text = "${speed}x"
         Toast.makeText(this, "গতি: ${speed}x", Toast.LENGTH_SHORT).show()
     }
@@ -723,32 +823,40 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun updateTimeline() {
         val p = player ?: return
-        val current = maxOf(0L, p.currentPosition)
-        val duration = maxOf(0L, p.duration)
+        val currentMs = p.currentPosition
+        val durationMs = p.duration
 
-        txtTimeCurrent.text = formatTime(current)
-        txtTimeDuration.text = formatTime(duration)
-
-        if (duration > 0) {
-            val progress = ((current * 1000L) / duration).toInt()
+        txtTimeCurrent.text = formatTime(currentMs)
+        if (durationMs > 0) {
+            txtTimeDuration.text = formatTime(durationMs)
+            val progress = ((currentMs * 1000L) / durationMs).toInt()
             seekBar.progress = progress
         }
+
+        // Resync secondary dubbed audio player if drift exceeds 120ms
+        dubbedPlayer?.let { dp ->
+            val drift = abs(currentMs - dp.currentPosition)
+            if (drift > 120L) {
+                dp.seekTo(currentMs)
+            }
+        }
+
+        applyAudioModeVolumes()
     }
 
     private fun formatTime(ms: Long): String {
-        val totalSec = ms / 1000L
-        val hours = totalSec / 3600L
-        val mins = (totalSec % 3600L) / 60L
-        val secs = totalSec % 60L
+        val totalSeconds = (ms / 1000).coerceAtLeast(0)
+        val seconds = totalSeconds % 60
+        val minutes = (totalSeconds / 60) % 60
+        val hours = totalSeconds / 3600
         return if (hours > 0) {
-            String.format(Locale.getDefault(), "%02d:%02d:%02d", hours, mins, secs)
+            String.format(Locale.ROOT, "%d:%02d:%02d", hours, minutes, seconds)
         } else {
-            String.format(Locale.getDefault(), "%02d:%02d", mins, secs)
+            String.format(Locale.ROOT, "%02d:%02d", minutes, seconds)
         }
     }
 
     private fun showControls() {
-        if (isControlsLocked) return
         controlsContainer.visibility = View.VISIBLE
         resetControlsHideTimer()
     }
@@ -761,20 +869,19 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun resetControlsHideTimer() {
         handler.removeCallbacks(hideControlsRunnable)
-        if (player?.isPlaying == true) {
-            handler.postDelayed(hideControlsRunnable, HIDE_CONTROLS_DELAY_MS)
-        }
+        handler.postDelayed(hideControlsRunnable, HIDE_CONTROLS_DELAY_MS)
     }
 
     private fun setupImmersiveMode() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
-        val controller = WindowCompat.getInsetsController(window, window.decorView)
+        val controller = WindowInsetsControllerCompat(window, window.decorView)
         controller.hide(WindowInsetsCompat.Type.systemBars())
         controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
 
     // -------------------------------------------------------------
-    // VLC Gesture System: Brightness (Left), Volume (Right), Seek (Swipe)
+    // VLC Gestures: Brightness, Volume, Scrub, Double-Tap Seek
     // -------------------------------------------------------------
 
     @SuppressLint("ClickableViewAccessibility")
@@ -794,18 +901,15 @@ class PlayerActivity : AppCompatActivity() {
             }
 
             override fun onDoubleTap(e: MotionEvent): Boolean {
-                if (isControlsLocked) return false
-                val width = playerRoot.width
-                if (width <= 0) return false
+                if (isControlsLocked) return true
+                val width = playerRoot.width.toFloat()
+                if (width <= 0f) return true
 
                 if (e.x < width / 3f) {
-                    // Double tap left: Rewind 10s
                     btnReplay10.performClick()
                 } else if (e.x > (width * 2f) / 3f) {
-                    // Double tap right: Forward 10s
                     btnForward10.performClick()
                 } else {
-                    // Double tap center: Play/Pause
                     togglePlayPause()
                 }
                 return true
@@ -903,7 +1007,7 @@ class PlayerActivity : AppCompatActivity() {
         val duration = p.duration
         if (duration <= 0) return
 
-        val scrubMs = ((deltaX / screenWidth) * 90_000L).toLong() // +/- 90 seconds scrub
+        val scrubMs = ((deltaX / screenWidth) * 90_000L).toLong()
         pendingSeekPositionMs = (p.currentPosition + scrubMs).coerceIn(0L, duration)
 
         hudIcon.setImageResource(R.drawable.ic_aspect_ratio)
@@ -916,6 +1020,7 @@ class PlayerActivity : AppCompatActivity() {
         player?.let { p ->
             if (pendingSeekPositionMs in 0L..p.duration) {
                 p.seekTo(pendingSeekPositionMs)
+                dubbedPlayer?.seekTo(pendingSeekPositionMs)
             }
         }
     }

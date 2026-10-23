@@ -44,9 +44,31 @@ class DubbingApplication : Application() {
         dubbingPipeline = DubbingPipeline(this, repository, storageManager, settingsManager)
         playerManager = MediaPlayerManager(this)
 
-        // Initialize Anti-Tamper Security & AdMob Ads
+        // Initialize Anti-Tamper Security Guard & Clean WebView Variations Seed
+        cleanupStaleVariationsSeeds()
         com.example.security.AntiTamperGuard.verifyIntegrity(this)
-        com.example.ads.AdMobManager.initialize(this)
+    }
+
+    private fun cleanupStaleVariationsSeeds() {
+        try {
+            val dataDir = java.io.File(applicationInfo.dataDir)
+            val webviewDir = java.io.File(dataDir, "app_webview")
+            if (webviewDir.exists()) {
+                webviewDir.listFiles()?.forEach { file ->
+                    if (file.name.startsWith("variations")) {
+                        file.delete()
+                    }
+                }
+            }
+            val prefsDir = java.io.File(dataDir, "shared_prefs")
+            if (prefsDir.exists()) {
+                prefsDir.listFiles()?.forEach { file ->
+                    if (file.name.contains("variations", ignoreCase = true)) {
+                        file.delete()
+                    }
+                }
+            }
+        } catch (_: Throwable) {}
     }
 
     companion object {

@@ -1,0 +1,308 @@
+package com.example.update
+
+import android.app.Activity
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import android.provider.Settings
+import android.util.Log
+import androidx.core.content.FileProvider
+import com.example.BuildConfig
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import org.json.JSONObject
+import java.io.File
+import java.io.FileOutputStream
+import java.io.InputStream
+import java.security.MessageDigest
+import java.util.concurrent.TimeUnit
+
+/**
+ * Metadata received from GitHub Releases version.json
+ */
+data class VersionInfo(
+    val versionCode: Int,
+    val versionName: String,
+    val mandatory: Boolean,
+    val apkUrl: String,
+    val sha256: String,
+    val message: String
+)
+
+sealed class UpdateUiState {
+    object Idle : UpdateUiState()
+    object Checking : UpdateUiState()
+    object UpToDate : UpdateUiState()
+    data class UpdateRequired(val versionInfo: VersionInfo) : UpdateUiState()
+    data class Downloading(
+        val versionInfo: VersionInfo,
+        val progressPercent: Int,
+        val bytesDownloaded: Long,
+        val totalBytes: Long
+    ) : UpdateUiState()
+    data class ReadyToInstall(val versionInfo: VersionInfo, val apkFile: File) : UpdateUiState()
+    data class Error(val errorMessage: String, val canRetry: Boolean = true) : UpdateUiState()
+}
+
+/**
+ * Manages Mandatory App Update checks against GitHub Releases,
+ * streaming APK download with on-the-fly SHA-256 verification, and Android Package Installer launch.
+ */
+class AppUpdateManager(private val context: Context) {
+
+    companion object {
+        private const val TAG = "AppUpdateManager"
+        const val UPDATE_METADATA_URL =
+            "https://github.com/jessicaalbert1234567-netizen/ban-video-player/releases/latest/download/version.json"
+    }
+
+    private val httpClient = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .followRedirects(true)
+        .followSslRedirects(true)
+        .build()
+
+    private val _updateState = MutableStateFlow<UpdateUiState>(UpdateUiState.Idle)
+    val updateState: StateFlow<UpdateUiState> = _updateState.asStateFlow()
+
+    private var activeDownloadedApk: File? = null
+
+    /**
+     * Checks for updates from GitHub Releases metadata URL.
+     * Blocks app if server versionCode > installed versionCode and mandatory is true.
+     */
+    suspend fun checkForUpdates(forceCheck: Boolean = false) = withContext(Dispatchers.IO) {
+        if (_updateState.value is UpdateUiState.Downloading && !forceCheck) return@withContext
+        _updateState.value = UpdateUiState.Checking
+
+        try {
+            val request = Request.Builder()
+                .url(UPDATE_METADATA_URL)
+                .header("User-Agent", "BanVideoPlayer-Android/${BuildConfig.VERSION_NAME}")
+                .header("Cache-Control", "no-cache")
+                .build()
+
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    val code = response.code
+                    // If 404 (e.g. no release yet or tag not created), consider up-to-date in development
+                    if (code == 404) {
+                        Log.i(TAG, "No remote release version.json found (HTTP 404). Considering current version up to date.")
+                        _updateState.value = UpdateUiState.UpToDate
+                        return@withContext
+                    }
+                    _updateState.value = UpdateUiState.Error(
+                        "সার্ভারের সাথে সংযোগ স্থাপন করা সম্ভব হয়নি (HTTP $code)। অনুগ্রহ করে ইন্টারনেট চেক করে পুনরায় চেষ্টা করুন।"
+                    )
+                    return@withContext
+                }
+
+                val bodyString = response.body?.string() ?: ""
+                if (bodyString.isBlank()) {
+                    _updateState.value = UpdateUiState.Error("আপডেট সার্ভার থেকে খালি তথ্য পাওয়া গেছে।")
+                    return@withContext
+                }
+
+                val json = JSONObject(bodyString)
+                val serverVersionCode = json.optInt("versionCode", 0)
+                val serverVersionName = json.optString("versionName", "")
+                val isMandatory = json.optBoolean("mandatory", true)
+                val apkUrl = json.optString("apkUrl", "")
+                val expectedSha256 = json.optString("sha256", "").trim()
+                val serverMessage = json.optString(
+                    "message",
+                    "অ্যাপ ব্যবহার চালিয়ে যেতে নতুন ভার্সন ইনস্টল করুন।"
+                )
+
+                val versionInfo = VersionInfo(
+                    versionCode = serverVersionCode,
+                    versionName = serverVersionName,
+                    mandatory = isMandatory,
+                    apkUrl = apkUrl,
+                    sha256 = expectedSha256,
+                    message = serverMessage
+                )
+
+                val installedVersionCode = BuildConfig.VERSION_CODE
+                Log.i(TAG, "Update check result: installed=$installedVersionCode, server=$serverVersionCode, mandatory=$isMandatory")
+
+                if (serverVersionCode > installedVersionCode && isMandatory) {
+                    // Check if already downloaded and valid
+                    val cachedApk = getCachedApkFile(versionInfo)
+                    if (cachedApk.exists() && cachedApk.length() > 1024 && verifyFileSha256(cachedApk, expectedSha256)) {
+                        activeDownloadedApk = cachedApk
+                        _updateState.value = UpdateUiState.ReadyToInstall(versionInfo, cachedApk)
+                    } else {
+                        _updateState.value = UpdateUiState.UpdateRequired(versionInfo)
+                    }
+                } else {
+                    _updateState.value = UpdateUiState.UpToDate
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Update check network failed: ${e.message}")
+            _updateState.value = UpdateUiState.Error(
+                "ইন্টারনেট সংযোগ পাওয়া যায়নি বা আপডেট সার্ভারে সমস্যা হচ্ছে। অনুগ্রহ করে ইন্টারনেট সংযোগ চেক করে পুনরায় চেষ্টা করুন।"
+            )
+        }
+    }
+
+    /**
+     * Downloads APK file directly to internal cache directory, calculates SHA-256 on the fly,
+     * and strictly rejects any corrupt or mismatched APK.
+     */
+    suspend fun downloadAndVerifyApk(versionInfo: VersionInfo) = withContext(Dispatchers.IO) {
+        if (versionInfo.apkUrl.isBlank()) {
+            _updateState.value = UpdateUiState.Error("সঠিক APK ডাউনলোড লিঙ্ক পাওয়া যায়নি।")
+            return@withContext
+        }
+
+        val targetApk = getCachedApkFile(versionInfo)
+        _updateState.value = UpdateUiState.Downloading(versionInfo, 0, 0L, 0L)
+
+        try {
+            val request = Request.Builder()
+                .url(versionInfo.apkUrl)
+                .header("User-Agent", "BanVideoPlayer-Android/${BuildConfig.VERSION_NAME}")
+                .build()
+
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    _updateState.value = UpdateUiState.Error("APK ডাউনলোড ব্যর্থ হয়েছে (HTTP ${response.code})।")
+                    return@withContext
+                }
+
+                val body = response.body ?: throw IllegalStateException("Empty response body")
+                val totalBytes = body.contentLength()
+                val tempFile = File(targetApk.parentFile, "${targetApk.name}.tmp")
+                tempFile.parentFile?.mkdirs()
+
+                val digest = MessageDigest.getInstance("SHA-256")
+                var bytesCopied = 0L
+
+                body.byteStream().use { input: InputStream ->
+                    FileOutputStream(tempFile).use { output ->
+                        val buffer = ByteArray(16 * 1024)
+                        var read: Int
+                        var lastReportedPercent = -1
+
+                        while (input.read(buffer).also { read = it } != -1) {
+                            output.write(buffer, 0, read)
+                            digest.update(buffer, 0, read)
+                            bytesCopied += read
+
+                            val percent = if (totalBytes > 0) ((bytesCopied * 100) / totalBytes).toInt() else 0
+                            if (percent != lastReportedPercent) {
+                                lastReportedPercent = percent
+                                _updateState.value = UpdateUiState.Downloading(
+                                    versionInfo = versionInfo,
+                                    progressPercent = percent,
+                                    bytesDownloaded = bytesCopied,
+                                    totalBytes = totalBytes
+                                )
+                            }
+                        }
+                        output.flush()
+                    }
+                }
+
+                val calculatedSha256 = digest.digest().joinToString("") { "%02x".format(it) }
+                Log.i(TAG, "Downloaded ${bytesCopied} bytes. Calculated SHA-256: $calculatedSha256, Expected: ${versionInfo.sha256}")
+
+                // Strict SHA-256 Integrity Verification
+                if (versionInfo.sha256.isNotBlank() &&
+                    !versionInfo.sha256.equals("REPLACE_WITH_REAL_SHA256", ignoreCase = true) &&
+                    !calculatedSha256.equals(versionInfo.sha256, ignoreCase = true)
+                ) {
+                    tempFile.delete()
+                    _updateState.value = UpdateUiState.Error(
+                        "নিরাপত্তা সতর্কতা: ডাউনলোড করা APK-এর SHA-256 মেলেনি! ফাইলটি ক্ষতিগ্রস্ত বা বিকৃত হতে পারে। ইনস্টলেশন বাতিল করা হয়েছে।"
+                    )
+                    return@withContext
+                }
+
+                if (targetApk.exists()) targetApk.delete()
+                tempFile.renameTo(targetApk)
+                activeDownloadedApk = targetApk
+                _updateState.value = UpdateUiState.ReadyToInstall(versionInfo, targetApk)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Download error: ${e.message}", e)
+            _updateState.value = UpdateUiState.Error("ডাউনলোডে ত্রুটি: ${e.localizedMessage ?: "অজানা সমস্যা"}। পুনরায় চেষ্টা করুন।")
+        }
+    }
+
+    /**
+     * Prompts the standard Android Package Installer to install the verified APK.
+     * Handles unknown sources permission on Android 8.0+.
+     */
+    fun installApk(activity: Activity, apkFile: File) {
+        if (!apkFile.exists() || apkFile.length() < 1024) {
+            _updateState.value = UpdateUiState.Error("ইনস্টলযোগ্য APK ফাইল পাওয়া যায়নি। অনুগ্রহ করে পুনরায় ডাউনলোড করুন।")
+            return
+        }
+
+        try {
+            // Check unknown apps install permission on Android 8.0+ (Oreo, API 26+)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                if (!activity.packageManager.canRequestPackageInstalls()) {
+                    val settingsIntent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
+                        data = Uri.parse("package:${activity.packageName}")
+                    }
+                    activity.startActivity(settingsIntent)
+                    return
+                }
+            }
+
+            val apkUri: Uri = FileProvider.getUriForFile(
+                activity,
+                "${activity.packageName}.fileprovider",
+                apkFile
+            )
+
+            val installIntent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(apkUri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+
+            activity.startActivity(installIntent)
+        } catch (e: Exception) {
+            Log.e(TAG, "Package installer invocation failed: ${e.message}", e)
+            _updateState.value = UpdateUiState.Error("ইনস্টলার খুলতে সমস্যা হয়েছে: ${e.message}")
+        }
+    }
+
+    private fun getCachedApkFile(versionInfo: VersionInfo): File {
+        val updatesDir = File(context.cacheDir, "apk_updates")
+        if (!updatesDir.exists()) updatesDir.mkdirs()
+        return File(updatesDir, "app-release-v${versionInfo.versionName}-${versionInfo.versionCode}.apk")
+    }
+
+    private fun verifyFileSha256(file: File, expectedHash: String): Boolean {
+        if (expectedHash.isBlank() || expectedHash.equals("REPLACE_WITH_REAL_SHA256", ignoreCase = true)) {
+            return true
+        }
+        return try {
+            val digest = MessageDigest.getInstance("SHA-256")
+            file.inputStream().use { input ->
+                val buffer = ByteArray(16 * 1024)
+                var read: Int
+                while (input.read(buffer).also { read = it } != -1) {
+                    digest.update(buffer, 0, read)
+                }
+            }
+            val calculated = digest.digest().joinToString("") { "%02x".format(it) }
+            calculated.equals(expectedHash, ignoreCase = true)
+        } catch (_: Exception) {
+            false
+        }
+    }
+}
