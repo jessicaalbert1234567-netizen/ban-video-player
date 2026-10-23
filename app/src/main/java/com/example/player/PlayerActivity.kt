@@ -143,6 +143,8 @@ class PlayerActivity : ComponentActivity() {
     private lateinit var btnForward10: ImageButton
     private lateinit var btnBack: ImageButton
     private lateinit var btnAspectRatio: ImageButton
+    private lateinit var btnRotate: ImageButton
+    private lateinit var btnRotateBottom: ImageButton
     private lateinit var btnSubtitles: ImageButton
     private lateinit var btnAudioTracks: ImageButton
     private lateinit var btnSpeed: Button
@@ -259,6 +261,8 @@ class PlayerActivity : ComponentActivity() {
         btnForward10 = findViewById(R.id.btn_forward_10)
         btnBack = findViewById(R.id.btn_back)
         btnAspectRatio = findViewById(R.id.btn_aspect_ratio)
+        btnRotate = findViewById(R.id.btn_rotate)
+        btnRotateBottom = findViewById(R.id.btn_rotate_bottom)
         btnSubtitles = findViewById(R.id.btn_subtitles)
         btnAudioTracks = findViewById(R.id.btn_audio_tracks)
         btnSpeed = findViewById(R.id.btn_speed)
@@ -309,6 +313,14 @@ class PlayerActivity : ComponentActivity() {
         btnAspectRatio.setOnClickListener {
             cycleAspectRatio()
             resetControlsHideTimer()
+        }
+
+        btnRotate.setOnClickListener {
+            toggleScreenRotation()
+        }
+
+        btnRotateBottom.setOnClickListener {
+            toggleScreenRotation()
         }
 
         btnAudioTracks.setOnClickListener {
@@ -808,6 +820,18 @@ class PlayerActivity : ComponentActivity() {
         currentResizeModeIndex = (currentResizeModeIndex + 1) % resizeModes.size
         playerView.resizeMode = resizeModes[currentResizeModeIndex]
         Toast.makeText(this, "অ্যাসপেক্ট রেশিও: ${resizeModeLabels[currentResizeModeIndex]}", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun toggleScreenRotation() {
+        val isLandscape = resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+        requestedOrientation = if (isLandscape) {
+            android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        } else {
+            android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        }
+        val label = if (isLandscape) "স্ক্রিন: পোর্ট্রেট" else "স্ক্রিন: ল্যান্ডস্কেপ"
+        Toast.makeText(this, label, Toast.LENGTH_SHORT).show()
+        resetControlsHideTimer()
     }
 
     private fun cyclePlaybackSpeed() {

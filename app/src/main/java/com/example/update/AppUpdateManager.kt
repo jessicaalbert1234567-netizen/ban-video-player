@@ -60,6 +60,9 @@ class AppUpdateManager(private val context: Context) {
         private const val TAG = "AppUpdateManager"
         const val UPDATE_METADATA_URL =
             "https://github.com/jessicaalbert1234567-netizen/ban-video-player/releases/latest/download/version.json"
+        private const val PREFS_NAME = "app_update_prefs"
+        private const val KEY_LAST_CHECK_TIMESTAMP = "last_check_timestamp"
+        const val CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000L // 24 hours
     }
 
     private val httpClient = OkHttpClient.Builder()
@@ -75,11 +78,25 @@ class AppUpdateManager(private val context: Context) {
     private var activeDownloadedApk: File? = null
 
     /**
-     * Checks for updates from GitHub Releases metadata URL.
-     * Blocks app if server versionCode > installed versionCode and mandatory is true.
+     * Checks for updates from GitHub Releases metadata URL at most once every 24 hours.
+     * If offline / no internet connection, allows immediate access to the app without blocking.
+     * If 24 hours have elapsed and internet is available, checks version.json:
+     * prompts mandatory update only if server versionCode > installed versionCode and mandatory is true.
      */
     suspend fun checkForUpdates(forceCheck: Boolean = false) = withContext(Dispatchers.IO) {
         if (_updateState.value is UpdateUiState.Downloading && !forceCheck) return@withContext
+
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val lastCheckTimestamp = prefs.getLong(KEY_LAST_CHECK_TIMESTAMP, 0L)
+        val now = System.currentTimeMillis()
+
+        // If 24 hours have not elapsed and check is not forced, enter app immediately
+        if (!forceCheck && lastCheckTimestamp > 0L && (now - lastCheckTimestamp) < CHECK_INTERVAL_MS) {
+            Log.i(TAG, "Update check skipped (checked within last 24 hours). Allowing app access.")
+            _updateState.value = UpdateUiState.UpToDate
+            return@withContext
+        }
+
         _updateState.value = UpdateUiState.Checking
 
         try {
@@ -92,21 +109,15 @@ class AppUpdateManager(private val context: Context) {
             httpClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
                     val code = response.code
-                    // If 404 (e.g. no release yet or tag not created), consider up-to-date in development
-                    if (code == 404) {
-                        Log.i(TAG, "No remote release version.json found (HTTP 404). Considering current version up to date.")
-                        _updateState.value = UpdateUiState.UpToDate
-                        return@withContext
-                    }
-                    _updateState.value = UpdateUiState.Error(
-                        "সার্ভারের সাথে সংযোগ স্থাপন করা সম্ভব হয়নি (HTTP $code)। অনুগ্রহ করে ইন্টারনেট চেক করে পুনরায় চেষ্টা করুন।"
-                    )
+                    Log.i(TAG, "Update check server returned HTTP $code. Allowing app access.")
+                    _updateState.value = UpdateUiState.UpToDate
                     return@withContext
                 }
 
                 val bodyString = response.body?.string() ?: ""
                 if (bodyString.isBlank()) {
-                    _updateState.value = UpdateUiState.Error("আপডেট সার্ভার থেকে খালি তথ্য পাওয়া গেছে।")
+                    Log.i(TAG, "Empty response body from update server. Allowing app access.")
+                    _updateState.value = UpdateUiState.UpToDate
                     return@withContext
                 }
 
@@ -133,6 +144,9 @@ class AppUpdateManager(private val context: Context) {
                 val installedVersionCode = BuildConfig.VERSION_CODE
                 Log.i(TAG, "Update check result: installed=$installedVersionCode, server=$serverVersionCode, mandatory=$isMandatory")
 
+                // Update last successful check timestamp
+                prefs.edit().putLong(KEY_LAST_CHECK_TIMESTAMP, now).apply()
+
                 if (serverVersionCode > installedVersionCode && isMandatory) {
                     // Check if already downloaded and valid
                     val cachedApk = getCachedApkFile(versionInfo)
@@ -147,10 +161,9 @@ class AppUpdateManager(private val context: Context) {
                 }
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Update check network failed: ${e.message}")
-            _updateState.value = UpdateUiState.Error(
-                "ইন্টারনেট সংযোগ পাওয়া যায়নি বা আপডেট সার্ভারে সমস্যা হচ্ছে। অনুগ্রহ করে ইন্টারনেট সংযোগ চেক করে পুনরায় চেষ্টা করুন।"
-            )
+            // Offline / no internet: Allow app entry without blocking!
+            Log.i(TAG, "Update check offline or network error (${e.message}). Allowing app access.")
+            _updateState.value = UpdateUiState.UpToDate
         }
     }
 

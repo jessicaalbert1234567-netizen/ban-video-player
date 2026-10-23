@@ -117,6 +117,14 @@
                 android:text="Nimpata Offline Player" />
 
             <ImageButton
+                android:id="@+id/btn_rotate"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:src="@drawable/ic_screen_rotation"
+                android:contentDescription="Rotate Screen" />
+
+            <ImageButton
                 android:id="@+id/btn_aspect_ratio"
                 android:layout_width="48dp"
                 android:layout_height="48dp"
@@ -249,6 +257,15 @@
                     android:layout_width="0dp"
                     android:layout_height="1dp"
                     android:layout_weight="1" />
+
+                <ImageButton
+                    android:id="@+id/btn_rotate_bottom"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:layout_marginEnd="8dp"
+                    android:background="?android:attr/selectableItemBackgroundBorderless"
+                    android:src="@drawable/ic_screen_rotation"
+                    android:contentDescription="Rotate Screen" />
 
                 <ImageButton
                     android:id="@+id/btn_lock"
