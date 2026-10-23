@@ -102,7 +102,6 @@ class MediaPlayerManager(private val context: Context) {
 
     fun initializePlayer(): ExoPlayer {
         if (player == null) {
-            val channelMixingProcessor = androidx.media3.common.audio.ChannelMixingAudioProcessor()
             val renderersFactory = object : androidx.media3.exoplayer.DefaultRenderersFactory(context) {
                 override fun buildAudioSink(
                     ctx: Context,
@@ -110,8 +109,7 @@ class MediaPlayerManager(private val context: Context) {
                     enableAudioTrackPlaybackParams: Boolean
                 ): androidx.media3.exoplayer.audio.AudioSink {
                     return androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(ctx)
-                        .setAudioProcessors(arrayOf(channelMixingProcessor))
-                        .setEnableFloatOutput(enableFloatOutput)
+                        .setEnableFloatOutput(false) // Force standard 16-bit PCM for universal AudioTrack compatibility
                         .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
                         .build()
                 }
@@ -125,6 +123,7 @@ class MediaPlayerManager(private val context: Context) {
                     .setExceedRendererCapabilitiesIfNecessary(true)
                     .setAllowAudioMixedMimeTypeAdaptiveness(true)
                     .setAllowVideoMixedMimeTypeAdaptiveness(true)
+                    .setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_AUDIO, false)
                     .build()
             }
 
@@ -186,15 +185,14 @@ class MediaPlayerManager(private val context: Context) {
                             p.endsWith(".wav") || p.endsWith(".m4a") || p.endsWith(".mp3") || p.endsWith(".aac")
                         } ?: false
 
-                        // If media is a video (MKV/MP4), recover by disabling container audio/text tracks if they fail
+                        // If media is a video (MKV/MP4), ensure audio is NEVER disabled, and retry cleanly
                         if (!isAudioOnlyFile && player != null && errorRecoveryAttempts < 3) {
                             errorRecoveryAttempts++
-                            Log.i(TAG, "Playback issue on video container detected. Disabling problematic tracks to keep video rendering smoothly (attempt $errorRecoveryAttempts/3).")
+                            Log.i(TAG, "Playback retry attempt ($errorRecoveryAttempts/3) without disabling audio.")
                             try {
                                 player?.trackSelectionParameters = player?.trackSelectionParameters
                                     ?.buildUpon()
-                                    ?.setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_AUDIO, true)
-                                    ?.setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_TEXT, true)
+                                    ?.setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_AUDIO, false)
                                     ?.build() ?: androidx.media3.common.TrackSelectionParameters.DEFAULT_WITHOUT_CONTEXT
                                 player?.prepare()
                                 player?.play()
@@ -240,7 +238,19 @@ class MediaPlayerManager(private val context: Context) {
 
     private fun initializeDubbedPlayer(): ExoPlayer {
         if (dubbedAudioPlayer == null) {
-            dubbedAudioPlayer = ExoPlayer.Builder(context).build().apply {
+            val renderersFactory = object : androidx.media3.exoplayer.DefaultRenderersFactory(context) {
+                override fun buildAudioSink(
+                    ctx: Context,
+                    enableFloatOutput: Boolean,
+                    enableAudioTrackPlaybackParams: Boolean
+                ): androidx.media3.exoplayer.audio.AudioSink {
+                    return androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(ctx)
+                        .setEnableFloatOutput(false)
+                        .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
+                        .build()
+                }
+            }
+            dubbedAudioPlayer = ExoPlayer.Builder(context, renderersFactory).build().apply {
                 repeatMode = Player.REPEAT_MODE_OFF
                 playWhenReady = player?.isPlaying ?: false
             }
@@ -315,6 +325,10 @@ class MediaPlayerManager(private val context: Context) {
         )
 
         // 1. Setup Video with Original Audio
+        exo.trackSelectionParameters = exo.trackSelectionParameters
+            .buildUpon()
+            .setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_AUDIO, false)
+            .build()
         val videoItem = MediaItem.fromUri(videoUri)
         val videoSource = mediaSourceFactory.createMediaSource(videoItem)
         exo.setMediaSource(videoSource)
@@ -348,7 +362,13 @@ class MediaPlayerManager(private val context: Context) {
 
     fun setAudioChoice(choice: AudioTrackChoice) {
         _playerState.value = _playerState.value.copy(audioChoice = choice)
-        player?.let { updateAudioVolumes(it.currentPosition) }
+        player?.let { exo ->
+            exo.trackSelectionParameters = exo.trackSelectionParameters
+                .buildUpon()
+                .setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_AUDIO, false)
+                .build()
+            updateAudioVolumes(exo.currentPosition)
+        }
     }
 
     /**

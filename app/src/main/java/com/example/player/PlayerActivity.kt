@@ -40,7 +40,6 @@ import androidx.media3.common.Player
 import androidx.media3.common.TrackGroup
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
-import androidx.media3.common.audio.ChannelMixingAudioProcessor
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.exoplayer.DefaultRenderersFactory
@@ -380,10 +379,7 @@ class PlayerActivity : ComponentActivity() {
         }
 
         try {
-            // 1. AudioSink with multichannel (5.1 / 7.1) downmixing to stereo
-            val channelMixingProcessor = ChannelMixingAudioProcessor()
-
-            // 2. DefaultRenderersFactory configured for maximum VLC-grade decoding compatibility
+            // 1. AudioSink with standard 16-bit PCM for universal Android AudioTrack compatibility
             val renderersFactory = object : DefaultRenderersFactory(this) {
                 override fun buildAudioSink(
                     context: Context,
@@ -391,8 +387,7 @@ class PlayerActivity : ComponentActivity() {
                     enableAudioTrackPlaybackParams: Boolean
                 ): AudioSink {
                     return DefaultAudioSink.Builder(context)
-                        .setAudioProcessors(arrayOf(channelMixingProcessor))
-                        .setEnableFloatOutput(enableFloatOutput)
+                        .setEnableFloatOutput(false) // Force 16-bit PCM for universal hardware compatibility
                         .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
                         .build()
                 }
@@ -401,12 +396,13 @@ class PlayerActivity : ComponentActivity() {
                 setEnableDecoderFallback(true)
             }
 
-            // 3. TrackSelector with capability exceeding and adaptive switching
+            // 2. TrackSelector with capability exceeding and explicit audio track enablement
             trackSelector = DefaultTrackSelector(this).apply {
                 parameters = buildUponParameters()
                     .setExceedRendererCapabilitiesIfNecessary(true)
                     .setAllowAudioMixedMimeTypeAdaptiveness(true)
                     .setAllowVideoMixedMimeTypeAdaptiveness(true)
+                    .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
                     .build()
             }
 
@@ -456,7 +452,19 @@ class PlayerActivity : ComponentActivity() {
             // 7. Setup Secondary Dubbed Audio Player for Smart Dubbing
             val dubbedFile = dubbedAudioPath?.let { File(it) }
             if (dubbedFile != null && dubbedFile.exists() && dubbedFile.length() > 44) {
-                dubbedPlayer = ExoPlayer.Builder(this).build().apply {
+                val dubbedRenderersFactory = object : DefaultRenderersFactory(this) {
+                    override fun buildAudioSink(
+                        context: Context,
+                        enableFloatOutput: Boolean,
+                        enableAudioTrackPlaybackParams: Boolean
+                    ): AudioSink {
+                        return DefaultAudioSink.Builder(context)
+                            .setEnableFloatOutput(false)
+                            .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
+                            .build()
+                    }
+                }
+                dubbedPlayer = ExoPlayer.Builder(this, dubbedRenderersFactory).build().apply {
                     val audioItem = MediaItem.fromUri(Uri.fromFile(dubbedFile))
                     val audioSource = ProgressiveMediaSource.Factory(dataSourceFactory).createMediaSource(audioItem)
                     setMediaSource(audioSource)
@@ -601,11 +609,15 @@ class PlayerActivity : ComponentActivity() {
         override fun onPlayerError(error: PlaybackException) {
             progressBuffering.visibility = View.GONE
             Log.e(TAG, "Player playback error: [${error.errorCodeName}] ${error.message}", error)
-            Toast.makeText(
-                this@PlayerActivity,
-                "প্লেব্যাক সতর্কবার্তা: ${error.errorCodeName} - সফটওয়্যার ডিকোডারে বিকল্প চেষ্টা করা হচ্ছে",
-                Toast.LENGTH_SHORT
-            ).show()
+            if (error.errorCode == PlaybackException.ERROR_CODE_AUDIO_TRACK_INIT_FAILED) {
+                Log.w(TAG, "AudioTrack init failed; attempting playback recovery with standard 16-bit PCM")
+                try {
+                    player?.prepare()
+                    player?.play()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to recover playback: ${e.message}")
+                }
+            }
         }
     }
 
