@@ -417,6 +417,33 @@ private fun ReadyToInstallContent(
                 style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
             )
         }
+
+        // Package conflict guidance note
+        Card(
+            shape = RoundedCornerShape(12.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Icon(
+                        Icons.Default.Warning,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        text = "প্যাকেজ দ্বন্দ্ব (Package Conflict) দেখা দিলে:",
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
+                    )
+                }
+                Text(
+                    text = "পূর্বে টেস্ট/ডিবাগ ভার্সন ইনস্টল থাকলে অ্যান্ড্রয়েডের নিরাপত্তা নিয়মে সরাসরি আপডেট নেয় না। ফোনের হোম থেকে পুরোনো অ্যাপটি একবার আনইনস্টল করে এই নতুন অফিসিয়াল রিলিজটি ইনস্টল করুন।",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
     }
 }
 
