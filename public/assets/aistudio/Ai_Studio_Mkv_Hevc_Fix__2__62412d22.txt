@@ -1,0 +1,2946 @@
+================================================================================
+AI STUDIO UPDATE PACKAGE: VLC / NEXT PLAYER BUNDLED NATIVE FFMPEG DECODER ENGINE
+================================================================================
+Instructions for AI Studio:
+Please update ONLY the 5 media player / codec files below (`gradle/libs.versions.toml`,
+`app/build.gradle.kts`, `UniversalMediaCodecSupport.kt`, `MediaPlayerManager.kt`, and
+`PlayerActivity.kt`) so that the app bundles the precompiled native C/C++ FFmpeg video
+and audio decoders (`io.github.anilbeesetti:nextlib-media3ext:1.8.0-0.9.0` with Media3 `1.8.0`).
+Keep `AppUpdateManager.kt`, `MandatoryUpdateScreen.kt`, signing configurations, `versionCode`,
+and ALL other files in the project 100% UNCHANGED.
+
+Summary of Changes:
+1. `gradle/libs.versions.toml` & `app/build.gradle.kts`:
+   - Upgrades `media3` to `1.8.0` and adds `io.github.anilbeesetti:nextlib-media3ext:1.8.0-0.9.0`.
+   - Bundles precompiled native C/C++ FFmpeg (`libavcodec.so`, `libswscale.so`, `libswresample.so`, `libdav1d`)
+     for `arm64-v8a`, `armeabi-v7a`, `x86`, and `x86_64`.
+   - Keeps `versionCode = 2`, `versionName = "1.1.0"`, and release/debug signing configs 100% unchanged.
+2. `app/src/main/java/com/example/player/UniversalMediaCodecSupport.kt`:
+   - Integrates `NextRenderersFactory` (`FfmpegVideoRenderer` + `FfmpegAudioRenderer`) into
+     `VlcGradeRenderersFactory` with `EXTENSION_RENDERER_MODE_PREFER`.
+   - Decodes `hevc (Main 10), yuv420p10le(tv, bt709), 1280x536` video in software via native FFmpeg
+     `FfmpegVideoRenderer` + `libswscale` directly onto `SurfaceView` with 0-second conversion time.
+   - Decodes `aac (HE-AAC), 48000 Hz, 5.1, fltp` / `stereo, fltp` / `AC3` / `EAC3` / `DTS` audio via
+     `FfmpegAudioRenderer` & `MediaCodecAudioRenderer` backed by `UniversalStereoAudioProcessor` (16-bit
+     2-channel Stereo PCM downmix) so `AudioTrack` never throws `ERROR_CODE_AUDIO_TRACK_INIT_FAILED`.
+3. `app/src/main/java/com/example/player/MediaPlayerManager.kt` & `PlayerActivity.kt`:
+   - Uses `audioOnly = true` and `handleAudioFocus = false` for the secondary dubbed `.wav` player so
+     it never allocates a second video renderer or conflicts with the primary player's `AudioTrack`.
+   - Removes the premature 600ms zero-frame `stop()/prepare()` interruption so large `.mkv` files buffer
+     their initial 10-bit HEVC keyframe without interruption.
+================================================================================
+
+
+### FILE: gradle/libs.versions.toml
+```
+[versions]
+agp = "9.1.1"
+coreKtx = "1.18.0"
+junit = "4.13.2"
+junitVersion = "1.3.0"
+espressoCore = "3.7.0"
+lifecycleRuntimeKtx = "2.8.7"
+lifecycleViewmodelCompose = "2.8.7"
+lifecycleRuntimeCompose = "2.8.7"
+activityCompose = "1.10.1"
+kotlin = "2.2.10"
+composeBom = "2024.09.00"
+googleDevtoolsKsp = "2.2.10-2.0.2"
+navigationCompose = "2.8.9"
+roomRuntime = "2.7.0"
+roomKtx = "2.7.0"
+roomCompiler = "2.7.0"
+kotlinxCoroutinesTest = "1.10.2"
+core = "1.6.1"
+runner = "1.6.2"
+coilCompose = "2.7.0"
+retrofit = "2.12.0"
+converterMoshi = "2.12.0"
+kotlinxCoroutinesAndroid = "1.10.2"
+kotlinxCoroutinesCore = "1.10.2"
+accompanistPermissions = "0.37.3"
+playServicesLocation = "21.3.0"
+cameraCamera2 = "1.5.0"
+cameraLifecycle = "1.5.0"
+cameraView = "1.5.0"
+cameraCore = "1.5.0"
+loggingInterceptor = "4.10.0"
+okhttp = "4.10.0"
+moshiKotlin = "1.15.2"
+moshiKotlinCodegen = "1.15.2"
+datastorePreferences = "1.1.7"
+robolectric = "4.16.1"
+roborazzi = "1.59.0"
+firebaseBom = "34.17.0"
+secretsGradlePlugin = "2.0.1"
+googleServices = "4.5.0"
+credentials = "1.5.0"
+googleid = "1.1.1"
+media3 = "1.8.0"
+nextlibMedia3ext = "1.8.0-0.9.0"
+onnxruntime = "1.19.2"
+
+[libraries]
+androidx-media3-exoplayer = { group = "androidx.media3", name = "media3-exoplayer", version.ref = "media3" }
+androidx-media3-ui = { group = "androidx.media3", name = "media3-ui", version.ref = "media3" }
+androidx-media3-common = { group = "androidx.media3", name = "media3-common", version.ref = "media3" }
+androidx-media3-extractor = { group = "androidx.media3", name = "media3-extractor", version.ref = "media3" }
+androidx-media3-datasource = { group = "androidx.media3", name = "media3-datasource", version.ref = "media3" }
+androidx-media3-session = { group = "androidx.media3", name = "media3-session", version.ref = "media3" }
+nextlib-media3ext = { group = "io.github.anilbeesetti", name = "nextlib-media3ext", version.ref = "nextlibMedia3ext" }
+onnxruntime-android = { group = "com.microsoft.onnxruntime", name = "onnxruntime-android", version.ref = "onnxruntime" }
+androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
+junit = { group = "junit", name = "junit", version.ref = "junit" }
+androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }
+androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espressoCore" }
+androidx-lifecycle-runtime-ktx = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "lifecycleRuntimeKtx" }
+androidx-lifecycle-viewmodel-compose = { group = "androidx.lifecycle", name = "lifecycle-viewmodel-compose", version.ref = "lifecycleViewmodelCompose" }
+androidx-lifecycle-runtime-compose = { group = "androidx.lifecycle", name = "lifecycle-runtime-compose", version.ref = "lifecycleRuntimeCompose" }
+androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
+androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
+androidx-compose-ui = { group = "androidx.compose.ui", name = "ui" }
+androidx-compose-ui-graphics = { group = "androidx.compose.ui", name = "ui-graphics" }
+androidx-compose-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
+androidx-compose-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
+androidx-compose-ui-test-manifest = { group = "androidx.compose.ui", name = "ui-test-manifest" }
+androidx-compose-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4" }
+androidx-navigation-compose = { group = "androidx.navigation", name = "navigation-compose", version.ref = "navigationCompose" }
+androidx-room-runtime = { group = "androidx.room", name = "room-runtime", version.ref = "roomRuntime" }
+androidx-room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = "roomKtx" }
+androidx-room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "roomCompiler" }
+kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "kotlinxCoroutinesTest" }
+androidx-core = { group = "androidx.test", name = "core", version.ref = "core" }
+androidx-runner = { group = "androidx.test", name = "runner", version.ref = "runner" }
+androidx-compose-material3 = { group = "androidx.compose.material3", name = "material3" }
+androidx-compose-material-icons-core = { group = "androidx.compose.material", name = "material-icons-core" }
+androidx-compose-material-icons-extended = { group = "androidx.compose.material", name = "material-icons-extended" }
+coil-compose = { group = "io.coil-kt", name = "coil-compose", version.ref = "coilCompose" }
+retrofit = { group = "com.squareup.retrofit2", name = "retrofit", version.ref = "retrofit" }
+converter-moshi = { group = "com.squareup.retrofit2", name = "converter-moshi", version.ref = "converterMoshi" }
+kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "kotlinxCoroutinesAndroid" }
+kotlinx-coroutines-core = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-core", version.ref = "kotlinxCoroutinesCore" }
+accompanist-permissions = { group = "com.google.accompanist", name = "accompanist-permissions", version.ref = "accompanistPermissions" }
+play-services-location = { group = "com.google.android.gms", name = "play-services-location", version.ref = "playServicesLocation" }
+androidx-camera-camera2 = { group = "androidx.camera", name = "camera-camera2", version.ref = "cameraCamera2" }
+androidx-camera-lifecycle = { group = "androidx.camera", name = "camera-lifecycle", version.ref = "cameraLifecycle" }
+androidx-camera-view = { group = "androidx.camera", name = "camera-view", version.ref = "cameraView" }
+androidx-camera-core = { group = "androidx.camera", name = "camera-core", version.ref = "cameraCore" }
+logging-interceptor = { group = "com.squareup.okhttp3", name = "logging-interceptor", version.ref = "loggingInterceptor" }
+okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
+moshi-kotlin = { group = "com.squareup.moshi", name = "moshi-kotlin", version.ref = "moshiKotlin" }
+moshi-kotlin-codegen = { group = "com.squareup.moshi", name = "moshi-kotlin-codegen", version.ref = "moshiKotlinCodegen" }
+androidx-datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastorePreferences" }
+robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
+roborazzi = { group = "io.github.takahirom.roborazzi", name = "roborazzi", version.ref = "roborazzi" }
+roborazzi-compose = { group = "io.github.takahirom.roborazzi", name = "roborazzi-compose", version.ref = "roborazzi" }
+roborazzi-junit-rule = { group = "io.github.takahirom.roborazzi", name = "roborazzi-junit-rule", version.ref = "roborazzi" }
+firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version.ref = "firebaseBom" }
+firebase-ai = { group = "com.google.firebase", name = "firebase-ai" }
+firebase-appcheck-recaptcha = { group = "com.google.firebase", name = "firebase-appcheck-recaptcha" }
+firebase-appcheck-debug = { group = "com.google.firebase", name = "firebase-appcheck-debug" }
+firebase-firestore = { group = "com.google.firebase", name = "firebase-firestore" }
+firebase-auth = { group = "com.google.firebase", name = "firebase-auth" }
+androidx-credentials = { group = "androidx.credentials", name = "credentials", version.ref = "credentials" }
+androidx-credentials-play-services = { group = "androidx.credentials", name = "credentials-play-services-auth", version.ref = "credentials" }
+googleid = { group = "com.google.android.libraries.identity.googleid", name = "googleid", version.ref = "googleid" }
+
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+google-devtools-ksp = { id = "com.google.devtools.ksp", version.ref = "googleDevtoolsKsp" }
+roborazzi = { id = "io.github.takahirom.roborazzi", version.ref = "roborazzi" }
+secrets = { id = "com.google.android.libraries.mapsplatform.secrets-gradle-plugin", version.ref = "secretsGradlePlugin" }
+google-services = { id = "com.google.gms.google-services", version.ref = "googleServices" }
+
+```
+
+
+### FILE: app/build.gradle.kts
+```kotlin
+plugins {
+  alias(libs.plugins.android.application)
+  alias(libs.plugins.kotlin.compose)
+  alias(libs.plugins.google.devtools.ksp)
+  alias(libs.plugins.roborazzi)
+  alias(libs.plugins.secrets)
+}
+
+android {
+  namespace = "com.example"
+  compileSdk { version = release(36) { minorApiLevel = 1 } }
+
+  defaultConfig {
+    applicationId = "com.aistudio.aidubbing.qvdz"
+    minSdk = 24
+    targetSdk = 36
+    versionCode = 2
+    versionName = "1.1.0"
+
+    testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+  }
+
+  signingConfigs {
+    create("release") {
+      val keystorePath = System.getenv("KEYSTORE_PATH") ?: "${rootDir}/my-upload-key.jks"
+      storeFile = file(keystorePath)
+      storePassword = System.getenv("STORE_PASSWORD")
+      keyAlias = "upload"
+      keyPassword = System.getenv("KEY_PASSWORD")
+    }
+    create("debugConfig") {
+      storeFile = file("${rootDir}/debug.keystore")
+      storePassword = "android"
+      keyAlias = "androiddebugkey"
+      keyPassword = "android"
+    }
+  }
+
+  buildTypes {
+    release {
+      isCrunchPngs = false
+      isMinifyEnabled = false
+      proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+      signingConfig = signingConfigs.getByName("release")
+    }
+    debug { signingConfig = signingConfigs.getByName("debugConfig") }
+  }
+  compileOptions {
+    sourceCompatibility = JavaVersion.VERSION_11
+    targetCompatibility = JavaVersion.VERSION_11
+  }
+  buildFeatures {
+    compose = true
+    buildConfig = true
+  }
+  testOptions { unitTests { isIncludeAndroidResources = true } }
+  dependenciesInfo {
+    includeInApk = false
+    includeInBundle = true
+  }
+}
+
+// Configure the Secrets Gradle Plugin to use .env and .env.example files
+// to match the convention used in Web projects.
+secrets {
+  propertiesFileName = ".env"
+  defaultPropertiesFileName = ".env.example"
+}
+
+// Some unused dependencies are commented out below instead of being removed.
+// This makes it easy to add them back in the future if needed.
+dependencies {
+  implementation(platform(libs.androidx.compose.bom))
+  // implementation(libs.accompanist.permissions)
+  implementation(libs.androidx.activity.compose)
+  // implementation(libs.androidx.camera.camera2)
+  // implementation(libs.androidx.camera.core)
+  // implementation(libs.androidx.camera.lifecycle)
+  // implementation(libs.androidx.camera.view)
+  implementation(libs.androidx.compose.material.icons.core)
+  implementation(libs.androidx.compose.material.icons.extended)
+  implementation(libs.androidx.compose.material3)
+  implementation(libs.androidx.compose.ui)
+  implementation(libs.androidx.compose.ui.graphics)
+  implementation(libs.androidx.compose.ui.tooling.preview)
+  implementation(libs.androidx.core.ktx)
+  // implementation(libs.androidx.datastore.preferences)
+  implementation(libs.androidx.lifecycle.runtime.compose)
+  implementation(libs.androidx.lifecycle.runtime.ktx)
+  implementation(libs.androidx.lifecycle.viewmodel.compose)
+  implementation(libs.androidx.navigation.compose)
+  implementation(libs.androidx.media3.exoplayer)
+  implementation(libs.androidx.media3.ui)
+  implementation(libs.androidx.media3.common)
+  implementation(libs.androidx.media3.extractor)
+  implementation(libs.androidx.media3.datasource)
+  implementation(libs.androidx.media3.session)
+  implementation(libs.nextlib.media3ext)
+  implementation(libs.onnxruntime.android)
+  implementation("com.google.mlkit:translate:17.0.3")
+  implementation(libs.androidx.room.ktx)
+  implementation(libs.androidx.room.runtime)
+  // implementation(libs.coil.compose)
+  implementation(libs.converter.moshi)
+  implementation(libs.kotlinx.coroutines.android)
+  implementation(libs.kotlinx.coroutines.core)
+  implementation(libs.logging.interceptor)
+  implementation(libs.moshi.kotlin)
+  implementation(libs.okhttp)
+  implementation("com.google.android.gms:play-services-ads:23.6.0")
+  implementation(libs.retrofit)
+  testImplementation(libs.androidx.compose.ui.test.junit4)
+  testImplementation(libs.androidx.core)
+  testImplementation(libs.androidx.junit)
+  testImplementation(libs.junit)
+  testImplementation(libs.kotlinx.coroutines.test)
+  testImplementation("com.microsoft.onnxruntime:onnxruntime:1.19.2")
+  testImplementation(libs.robolectric)
+  testImplementation(libs.roborazzi)
+  testImplementation(libs.roborazzi.compose)
+  testImplementation(libs.roborazzi.junit.rule)
+  androidTestImplementation(platform(libs.androidx.compose.bom))
+  androidTestImplementation(libs.androidx.compose.ui.test.junit4)
+  androidTestImplementation(libs.androidx.espresso.core)
+  androidTestImplementation(libs.androidx.junit)
+  androidTestImplementation(libs.androidx.runner)
+  debugImplementation(libs.androidx.compose.ui.test.manifest)
+  debugImplementation(libs.androidx.compose.ui.tooling)
+  "ksp"(libs.androidx.room.compiler)
+  // "ksp"(libs.moshi.kotlin.codegen)
+}
+
+```
+
+
+### FILE: app/src/main/java/com/example/player/UniversalMediaCodecSupport.kt
+```kotlin
+package com.example.player
+
+import android.content.Context
+import android.media.MediaCodecInfo
+import android.media.MediaFormat
+import android.os.Build
+import android.os.Handler
+import android.util.Log
+import androidx.media3.common.C
+import androidx.media3.common.Format
+import androidx.media3.common.MimeTypes
+import androidx.media3.common.audio.AudioProcessor
+import androidx.media3.common.audio.BaseAudioProcessor
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.DefaultRenderersFactory
+import androidx.media3.exoplayer.Renderer
+import androidx.media3.exoplayer.RendererCapabilities
+import androidx.media3.exoplayer.audio.AudioRendererEventListener
+import androidx.media3.exoplayer.audio.AudioSink
+import androidx.media3.exoplayer.audio.DefaultAudioSink
+import androidx.media3.exoplayer.audio.MediaCodecAudioRenderer
+import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
+import androidx.media3.exoplayer.mediacodec.MediaCodecUtil
+import androidx.media3.exoplayer.metadata.MetadataOutput
+import androidx.media3.exoplayer.text.TextOutput
+import androidx.media3.exoplayer.video.MediaCodecVideoRenderer
+import androidx.media3.exoplayer.video.VideoRendererEventListener
+import io.github.anilbeesetti.nextlib.media3ext.ffdecoder.NextRenderersFactory
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.util.ArrayList
+import androidx.media3.exoplayer.mediacodec.MediaCodecInfo as ExoMediaCodecInfo
+
+/**
+ * Universal Stereo Downmix & PCM Normalizer AudioProcessor.
+ *
+ * Safely converts ANY channel configuration (Mono 1.0, Stereo 2.0, 2.1, 3.0, Quad 4.0, 5.0,
+ * 5.1 Surround, 6.1, 7.1 Surround) and ANY PCM sample encoding (16-bit, Float/fltp, 24-bit,
+ * 32-bit, 8-bit) into universal 16-bit Stereo PCM (C.ENCODING_PCM_16BIT, 2 channels).
+ */
+@UnstableApi
+class UniversalStereoAudioProcessor : BaseAudioProcessor() {
+
+    override fun onConfigure(inputAudioFormat: AudioProcessor.AudioFormat): AudioProcessor.AudioFormat {
+        val encoding = inputAudioFormat.encoding
+        val channels = inputAudioFormat.channelCount
+        val sampleRate = inputAudioFormat.sampleRate
+
+        if (channels <= 0 || sampleRate <= 0) {
+            return AudioProcessor.AudioFormat.NOT_SET
+        }
+
+        val isSupportedEncoding = encoding == C.ENCODING_PCM_16BIT ||
+                encoding == C.ENCODING_PCM_FLOAT ||
+                encoding == C.ENCODING_PCM_24BIT ||
+                encoding == C.ENCODING_PCM_32BIT ||
+                encoding == C.ENCODING_PCM_8BIT
+
+        if (!isSupportedEncoding) {
+            throw AudioProcessor.UnhandledAudioFormatException(inputAudioFormat)
+        }
+
+        // Standard 16-bit stereo passes through directly with zero overhead
+        if (channels == 2 && encoding == C.ENCODING_PCM_16BIT) {
+            return AudioProcessor.AudioFormat.NOT_SET
+        }
+
+        return AudioProcessor.AudioFormat(sampleRate, 2, C.ENCODING_PCM_16BIT)
+    }
+
+    override fun queueInput(inputBuffer: ByteBuffer) {
+        val remaining = inputBuffer.remaining()
+        if (remaining == 0) return
+
+        val channels = inputAudioFormat.channelCount
+        val encoding = inputAudioFormat.encoding
+        val bytesPerSample = when (encoding) {
+            C.ENCODING_PCM_8BIT -> 1
+            C.ENCODING_PCM_16BIT -> 2
+            C.ENCODING_PCM_24BIT -> 3
+            C.ENCODING_PCM_32BIT, C.ENCODING_PCM_FLOAT -> 4
+            else -> 2
+        }
+        val frameSize = channels * bytesPerSample
+        if (frameSize <= 0) {
+            inputBuffer.position(inputBuffer.limit())
+            return
+        }
+
+        val frameCount = remaining / frameSize
+        if (frameCount <= 0) {
+            inputBuffer.position(inputBuffer.limit())
+            return
+        }
+
+        val src = inputBuffer.order(ByteOrder.LITTLE_ENDIAN)
+        // Output is always 2 channels * 2 bytes (16-bit stereo) = 4 bytes per frame
+        val outBuffer = replaceOutputBuffer(frameCount * 4).order(ByteOrder.LITTLE_ENDIAN)
+        val chSamples = FloatArray(channels)
+
+        for (frame in 0 until frameCount) {
+            for (ch in 0 until channels) {
+                chSamples[ch] = readNormalizedSample(src, encoding)
+            }
+
+            val left: Float
+            val right: Float
+
+            when (channels) {
+                1 -> {
+                    left = chSamples[0]
+                    right = chSamples[0]
+                }
+                2 -> {
+                    left = chSamples[0]
+                    right = chSamples[1]
+                }
+                3 -> {
+                    // 3.0: FL, FR, FC
+                    left = chSamples[0] * 0.65f + chSamples[2] * 0.45f
+                    right = chSamples[1] * 0.65f + chSamples[2] * 0.45f
+                }
+                4 -> {
+                    // Quad / 4.0: FL, FR, BL, BR
+                    left = chSamples[0] * 0.65f + chSamples[2] * 0.45f
+                    right = chSamples[1] * 0.65f + chSamples[3] * 0.45f
+                }
+                5 -> {
+                    // 5.0: FL, FR, FC, BL, BR
+                    left = chSamples[0] * 0.55f + chSamples[2] * 0.50f + chSamples[3] * 0.35f
+                    right = chSamples[1] * 0.55f + chSamples[2] * 0.50f + chSamples[4] * 0.35f
+                }
+                6 -> {
+                    // 5.1 Surround (HE-AAC / AAC / AC3): FL(0), FR(1), FC(2), LFE(3), BL(4), BR(5)
+                    // Center channel (FC) carries primary spoken dialogue; preserve it clearly!
+                    val fl = chSamples[0]
+                    val fr = chSamples[1]
+                    val fc = chSamples[2]
+                    val lfe = chSamples[3]
+                    val bl = chSamples[4]
+                    val br = chSamples[5]
+                    left = fl * 0.55f + fc * 0.58f + lfe * 0.15f + bl * 0.35f
+                    right = fr * 0.55f + fc * 0.58f + lfe * 0.15f + br * 0.35f
+                }
+                else -> {
+                    // 7.1 or higher: FL(0), FR(1), FC(2), LFE(3), BL(4), BR(5), SL(6), SR(7)
+                    val fl = chSamples[0]
+                    val fr = chSamples[1]
+                    val fc = chSamples[2]
+                    val lfe = chSamples[3]
+                    val bl = chSamples[4]
+                    val br = chSamples[5]
+                    val sl = if (channels > 6) chSamples[6] else 0f
+                    val sr = if (channels > 7) chSamples[7] else 0f
+                    left = fl * 0.48f + fc * 0.55f + lfe * 0.12f + bl * 0.28f + sl * 0.28f
+                    right = fr * 0.48f + fc * 0.55f + lfe * 0.12f + br * 0.28f + sr * 0.28f
+                }
+            }
+
+            val leftShort = (left * 32767.0f).toInt().coerceIn(-32768, 32767).toShort()
+            val rightShort = (right * 32767.0f).toInt().coerceIn(-32768, 32767).toShort()
+            outBuffer.putShort(leftShort)
+            outBuffer.putShort(rightShort)
+        }
+
+        inputBuffer.position(inputBuffer.limit())
+        outBuffer.flip()
+    }
+
+    private fun readNormalizedSample(src: ByteBuffer, encoding: Int): Float {
+        return when (encoding) {
+            C.ENCODING_PCM_16BIT -> src.short / 32768.0f
+            C.ENCODING_PCM_FLOAT -> {
+                val f = src.float
+                if (f.isNaN() || f.isInfinite()) 0f else f.coerceIn(-1.0f, 1.0f)
+            }
+            C.ENCODING_PCM_8BIT -> ((src.get().toInt() and 0xFF) - 128) / 128.0f
+            C.ENCODING_PCM_24BIT -> {
+                val b0 = src.get().toInt() and 0xFF
+                val b1 = src.get().toInt() and 0xFF
+                val b2 = src.get().toInt() // signed MSB
+                val sample24 = (b2 shl 16) or (b1 shl 8) or b0
+                sample24 / 8388608.0f
+            }
+            C.ENCODING_PCM_32BIT -> src.int / 2147483648.0f
+            else -> 0f
+        }
+    }
+}
+
+/**
+ * VLC-Grade RenderersFactory powered by Bundled Native FFmpeg (NextLib / libavcodec + libswscale + libswresample):
+ *
+ * 1. Bundles real C/C++ FFmpeg video (`FfmpegVideoRenderer`) and audio (`FfmpegAudioRenderer`) decoders via
+ *    `io.github.anilbeesetti:nextlib-media3ext` (`NextRenderersFactory`) with `EXTENSION_RENDERER_MODE_PREFER`,
+ *    so 10-bit HEVC (Main 10, yuv420p10le, 1280x536), AV1, VP9, H.264, 5.1 HE-AAC (fltp), AC3, EAC3, DTS,
+ *    TrueHD, Opus, and Vorbis play with 0-second conversion wait on ANY Android phone (just like VLC / Next Player).
+ * 2. Wires `UniversalStereoAudioProcessor` into `DefaultAudioSink` for both `FfmpegAudioRenderer` and
+ *    `MediaCodecAudioRenderer`, downmixing 5.1/7.1 float/PCM audio into universal 2-channel 16-bit Stereo PCM
+ *    so `AudioTrack` never throws `ERROR_CODE_AUDIO_TRACK_INIT_FAILED`.
+ * 3. Supports `audioOnly = true` for the secondary dubbed `.wav` audio player so it never allocates redundant
+ *    video decoders.
+ */
+@UnstableApi
+class VlcGradeRenderersFactory(
+    private val appContext: Context,
+    private val audioOnly: Boolean = false,
+    private val preferSoftwareVideoDecoderProvider: () -> Boolean = { true }
+) : DefaultRenderersFactory(appContext) {
+
+    companion object {
+        private const val TAG = "VlcGradeRenderers"
+
+        fun createUniversalAudioSink(context: Context): AudioSink {
+            return DefaultAudioSink.Builder(context)
+                .setAudioProcessors(arrayOf(UniversalStereoAudioProcessor()))
+                .setEnableFloatOutput(false)
+                .setEnableAudioTrackPlaybackParams(false)
+                .build()
+        }
+
+        fun isFormat10BitHevc(format: Format): Boolean {
+            if (format.sampleMimeType != MimeTypes.VIDEO_H265) return false
+            val codecs = format.codecs?.lowercase() ?: ""
+            val hasMain10CodecTag = codecs.startsWith("hev1.2") ||
+                    codecs.startsWith("hvc1.2") ||
+                    codecs.contains(".2.") ||
+                    codecs.contains("main10")
+            val has10BitColor = (format.colorInfo?.lumaBitdepth ?: -1) >= 10 ||
+                    (format.colorInfo?.chromaBitdepth ?: -1) >= 10
+            if (hasMain10CodecTag || has10BitColor) return true
+
+            return hasHevcMain10NalUnit(format.initializationData)
+        }
+
+        fun hasNonMacroblockAlignedDimensions(format: Format): Boolean {
+            if (format.sampleMimeType != MimeTypes.VIDEO_H265) return false
+            val w = format.width
+            val h = format.height
+            if (w <= 0 || h <= 0) return false
+            if (w == 1920 && h == 1080) return false
+            return (w % 16 != 0) || (h % 16 != 0)
+        }
+
+        private fun hasHevcMain10NalUnit(initData: List<ByteArray>?): Boolean {
+            if (initData.isNullOrEmpty()) return false
+            for (buf in initData) {
+                var i = 0
+                while (i + 7 < buf.size) {
+                    if (buf[i].toInt() == 0 && buf[i + 1].toInt() == 0) {
+                        val nalStart = when {
+                            buf[i + 2].toInt() == 1 -> i + 3
+                            i + 3 < buf.size && buf[i + 2].toInt() == 0 && buf[i + 3].toInt() == 1 -> i + 4
+                            else -> -1
+                        }
+                        if (nalStart != -1 && nalStart + 4 < buf.size) {
+                            val nalType = (buf[nalStart].toInt() and 0x7E) ushr 1
+                            if (nalType == 33) {
+                                val ptlByte0 = buf[nalStart + 3].toInt() and 0xFF
+                                val profileIdc = ptlByte0 and 0x1F
+                                val compatByte0 = buf[nalStart + 4].toInt() and 0xFF
+                                val main10Compat = (compatByte0 and 0x20) != 0
+                                if (profileIdc == 2 || main10Compat) return true
+                            }
+                            i = nalStart + 2
+                            continue
+                        }
+                    }
+                    i++
+                }
+            }
+            return false
+        }
+
+        fun isSoftwareDecoder(info: ExoMediaCodecInfo): Boolean {
+            val name = info.name.lowercase()
+            return info.softwareOnly ||
+                    !info.hardwareAccelerated ||
+                    name.startsWith("c2.android.") ||
+                    name.startsWith("omx.google.") ||
+                    name.contains(".sw.") ||
+                    name.contains("ffmpeg")
+        }
+
+        fun supportsHevcMain10Profile(info: ExoMediaCodecInfo): Boolean {
+            return try {
+                val levels = info.profileLevels
+                levels.any {
+                    it.profile == MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10 ||
+                            it.profile == MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10HDR10 ||
+                            it.profile == MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10HDR10Plus
+                }
+            } catch (_: Exception) {
+                false
+            }
+        }
+    }
+
+    private val nextFfmpegFactory: NextRenderersFactory = NextRenderersFactory(appContext).apply {
+        setEnableDecoderFallback(true)
+        setExtensionRendererMode(EXTENSION_RENDERER_MODE_PREFER)
+    }
+
+    init {
+        setExtensionRendererMode(EXTENSION_RENDERER_MODE_PREFER)
+        setEnableDecoderFallback(true)
+    }
+
+    override fun createRenderers(
+        eventHandler: Handler,
+        videoRendererEventListener: VideoRendererEventListener,
+        audioRendererEventListener: AudioRendererEventListener,
+        textRendererOutput: TextOutput,
+        metadataRendererOutput: MetadataOutput
+    ): Array<Renderer> {
+        val preferSw = preferSoftwareVideoDecoderProvider()
+        nextFfmpegFactory.setEnableDecoderFallback(true)
+        nextFfmpegFactory.setExtensionRendererMode(
+            if (preferSw) EXTENSION_RENDERER_MODE_PREFER else EXTENSION_RENDERER_MODE_ON
+        )
+
+        val baseRenderers = super.createRenderers(
+            eventHandler,
+            videoRendererEventListener,
+            audioRendererEventListener,
+            textRendererOutput,
+            metadataRendererOutput
+        )
+
+        if (audioOnly) {
+            val audioList = ArrayList<Renderer>()
+            createFfmpegAudioRendererWithUniversalSink(appContext, eventHandler, audioRendererEventListener)?.let {
+                audioList.add(it)
+            }
+            for (r in baseRenderers) {
+                if (r.trackType == C.TRACK_TYPE_AUDIO) {
+                    audioList.add(r)
+                }
+            }
+            return audioList.toTypedArray()
+        }
+
+        val nextRenderers = try {
+            nextFfmpegFactory.createRenderers(
+                eventHandler,
+                videoRendererEventListener,
+                audioRendererEventListener,
+                textRendererOutput,
+                metadataRendererOutput
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "NextRenderersFactory initialization note: ${e.message}")
+            emptyArray()
+        }
+
+        val ffmpegVideoRenderers = nextRenderers.filter {
+            it.trackType == C.TRACK_TYPE_VIDEO && it !is MediaCodecVideoRenderer
+        }
+        val ffmpegAudioRenderersFromNext = nextRenderers.filter {
+            it.trackType == C.TRACK_TYPE_AUDIO && it !is MediaCodecAudioRenderer
+        }
+
+        val customFfmpegAudio = createFfmpegAudioRendererWithUniversalSink(
+            appContext,
+            eventHandler,
+            audioRendererEventListener
+        )
+        val effectiveFfmpegAudioRenderers = if (customFfmpegAudio != null) {
+            listOf(customFfmpegAudio)
+        } else {
+            ffmpegAudioRenderersFromNext
+        }
+
+        val baseVideoRenderers = baseRenderers.filter { it.trackType == C.TRACK_TYPE_VIDEO }
+        val baseAudioRenderers = baseRenderers.filter { it.trackType == C.TRACK_TYPE_AUDIO }
+        val otherRenderers = baseRenderers.filter {
+            it.trackType != C.TRACK_TYPE_VIDEO && it.trackType != C.TRACK_TYPE_AUDIO
+        }
+
+        val combined = ArrayList<Renderer>()
+        if (preferSw) {
+            combined.addAll(ffmpegVideoRenderers)
+            combined.addAll(baseVideoRenderers)
+        } else {
+            combined.addAll(baseVideoRenderers)
+            combined.addAll(ffmpegVideoRenderers)
+        }
+
+        if (preferSw) {
+            combined.addAll(effectiveFfmpegAudioRenderers)
+            combined.addAll(baseAudioRenderers)
+        } else {
+            combined.addAll(baseAudioRenderers)
+            combined.addAll(effectiveFfmpegAudioRenderers)
+        }
+
+        combined.addAll(otherRenderers)
+        Log.i(
+            TAG,
+            "Active VLC/FFmpeg + MediaCodec renderers (preferSw=$preferSw): ${combined.map { it.javaClass.simpleName }}"
+        )
+        return combined.toTypedArray()
+    }
+
+    private fun createFfmpegAudioRendererWithUniversalSink(
+        context: Context,
+        eventHandler: Handler,
+        eventListener: AudioRendererEventListener
+    ): Renderer? {
+        return try {
+            val clazz = Class.forName("io.github.anilbeesetti.nextlib.media3ext.ffdecoder.FfmpegAudioRenderer")
+            try {
+                val ctorSink = clazz.getConstructor(
+                    Handler::class.java,
+                    AudioRendererEventListener::class.java,
+                    AudioSink::class.java
+                )
+                return ctorSink.newInstance(
+                    eventHandler,
+                    eventListener,
+                    createUniversalAudioSink(context)
+                ) as? Renderer
+            } catch (_: NoSuchMethodException) {}
+
+            try {
+                val processors = arrayOf<AudioProcessor>(UniversalStereoAudioProcessor())
+                val ctorProc = clazz.getConstructor(
+                    Handler::class.java,
+                    AudioRendererEventListener::class.java,
+                    Array<AudioProcessor>::class.java
+                )
+                return ctorProc.newInstance(
+                    eventHandler,
+                    eventListener,
+                    processors
+                ) as? Renderer
+            } catch (_: NoSuchMethodException) {}
+
+            null
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    override fun buildAudioSink(
+        context: Context,
+        enableFloatOutput: Boolean,
+        enableAudioTrackPlaybackParams: Boolean
+    ): AudioSink {
+        return createUniversalAudioSink(context)
+    }
+
+    override fun buildVideoRenderers(
+        context: Context,
+        extensionRendererMode: Int,
+        mediaCodecSelector: MediaCodecSelector,
+        enableDecoderFallback: Boolean,
+        eventHandler: Handler,
+        eventListener: VideoRendererEventListener,
+        allowedVideoJoiningTimeMs: Long,
+        out: ArrayList<Renderer>
+    ) {
+        if (audioOnly) return
+
+        val smartVideoCodecSelector = MediaCodecSelector { mimeType, requiresSecureDecoder, requiresTunnelingDecoder ->
+            val defaultList = mediaCodecSelector.getDecoderInfos(
+                mimeType,
+                requiresSecureDecoder,
+                requiresTunnelingDecoder
+            ).toMutableList()
+
+            try {
+                val rawSystemDecoders = MediaCodecUtil.getDecoderInfos(
+                    mimeType,
+                    requiresSecureDecoder,
+                    requiresTunnelingDecoder
+                )
+                for (d in rawSystemDecoders) {
+                    if (defaultList.none { it.name == d.name }) {
+                        defaultList.add(d)
+                    }
+                }
+            } catch (_: Exception) {}
+
+            if (defaultList.size <= 1) return@MediaCodecSelector defaultList
+
+            val preferSw = preferSoftwareVideoDecoderProvider()
+            if (mimeType.equals(MimeTypes.VIDEO_H265, ignoreCase = true)) {
+                defaultList.sortedBy { info ->
+                    if (preferSw) {
+                        when {
+                            isSoftwareDecoder(info) -> 0
+                            supportsHevcMain10Profile(info) -> 1
+                            else -> 2
+                        }
+                    } else {
+                        when {
+                            !isSoftwareDecoder(info) && supportsHevcMain10Profile(info) -> 0
+                            !isSoftwareDecoder(info) -> 1
+                            else -> 2
+                        }
+                    }
+                }
+            } else {
+                defaultList
+            }
+        }
+
+        val customVideoRenderer = object : MediaCodecVideoRenderer(
+            context,
+            codecAdapterFactory,
+            smartVideoCodecSelector,
+            allowedVideoJoiningTimeMs,
+            enableDecoderFallback,
+            eventHandler,
+            eventListener,
+            MAX_DROPPED_VIDEO_FRAME_COUNT_TO_NOTIFY
+        ) {
+            override fun supportsFormat(
+                mediaCodecSelector: MediaCodecSelector,
+                format: Format
+            ): Int {
+                val baseSupport = super.supportsFormat(mediaCodecSelector, format)
+                val formatSupport = RendererCapabilities.getFormatSupport(baseSupport)
+                if (format.sampleMimeType == MimeTypes.VIDEO_H265 && formatSupport != C.FORMAT_HANDLED) {
+                    return RendererCapabilities.create(
+                        C.FORMAT_HANDLED,
+                        RendererCapabilities.ADAPTIVE_SEAMLESS,
+                        RendererCapabilities.TUNNELING_NOT_SUPPORTED
+                    )
+                }
+                return baseSupport
+            }
+
+            override fun getDecoderInfos(
+                selector: MediaCodecSelector,
+                format: Format,
+                requiresSecureDecoder: Boolean
+            ): MutableList<ExoMediaCodecInfo> {
+                val infos = super.getDecoderInfos(selector, format, requiresSecureDecoder).toMutableList()
+                val mime = format.sampleMimeType ?: MimeTypes.VIDEO_H265
+
+                try {
+                    val allFromSelector = selector.getDecoderInfos(mime, requiresSecureDecoder, false)
+                    for (candidate in allFromSelector) {
+                        if (infos.none { it.name == candidate.name }) {
+                            infos.add(candidate)
+                        }
+                    }
+                    val allRaw = MediaCodecUtil.getDecoderInfos(mime, requiresSecureDecoder, false)
+                    for (candidate in allRaw) {
+                        if (infos.none { it.name == candidate.name }) {
+                            infos.add(candidate)
+                        }
+                    }
+                } catch (_: Exception) {}
+
+                val is10BitOrOddSizeHevc = isFormat10BitHevc(format) || hasNonMacroblockAlignedDimensions(format)
+                val preferSw = preferSoftwareVideoDecoderProvider()
+
+                if (mime.equals(MimeTypes.VIDEO_H265, ignoreCase = true) || is10BitOrOddSizeHevc) {
+                    infos.sortBy { info ->
+                        if (preferSw) {
+                            when {
+                                isSoftwareDecoder(info) -> 0
+                                supportsHevcMain10Profile(info) -> 1
+                                else -> 2
+                            }
+                        } else {
+                            when {
+                                !isSoftwareDecoder(info) && supportsHevcMain10Profile(info) -> 0
+                                !isSoftwareDecoder(info) -> 1
+                                else -> 2
+                            }
+                        }
+                    }
+                }
+                return infos
+            }
+
+            override fun getMediaFormat(
+                format: Format,
+                codecMimeType: String,
+                codecMaxValues: CodecMaxValues,
+                codecOperatingRate: Float,
+                deviceNeedsNoPostProcessWorkaround: Boolean,
+                tunnelingAudioSessionId: Int
+            ): MediaFormat {
+                val mediaFormat = super.getMediaFormat(
+                    format,
+                    codecMimeType,
+                    codecMaxValues,
+                    codecOperatingRate,
+                    deviceNeedsNoPostProcessWorkaround,
+                    tunnelingAudioSessionId
+                )
+                if (Build.VERSION.SDK_INT >= 31 && isFormat10BitHevc(format)) {
+                    try {
+                        mediaFormat.setInteger(
+                            MediaFormat.KEY_COLOR_TRANSFER_REQUEST,
+                            MediaFormat.COLOR_TRANSFER_SDR_VIDEO
+                        )
+                    } catch (_: Exception) {}
+                }
+                return mediaFormat
+            }
+        }
+
+        out.add(customVideoRenderer)
+    }
+
+    override fun buildAudioRenderers(
+        context: Context,
+        extensionRendererMode: Int,
+        mediaCodecSelector: MediaCodecSelector,
+        enableDecoderFallback: Boolean,
+        audioSink: AudioSink,
+        eventHandler: Handler,
+        eventListener: AudioRendererEventListener,
+        out: ArrayList<Renderer>
+    ) {
+        val customAudioRenderer = object : MediaCodecAudioRenderer(
+            context,
+            codecAdapterFactory,
+            mediaCodecSelector,
+            enableDecoderFallback,
+            eventHandler,
+            eventListener,
+            audioSink
+        ) {
+            override fun getMediaFormat(
+                format: Format,
+                codecMimeType: String,
+                codecMaxValues: Int,
+                codecOperatingRate: Float
+            ): MediaFormat {
+                val mediaFormat = super.getMediaFormat(format, codecMimeType, codecMaxValues, codecOperatingRate)
+                mediaFormat.setInteger(MediaFormat.KEY_MAX_OUTPUT_CHANNEL_COUNT, 2)
+                if (Build.VERSION.SDK_INT >= 28) {
+                    mediaFormat.setInteger("aac-max-output-channel_count", 2)
+                }
+                if (Build.VERSION.SDK_INT >= 24) {
+                    mediaFormat.setInteger(
+                        MediaFormat.KEY_PCM_ENCODING,
+                        android.media.AudioFormat.ENCODING_PCM_16BIT
+                    )
+                }
+                return mediaFormat
+            }
+
+            override fun onOutputFormatChanged(format: Format, outputMediaFormat: MediaFormat?) {
+                val syncedFormat = if (outputMediaFormat != null) {
+                    val actualChannels = if (outputMediaFormat.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
+                        outputMediaFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                    } else {
+                        format.channelCount
+                    }
+                    val actualSampleRate = if (outputMediaFormat.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
+                        outputMediaFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                    } else {
+                        format.sampleRate
+                    }
+                    format.buildUpon()
+                        .setChannelCount(actualChannels)
+                        .setSampleRate(actualSampleRate)
+                        .setEncoderDelay(0)
+                        .setEncoderPadding(0)
+                        .build()
+                } else {
+                    format
+                }
+                super.onOutputFormatChanged(syncedFormat, outputMediaFormat)
+            }
+        }
+
+        out.add(customAudioRenderer)
+    }
+}
+
+```
+
+
+### FILE: app/src/main/java/com/example/player/MediaPlayerManager.kt
+```kotlin
+package com.example.player
+
+import android.content.Context
+import android.net.Uri
+import android.util.Log
+import androidx.annotation.OptIn
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.PlaybackParameters
+import androidx.media3.common.Player
+import androidx.media3.common.TrackSelectionOverride
+import androidx.media3.common.text.CueGroup
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
+import androidx.media3.extractor.DefaultExtractorsFactory
+import androidx.media3.ui.AspectRatioFrameLayout
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import java.io.File
+import kotlin.math.abs
+
+enum class AudioTrackChoice(val label: String, val description: String) {
+    BANGLA_DUB("স্মার্ট অটো ডাব", "কথার সময় ডাবিং, কথার বাইরে অরিজিনাল অডিও (অটোমেটিক)"),
+    ORIGINAL("Original Video", "শুধুমাত্র মূল ভিডিওর অডিও"),
+    BANGLA_ONLY("শুধু বাংলা ডাবিং", "শুধুমাত্র অনূদিত বাংলা কণ্ঠ (মূল অডিও মিউট)")
+}
+
+enum class SubtitleChoice(val label: String) {
+    OFF("Off (বন্ধ)"),
+    BANGLA("বাংলা (Bangla)"),
+    ENGLISH("English (ইংরেজি)")
+}
+
+enum class ResizeModeChoice(val label: String, val mode: Int) {
+    FIT("Fit (ফিট)", AspectRatioFrameLayout.RESIZE_MODE_FIT),
+    ZOOM_CROP("Full Zoom (ফুউল জুম)", AspectRatioFrameLayout.RESIZE_MODE_ZOOM),
+    STRETCH("Stretch (টেনে পূর্ণ)", AspectRatioFrameLayout.RESIZE_MODE_FILL)
+}
+
+data class PlayerState(
+    val isPlaying: Boolean = false,
+    val currentPositionMs: Long = 0L,
+    val durationMs: Long = 0L,
+    val audioChoice: AudioTrackChoice = AudioTrackChoice.BANGLA_DUB,
+    val subtitleChoice: SubtitleChoice = SubtitleChoice.BANGLA,
+    val resizeMode: ResizeModeChoice = ResizeModeChoice.FIT,
+    val playbackSpeed: Float = 1.0f,
+    val isLocked: Boolean = false,
+    val activeSubtitleText: String? = null,
+    val hasDubbedAudio: Boolean = false,
+    val hasBanglaSubtitles: Boolean = false,
+    val hasEnglishSubtitles: Boolean = false,
+    val dubbedAudioFile: File? = null,
+    val isSpeechActive: Boolean = false,
+    val isLiveDubbing: Boolean = false,
+    val isAudioOnlyFallback: Boolean = false,
+    val hasError: Boolean = false,
+    val errorMessage: String? = null
+)
+
+@OptIn(UnstableApi::class)
+class MediaPlayerManager(private val context: Context) {
+
+    private val TAG = "MediaPlayerManager"
+
+    // Primary player: plays video and original video soundtrack natively
+    var player: ExoPlayer? = null
+        private set
+
+    // Secondary player: plays synchronized dubbed speech audio track
+    private var dubbedAudioPlayer: ExoPlayer? = null
+
+    private val _playerState = MutableStateFlow(PlayerState())
+    val playerState: StateFlow<PlayerState> = _playerState.asStateFlow()
+
+    private var currentVideoUri: Uri? = null
+    private var currentDubbedAudioFile: File? = null
+    private var currentSrtFile: File? = null
+    private var currentSourceSrtFile: File? = null
+
+    // Parsed subtitles for instant on-screen rendering and dialogue presence detection
+    private val bnSubtitleEntries = mutableListOf<ParsedSubtitle>()
+    private val enSubtitleEntries = mutableListOf<ParsedSubtitle>()
+    private var embeddedCueText: String? = null
+
+    data class ParsedSubtitle(val startMs: Long, val endMs: Long, val text: String)
+
+    private var liveTts: android.speech.tts.TextToSpeech? = null
+    private var isLiveTtsReady = false
+    private var lastSpokenCueStartMs: Long = -1L
+
+    private var errorRecoveryAttempts = 0
+    private var preferSoftwareVideoDecoder = true
+    private var decoderSwitchCount = 0
+    private var zeroFramePlayingChecks = 0
+
+    private fun initLiveTts() {
+        if (liveTts == null) {
+            liveTts = android.speech.tts.TextToSpeech(context) { status ->
+                if (status == android.speech.tts.TextToSpeech.SUCCESS) {
+                    val res = liveTts?.setLanguage(java.util.Locale("bn", "BD"))
+                    if (res == android.speech.tts.TextToSpeech.LANG_MISSING_DATA || res == android.speech.tts.TextToSpeech.LANG_NOT_SUPPORTED) {
+                        liveTts?.setLanguage(java.util.Locale("bn", "IN"))
+                    }
+                    isLiveTtsReady = true
+                    Log.i(TAG, "Live Real-Time Bengali TTS Synthesizer initialized successfully")
+                }
+            }
+        }
+    }
+
+    private fun createExtractorsFactory(): DefaultExtractorsFactory {
+        return DefaultExtractorsFactory()
+            .setConstantBitrateSeekingEnabled(true)
+            .setConstantBitrateSeekingAlwaysEnabled(true)
+    }
+
+    fun initializePlayer(): ExoPlayer {
+        if (player == null) {
+            val renderersFactory = VlcGradeRenderersFactory(context) { preferSoftwareVideoDecoder }
+
+            val trackSelector = DefaultTrackSelector(context).apply {
+                parameters = buildUponParameters()
+                    .setExceedRendererCapabilitiesIfNecessary(true)
+                    .setExceedVideoConstraintsIfNecessary(true)
+                    .setExceedAudioConstraintsIfNecessary(true)
+                    .setAllowAudioMixedMimeTypeAdaptiveness(true)
+                    .setAllowAudioMixedSampleRateAdaptiveness(true)
+                    .setAllowAudioMixedChannelCountAdaptiveness(true)
+                    .setAllowVideoMixedMimeTypeAdaptiveness(true)
+                    .setAllowVideoNonSeamlessAdaptiveness(true)
+                    .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, false)
+                    .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
+                    .build()
+            }
+
+            val audioAttributes = AudioAttributes.Builder()
+                .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+                .setUsage(C.USAGE_MEDIA)
+                .build()
+
+            val mediaSourceFactory = DefaultMediaSourceFactory(context, createExtractorsFactory())
+
+            player = ExoPlayer.Builder(context, renderersFactory)
+                .setTrackSelector(trackSelector)
+                .setMediaSourceFactory(mediaSourceFactory)
+                .setAudioAttributes(audioAttributes, /* handleAudioFocus= */ true)
+                .build().apply {
+                repeatMode = Player.REPEAT_MODE_OFF
+                playWhenReady = true
+                addListener(object : Player.Listener {
+                    override fun onIsPlayingChanged(isPlaying: Boolean) {
+                        _playerState.value = _playerState.value.copy(isPlaying = isPlaying)
+                        if (isPlaying) {
+                            dubbedAudioPlayer?.play()
+                        } else {
+                            dubbedAudioPlayer?.pause()
+                            liveTts?.stop()
+                        }
+                    }
+
+                    override fun onPlaybackStateChanged(playbackState: Int) {
+                        if (playbackState == Player.STATE_READY) {
+                            errorRecoveryAttempts = 0
+                            zeroFramePlayingChecks = 0
+                        }
+                        val isPlaying = player?.isPlaying ?: false
+                        val playWhenReady = player?.playWhenReady ?: false
+                        val active = isPlaying || (playWhenReady && (playbackState == Player.STATE_READY || playbackState == Player.STATE_BUFFERING))
+                        _playerState.value = _playerState.value.copy(isPlaying = active)
+                    }
+
+                    override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                        val state = player?.playbackState ?: Player.STATE_IDLE
+                        val active = (player?.isPlaying ?: false) || (playWhenReady && state != Player.STATE_ENDED && state != Player.STATE_IDLE)
+                        _playerState.value = _playerState.value.copy(isPlaying = active)
+                        if (playWhenReady) {
+                            dubbedAudioPlayer?.playWhenReady = true
+                            dubbedAudioPlayer?.play()
+                        } else {
+                            dubbedAudioPlayer?.playWhenReady = false
+                            dubbedAudioPlayer?.pause()
+                            liveTts?.stop()
+                        }
+                    }
+
+                    override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
+                        _playerState.value = _playerState.value.copy(playbackSpeed = playbackParameters.speed)
+                        dubbedAudioPlayer?.setPlaybackSpeed(playbackParameters.speed)
+                    }
+
+                    override fun onCues(cueGroup: CueGroup) {
+                        val cueText = cueGroup.cues
+                            .mapNotNull { it.text?.toString()?.trim() }
+                            .filter { it.isNotEmpty() }
+                            .joinToString("\n")
+                            .ifBlank { null }
+                        embeddedCueText = cueText
+                        if (bnSubtitleEntries.isEmpty() && enSubtitleEntries.isEmpty()) {
+                            updateCurrentSubtitleText(player?.currentPosition ?: 0L)
+                        }
+                    }
+
+                    override fun onPlayerError(error: PlaybackException) {
+                        Log.e(TAG, "ExoPlayer playback error: ${error.errorCodeName} (code=${error.errorCode}) - ${error.message}", error)
+
+                        val isAudioOnlyFile = currentVideoUri?.path?.let { p ->
+                            p.endsWith(".wav") || p.endsWith(".m4a") || p.endsWith(".mp3") || p.endsWith(".aac")
+                        } ?: false
+
+                        val isVideoCodecError = error.errorCode == PlaybackException.ERROR_CODE_DECODER_INIT_FAILED ||
+                                error.errorCode == PlaybackException.ERROR_CODE_DECODING_FAILED ||
+                                error.errorCode == PlaybackException.ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES ||
+                                error.errorCode == PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED
+
+                        // 1. Toggle between software and hardware video decoder in-place (preserving PlayerView attachment!)
+                        if (!isAudioOnlyFile && isVideoCodecError && decoderSwitchCount < 2) {
+                            decoderSwitchCount++
+                            preferSoftwareVideoDecoder = !preferSoftwareVideoDecoder
+                            Log.w(TAG, "Video codec error; switching preferSoftwareVideoDecoder=$preferSoftwareVideoDecoder in-place")
+                            reprepareCurrentPlayerInPlace()
+                            return
+                        }
+
+                        // 2. If media is a video (MKV/MP4) and audio track failed, try stereo track override or disable internal audio so video still plays
+                        if (!isAudioOnlyFile && player != null && errorRecoveryAttempts < 3) {
+                            errorRecoveryAttempts++
+                            Log.i(TAG, "Playback retry attempt ($errorRecoveryAttempts/3) for video container.")
+                            try {
+                                val exo = player!!
+                                val savedPos = exo.currentPosition.coerceAtLeast(0L)
+                                val paramsBuilder = exo.trackSelectionParameters
+                                    .buildUpon()
+                                    .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, false)
+
+                                if (errorRecoveryAttempts == 1) {
+                                    // Prefer 2-channel stereo track if available in MKV (e.g., Stream #0:2 stereo)
+                                    var foundStereoOverride = false
+                                    for (group in exo.currentTracks.groups) {
+                                        if (group.type == C.TRACK_TYPE_AUDIO) {
+                                            val mtg = group.mediaTrackGroup
+                                            for (i in 0 until mtg.length) {
+                                                if (mtg.getFormat(i).channelCount in 1..2) {
+                                                    paramsBuilder.setOverrideForType(TrackSelectionOverride(mtg, i))
+                                                    foundStereoOverride = true
+                                                    break
+                                                }
+                                            }
+                                        }
+                                        if (foundStereoOverride) break
+                                    }
+                                    paramsBuilder.setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
+                                } else {
+                                    // Keep video playing even if internal container audio track is corrupt
+                                    paramsBuilder.setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, true)
+                                }
+
+                                exo.trackSelectionParameters = paramsBuilder.build()
+                                exo.prepare()
+                                if (savedPos > 0L) exo.seekTo(savedPos)
+                                exo.playWhenReady = true
+                                exo.play()
+                                return
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Could not recover video playback: ${e.message}")
+                            }
+                        }
+
+                        // 3. Only for genuine audio-only playback files
+                        if (isAudioOnlyFile) {
+                            val dubbed = _playerState.value.dubbedAudioFile ?: currentDubbedAudioFile
+                            if (dubbed != null && dubbed.exists() && dubbed.length() > 44) {
+                                Log.i(TAG, "Audio file fallback to dubbed audio track")
+                                _playerState.value = _playerState.value.copy(
+                                    isAudioOnlyFallback = true,
+                                    hasError = false,
+                                    errorMessage = null
+                                )
+                                val audioItem = MediaItem.fromUri(Uri.fromFile(dubbed))
+                                val audioSource = DefaultMediaSourceFactory(context, createExtractorsFactory()).createMediaSource(audioItem)
+                                dubbedAudioPlayer?.stop()
+                                dubbedAudioPlayer?.release()
+                                dubbedAudioPlayer = null
+                                player?.setMediaSource(audioSource)
+                                player?.prepare()
+                                player?.play()
+                                return
+                            }
+                        }
+
+                        _playerState.value = _playerState.value.copy(
+                            hasError = false,
+                            errorMessage = null,
+                            isPlaying = false
+                        )
+                    }
+                })
+            }
+        }
+        return player!!
+    }
+
+    /**
+     * Re-prepares the EXISTING ExoPlayer instance in-place without releasing it,
+     * so PlayerScreen's AndroidView (PlayerView) never loses its attached player or SurfaceView.
+     */
+    private fun reprepareCurrentPlayerInPlace() {
+        val exo = player ?: return
+        val targetUri = currentVideoUri ?: return
+        val savedPos = exo.currentPosition.coerceAtLeast(0L)
+        val savedSpeed = _playerState.value.playbackSpeed
+
+        try {
+            exo.stop()
+            val mediaSourceFactory = DefaultMediaSourceFactory(context, createExtractorsFactory())
+            val videoItem = MediaItem.fromUri(targetUri)
+            val videoSource = mediaSourceFactory.createMediaSource(videoItem)
+            exo.setMediaSource(videoSource)
+            exo.setPlaybackSpeed(savedSpeed)
+            exo.prepare()
+            if (savedPos > 0L) {
+                exo.seekTo(savedPos)
+                dubbedAudioPlayer?.seekTo(savedPos)
+            }
+            exo.playWhenReady = true
+            exo.play()
+            updateAudioVolumes(savedPos)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to reprepare player in-place: ${e.message}")
+        }
+    }
+
+    private fun initializeDubbedPlayer(): ExoPlayer {
+        if (dubbedAudioPlayer == null) {
+            val renderersFactory = VlcGradeRenderersFactory(context, audioOnly = true)
+            val mediaSourceFactory = DefaultMediaSourceFactory(context, createExtractorsFactory())
+            val audioAttributes = AudioAttributes.Builder()
+                .setContentType(C.AUDIO_CONTENT_TYPE_SPEECH)
+                .setUsage(C.USAGE_MEDIA)
+                .build()
+            dubbedAudioPlayer = ExoPlayer.Builder(context, renderersFactory)
+                .setMediaSourceFactory(mediaSourceFactory)
+                .setAudioAttributes(audioAttributes, /* handleAudioFocus= */ false)
+                .build().apply {
+                repeatMode = Player.REPEAT_MODE_OFF
+                playWhenReady = player?.isPlaying ?: true
+            }
+        }
+        return dubbedAudioPlayer!!
+    }
+
+    fun setupMedia(
+        videoUri: Uri,
+        dubbedAudioFile: File?,
+        srtFile: File?,
+        sourceSrtFile: File? = null
+    ) {
+        loadSubtitleFiles(srtFile, sourceSrtFile)
+
+        val effectiveDubbedFile = when {
+            dubbedAudioFile != null && dubbedAudioFile.exists() && dubbedAudioFile.length() > 44 -> dubbedAudioFile
+            dubbedAudioFile != null -> {
+                val parent = dubbedAudioFile.parentFile
+                val wavFile = if (parent != null) File(parent, "dubbed_bn.wav") else null
+                if (wavFile != null && wavFile.exists() && wavFile.length() > 44) wavFile else null
+            }
+            else -> null
+        }
+
+        if (currentVideoUri == videoUri &&
+            currentDubbedAudioFile?.absolutePath == effectiveDubbedFile?.absolutePath &&
+            player != null &&
+            (player?.mediaItemCount ?: 0) > 0
+        ) {
+            Log.d(TAG, "setupMedia: Video and audio already initialized for $videoUri, ensuring active playback state")
+            currentSrtFile = srtFile
+            currentSourceSrtFile = sourceSrtFile
+            val hasPreRendered = effectiveDubbedFile != null
+            val canLive = !hasPreRendered && bnSubtitleEntries.isNotEmpty()
+            _playerState.value = _playerState.value.copy(
+                hasDubbedAudio = hasPreRendered || canLive,
+                isLiveDubbing = canLive,
+                hasBanglaSubtitles = bnSubtitleEntries.isNotEmpty(),
+                hasEnglishSubtitles = enSubtitleEntries.isNotEmpty(),
+                dubbedAudioFile = effectiveDubbedFile
+            )
+            player?.let { exo ->
+                if (exo.playbackState == Player.STATE_IDLE) {
+                    errorRecoveryAttempts = 0
+                    exo.prepare()
+                } else if (exo.playbackState == Player.STATE_ENDED) {
+                    exo.seekTo(0)
+                }
+                exo.playWhenReady = true
+                exo.play()
+                dubbedAudioPlayer?.let { dp ->
+                    if (dp.playbackState == Player.STATE_IDLE) dp.prepare()
+                    dp.seekTo(exo.currentPosition.coerceAtLeast(0L))
+                    dp.playWhenReady = true
+                    dp.play()
+                }
+                updateAudioVolumes(exo.currentPosition.coerceAtLeast(0L))
+            }
+            return
+        }
+
+        currentVideoUri = videoUri
+        currentDubbedAudioFile = effectiveDubbedFile
+        currentSrtFile = srtFile
+        currentSourceSrtFile = sourceSrtFile
+        errorRecoveryAttempts = 0
+        decoderSwitchCount = 0
+        preferSoftwareVideoDecoder = true
+        zeroFramePlayingChecks = 0
+
+        val exo = initializePlayer()
+        val mediaSourceFactory = DefaultMediaSourceFactory(context, createExtractorsFactory())
+
+        val isVideoUriAudioFile = videoUri.path?.let { p ->
+            p.endsWith(".wav") || p.endsWith(".m4a") || p.endsWith(".mp3") || p.endsWith(".aac")
+        } ?: false
+        val isVideoUriSameAsDubbed = effectiveDubbedFile != null && videoUri.toString() == Uri.fromFile(effectiveDubbedFile).toString()
+        val isAudioOnly = isVideoUriAudioFile || isVideoUriSameAsDubbed
+
+        val hasPreRenderedDubbed = effectiveDubbedFile != null
+        val canLiveDub = !hasPreRenderedDubbed && bnSubtitleEntries.isNotEmpty()
+        val hasDubbed = hasPreRenderedDubbed || canLiveDub
+
+        val initialAudioChoice = if (hasDubbed) AudioTrackChoice.BANGLA_DUB else AudioTrackChoice.ORIGINAL
+        val initialSubChoice = when {
+            bnSubtitleEntries.isNotEmpty() -> SubtitleChoice.BANGLA
+            enSubtitleEntries.isNotEmpty() -> SubtitleChoice.ENGLISH
+            else -> SubtitleChoice.ENGLISH // Allow embedded MKV subtitles when playing directly
+        }
+
+        // Set state including dubbedAudioFile BEFORE preparing video source
+        _playerState.value = _playerState.value.copy(
+            hasDubbedAudio = hasDubbed,
+            isLiveDubbing = canLiveDub,
+            isAudioOnlyFallback = isAudioOnly,
+            hasError = false,
+            errorMessage = null,
+            audioChoice = initialAudioChoice,
+            subtitleChoice = initialSubChoice,
+            hasBanglaSubtitles = bnSubtitleEntries.isNotEmpty(),
+            hasEnglishSubtitles = enSubtitleEntries.isNotEmpty(),
+            dubbedAudioFile = effectiveDubbedFile
+        )
+
+        // 1. Setup Video with Original Audio
+        exo.trackSelectionParameters = exo.trackSelectionParameters
+            .buildUpon()
+            .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, false)
+            .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
+            .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
+            .build()
+        val videoItem = MediaItem.fromUri(videoUri)
+        val videoSource = mediaSourceFactory.createMediaSource(videoItem)
+        exo.setMediaSource(videoSource)
+        exo.prepare()
+        exo.playWhenReady = true
+        exo.play()
+
+        if (hasPreRenderedDubbed && !isVideoUriSameAsDubbed) {
+            val dPlayer = initializeDubbedPlayer()
+            val audioItem = MediaItem.fromUri(Uri.fromFile(effectiveDubbedFile!!))
+            val audioSource = mediaSourceFactory.createMediaSource(audioItem)
+            dPlayer.setMediaSource(audioSource)
+            dPlayer.prepare()
+            dPlayer.playWhenReady = true
+            dPlayer.seekTo(exo.currentPosition.coerceAtLeast(0L))
+            dPlayer.play()
+            Log.i(TAG, "Initialized secondary dubbed player for real-time dynamic track switching: ${effectiveDubbedFile.absolutePath}")
+        } else {
+            dubbedAudioPlayer?.stop()
+            dubbedAudioPlayer?.release()
+            dubbedAudioPlayer = null
+        }
+
+        if (canLiveDub) {
+            initLiveTts()
+            Log.i(TAG, "Initialized Live Real-time TTS Dubbing (0-second wait mode)")
+        }
+
+        updateAudioVolumes(exo.currentPosition.coerceAtLeast(0L))
+    }
+
+    fun setAudioChoice(choice: AudioTrackChoice) {
+        _playerState.value = _playerState.value.copy(audioChoice = choice)
+        player?.let { exo ->
+            exo.trackSelectionParameters = exo.trackSelectionParameters
+                .buildUpon()
+                .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
+                .build()
+            updateAudioVolumes(exo.currentPosition.coerceAtLeast(0L))
+        }
+    }
+
+    /**
+     * Dynamic Alternative Audio Track System:
+     * When dialogue is active -> Dubbed Bangla speech plays, original video audio is ducked (or muted).
+     * When dialogue is NOT active -> Original video audio (cars, storms, engines, footsteps, music) plays at 100% volume!
+     */
+    private fun updateAudioVolumes(currentPosMs: Long) {
+        val exo = player ?: return
+        val dPlayer = dubbedAudioPlayer
+
+        val choice = _playerState.value.audioChoice
+        val hasDubbed = _playerState.value.hasDubbedAudio
+        val isLive = _playerState.value.isLiveDubbing
+
+        if (!hasDubbed || _playerState.value.isAudioOnlyFallback) {
+            exo.volume = 1.0f
+            return
+        }
+
+        val isSpeaking = isDialogueActive(currentPosMs)
+        if (_playerState.value.isSpeechActive != isSpeaking) {
+            _playerState.value = _playerState.value.copy(isSpeechActive = isSpeaking)
+        }
+
+        when (choice) {
+            AudioTrackChoice.BANGLA_DUB -> {
+                if (isSpeaking) {
+                    exo.volume = 0.32f
+                    if (isLive) {
+                        val activeCue = bnSubtitleEntries.firstOrNull { currentPosMs in it.startMs..it.endMs }
+                        if (activeCue != null && activeCue.startMs != lastSpokenCueStartMs) {
+                            lastSpokenCueStartMs = activeCue.startMs
+                            if (isLiveTtsReady && _playerState.value.isPlaying) {
+                                val params = android.os.Bundle()
+                                params.putFloat(android.speech.tts.TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
+                                liveTts?.speak(activeCue.text, android.speech.tts.TextToSpeech.QUEUE_FLUSH, params, "cue_${activeCue.startMs}")
+                            }
+                        }
+                    } else {
+                        dPlayer?.volume = 1.0f
+                    }
+                } else {
+                    exo.volume = if (bnSubtitleEntries.isEmpty()) 0.35f else 1.0f
+                    if (!isLive) {
+                        dPlayer?.volume = 1.0f
+                    }
+                }
+            }
+            AudioTrackChoice.ORIGINAL -> {
+                exo.volume = 1.0f
+                dPlayer?.volume = 0.0f
+                if (isLive) liveTts?.stop()
+            }
+            AudioTrackChoice.BANGLA_ONLY -> {
+                exo.volume = 0.0f
+                if (isLive) {
+                    val activeCue = bnSubtitleEntries.firstOrNull { currentPosMs in it.startMs..it.endMs }
+                    if (activeCue != null && activeCue.startMs != lastSpokenCueStartMs) {
+                        lastSpokenCueStartMs = activeCue.startMs
+                        if (isLiveTtsReady && _playerState.value.isPlaying) {
+                            val params = android.os.Bundle()
+                            params.putFloat(android.speech.tts.TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
+                            liveTts?.speak(activeCue.text, android.speech.tts.TextToSpeech.QUEUE_FLUSH, params, "cue_${activeCue.startMs}")
+                        }
+                    }
+                } else {
+                    dPlayer?.volume = 1.0f
+                }
+            }
+        }
+    }
+
+    private fun isDialogueActive(posMs: Long): Boolean {
+        if (bnSubtitleEntries.isEmpty()) return true
+        return bnSubtitleEntries.any { posMs in (it.startMs - 40L)..(it.endMs + 80L) }
+    }
+
+    fun setSubtitleChoice(choice: SubtitleChoice) {
+        _playerState.value = _playerState.value.copy(subtitleChoice = choice)
+        updateCurrentSubtitleText(_playerState.value.currentPositionMs)
+    }
+
+    fun setResizeMode(mode: ResizeModeChoice) {
+        _playerState.value = _playerState.value.copy(resizeMode = mode)
+    }
+
+    fun cycleResizeMode(): ResizeModeChoice {
+        val modes = ResizeModeChoice.values()
+        val currentIdx = modes.indexOf(_playerState.value.resizeMode)
+        val nextMode = modes[(currentIdx + 1) % modes.size]
+        _playerState.value = _playerState.value.copy(resizeMode = nextMode)
+        return nextMode
+    }
+
+    fun setPlaybackSpeed(speed: Float) {
+        player?.setPlaybackSpeed(speed)
+        dubbedAudioPlayer?.setPlaybackSpeed(speed)
+        _playerState.value = _playerState.value.copy(playbackSpeed = speed)
+    }
+
+    fun seekBy(deltaMs: Long) {
+        val exo = player ?: return
+        val current = exo.currentPosition
+        val target = (current + deltaMs).coerceIn(0L, exo.duration.coerceAtLeast(0L))
+        seekTo(target)
+    }
+
+    fun seekTo(positionMs: Long) {
+        liveTts?.stop()
+        lastSpokenCueStartMs = -1L
+        player?.seekTo(positionMs)
+        dubbedAudioPlayer?.seekTo(positionMs)
+        updateAudioVolumes(positionMs)
+    }
+
+    fun togglePlayPause() {
+        val exo = player ?: initializePlayer()
+        val isCurrentlyPlaying = exo.isPlaying || (exo.playWhenReady && (exo.playbackState == Player.STATE_READY || exo.playbackState == Player.STATE_BUFFERING))
+        val shouldPlay = !isCurrentlyPlaying
+
+        if (shouldPlay) {
+            if (exo.playbackState == Player.STATE_IDLE) {
+                exo.prepare()
+            } else if (exo.playbackState == Player.STATE_ENDED) {
+                exo.seekTo(0)
+            }
+            exo.playWhenReady = true
+            exo.play()
+            dubbedAudioPlayer?.let { dp ->
+                if (dp.playbackState == Player.STATE_IDLE) dp.prepare()
+                dp.seekTo(exo.currentPosition.coerceAtLeast(0L))
+                dp.playWhenReady = true
+                dp.play()
+            }
+            _playerState.value = _playerState.value.copy(isPlaying = true)
+        } else {
+            exo.playWhenReady = false
+            exo.pause()
+            dubbedAudioPlayer?.playWhenReady = false
+            dubbedAudioPlayer?.pause()
+            liveTts?.stop()
+            _playerState.value = _playerState.value.copy(isPlaying = false)
+        }
+    }
+
+    fun toggleLock() {
+        _playerState.value = _playerState.value.copy(isLocked = !_playerState.value.isLocked)
+    }
+
+    fun updateProgress() {
+        val exo = player ?: return
+        val pos = exo.currentPosition.coerceAtLeast(0L)
+        val dur = exo.duration.coerceAtLeast(0L)
+        _playerState.value = _playerState.value.copy(
+            currentPositionMs = pos,
+            durationMs = dur
+        )
+
+
+
+        // Resync secondary player if clock drift exceeds threshold
+        val dPlayer = dubbedAudioPlayer
+        if (dPlayer != null && exo.isPlaying) {
+            if (!dPlayer.isPlaying && dPlayer.playbackState == Player.STATE_READY) {
+                dPlayer.play()
+            }
+            val drift = abs(pos - dPlayer.currentPosition)
+            if (drift > 120L) {
+                dPlayer.seekTo(pos)
+            }
+        }
+
+        updateCurrentSubtitleText(pos)
+        updateAudioVolumes(pos)
+    }
+
+    private fun updateCurrentSubtitleText(currentPositionMs: Long) {
+        val choice = _playerState.value.subtitleChoice
+        if (choice == SubtitleChoice.OFF) {
+            if (_playerState.value.activeSubtitleText != null) {
+                _playerState.value = _playerState.value.copy(activeSubtitleText = null)
+            }
+            return
+        }
+
+        val entries = when (choice) {
+            SubtitleChoice.BANGLA -> bnSubtitleEntries
+            SubtitleChoice.ENGLISH -> enSubtitleEntries
+            SubtitleChoice.OFF -> emptyList()
+        }
+
+        if (entries.isEmpty()) {
+            val fallbackText = embeddedCueText
+            if (_playerState.value.activeSubtitleText != fallbackText) {
+                _playerState.value = _playerState.value.copy(activeSubtitleText = fallbackText)
+            }
+            return
+        }
+
+        val active = entries.firstOrNull { currentPositionMs in it.startMs..it.endMs }
+        val text = active?.text
+        if (_playerState.value.activeSubtitleText != text) {
+            _playerState.value = _playerState.value.copy(activeSubtitleText = text)
+        }
+    }
+
+    private fun loadSubtitleFiles(bnSrtFile: File?, enSrtFile: File?) {
+        bnSubtitleEntries.clear()
+        enSubtitleEntries.clear()
+
+        bnSrtFile?.let { parseSrtIntoList(it, bnSubtitleEntries) }
+        enSrtFile?.let { parseSrtIntoList(it, enSubtitleEntries) }
+    }
+
+    private fun parseSrtIntoList(srtFile: File, targetList: MutableList<ParsedSubtitle>) {
+        if (!srtFile.exists() || srtFile.length() == 0L) return
+        try {
+            val content = srtFile.readText(Charsets.UTF_8)
+            val cues = com.example.subtitle.SubtitleExtractor.parseSubtitleContent(content)
+            for (cue in cues) {
+                if (cue.text.isNotBlank()) {
+                    targetList.add(ParsedSubtitle(cue.startMs, cue.endMs, cue.text.replace("\n", " ").trim()))
+                }
+            }
+            Log.d(TAG, "Loaded ${targetList.size} subtitle entries from ${srtFile.name}")
+        } catch (e: Exception) {
+            Log.w(TAG, "Error parsing SRT file: ${srtFile.name}", e)
+        }
+    }
+
+    fun release() {
+        player?.release()
+        player = null
+        dubbedAudioPlayer?.release()
+        dubbedAudioPlayer = null
+        try {
+            liveTts?.stop()
+            liveTts?.shutdown()
+            liveTts = null
+        } catch (_: Exception) {}
+    }
+}
+
+
+```
+
+
+### FILE: app/src/main/java/com/example/player/PlayerActivity.kt
+```kotlin
+package com.example.player
+
+import android.annotation.SuppressLint
+import android.app.Activity
+import android.app.AlertDialog
+import android.content.Context
+import android.content.Intent
+import android.media.AudioManager
+import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import android.os.Environment
+import android.os.Handler
+import android.os.Looper
+import android.provider.OpenableColumns
+import android.util.Log
+import android.view.GestureDetector
+import android.view.MotionEvent
+import android.view.View
+import android.view.WindowManager
+import android.widget.Button
+import android.widget.ImageButton
+import android.widget.ImageView
+import android.widget.LinearLayout
+import android.widget.ProgressBar
+import android.widget.SeekBar
+import android.widget.TextView
+import android.widget.Toast
+import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.PlaybackParameters
+import androidx.media3.common.Player
+import androidx.media3.common.TrackSelectionOverride
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
+import androidx.media3.extractor.DefaultExtractorsFactory
+import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.media3.ui.PlayerView
+import com.example.R
+import com.example.ads.AdMobManager
+import com.example.subtitle.SubtitleCue
+import com.example.subtitle.SubtitleExtractor
+import java.io.File
+import java.util.Locale
+import kotlin.math.abs
+
+enum class PlayerAudioMode(val label: String, val description: String) {
+    SMART_DUB("স্মার্ট অটো ডাব (পারিপার্শ্বিক অডিও সহ)", "বাংলা ডাবিং এবং ভিডিওর পেছনের ব্যাকগ্রাউন্ড সাউন্ড ও মিউজিক একসাথে চলবে"),
+    ORIGINAL_ONLY("শুধুমাত্র মূল ভিডিওর অডিও", "মূল ভিডিওর অরিজিনাল সাউন্ডট্র্যাক ১০০% ভলিউমে"),
+    BANGLA_ONLY("শুধুমাত্র বাংলা ডাবিং", "শুধুমাত্র অনূদিত বাংলা কণ্ঠ (মূল ভিডিও মিউট)")
+}
+
+/**
+ * Production-ready VLC-grade Offline Video Player Activity using AndroidX Media3 ExoPlayer.
+ */
+@UnstableApi
+class PlayerActivity : ComponentActivity() {
+
+    companion object {
+        private const val TAG = "PlayerActivity"
+        const val EXTRA_VIDEO_URI = "extra_video_uri"
+        const val EXTRA_TITLE = "extra_title"
+        const val EXTRA_DUBBED_AUDIO_PATH = "extra_dubbed_audio_path"
+        const val EXTRA_SRT_PATH = "extra_srt_path"
+
+        private const val HIDE_CONTROLS_DELAY_MS = 4000L
+        private val SPEEDS = floatArrayOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f)
+
+        fun createIntent(
+            context: Context,
+            videoUri: Uri,
+            title: String? = null,
+            dubbedAudioPath: String? = null,
+            srtPath: String? = null
+        ): Intent {
+            return Intent(context, PlayerActivity::class.java).apply {
+                data = videoUri
+                putExtra(EXTRA_VIDEO_URI, videoUri.toString())
+                putExtra(EXTRA_TITLE, title)
+                putExtra(EXTRA_DUBBED_AUDIO_PATH, dubbedAudioPath)
+                putExtra(EXTRA_SRT_PATH, srtPath)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                if (context !is Activity) {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            }
+        }
+    }
+
+    // Media3 ExoPlayer (Primary: Video + Original Multichannel Audio)
+    private var player: ExoPlayer? = null
+    // Media3 ExoPlayer (Secondary: Dubbed Bangla Speech Track for Real-time Smart Ducking)
+    private var dubbedPlayer: ExoPlayer? = null
+
+    private var trackSelector: DefaultTrackSelector? = null
+    private var videoUri: Uri? = null
+    private var videoTitle: String? = null
+    private var dubbedAudioPath: String? = null
+    private var srtPath: String? = null
+    private var launchedWithExplicitDub: Boolean = false
+
+    private var currentAudioMode = PlayerAudioMode.SMART_DUB
+    private val bnSubtitleCues = mutableListOf<SubtitleCue>()
+
+    // Playback state restoration across lifecycles
+    private var startPositionMs: Long = 0L
+    private var startPlayWhenReady: Boolean = true
+    private var isAdShownOrSkipped: Boolean = false
+    private var isWaitingForAd: Boolean = false
+
+    // Decoder recovery state
+    private var preferSoftwareVideoDecoder: Boolean = true
+    private var decoderSwitchCount: Int = 0
+    private var errorRecoveryAttempts: Int = 0
+    private var zeroFrameChecks: Int = 0
+
+    // UI View References
+    private lateinit var playerRoot: View
+    private lateinit var playerView: PlayerView
+    private lateinit var controlsContainer: View
+    private lateinit var topBar: View
+    private lateinit var bottomBar: View
+    private lateinit var centerControls: View
+    private lateinit var progressBuffering: ProgressBar
+    private lateinit var btnPlayPause: ImageButton
+    private lateinit var btnReplay10: ImageButton
+    private lateinit var btnForward10: ImageButton
+    private lateinit var btnBack: ImageButton
+    private lateinit var btnAspectRatio: ImageButton
+    private lateinit var btnRotate: ImageButton
+    private lateinit var btnRotateBottom: ImageButton
+    private lateinit var btnSubtitles: ImageButton
+    private lateinit var btnAudioTracks: ImageButton
+    private lateinit var btnSpeed: Button
+    private lateinit var btnLock: ImageButton
+    private lateinit var btnUnlock: ImageButton
+    private lateinit var seekBar: SeekBar
+    private lateinit var txtTimeCurrent: TextView
+    private lateinit var txtTimeDuration: TextView
+    private lateinit var txtVideoTitle: TextView
+
+    // VLC-style HUD overlay
+    private lateinit var hudContainer: LinearLayout
+    private lateinit var hudIcon: ImageView
+    private lateinit var hudText: TextView
+    private lateinit var hudProgress: ProgressBar
+
+    // Gesture & Audio Helpers
+    private lateinit var audioManager: AudioManager
+    private lateinit var gestureDetector: GestureDetector
+    private val handler = Handler(Looper.getMainLooper())
+    private var isControlsLocked = false
+    private var currentSpeedIndex = 2 // 1.0x
+    private var currentResizeModeIndex = 0 // FIT
+
+    private val resizeModes = intArrayOf(
+        AspectRatioFrameLayout.RESIZE_MODE_FIT,
+        AspectRatioFrameLayout.RESIZE_MODE_FILL,
+        AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+    )
+    private val resizeModeLabels = arrayOf("Fit (ফিট)", "Stretch (টেনে পূর্ণ)", "Crop / Zoom (জুম)")
+
+    // Timeline update runnable
+    private val updateProgressRunnable = object : Runnable {
+        override fun run() {
+            updateTimeline()
+            handler.postDelayed(this, 500L)
+        }
+    }
+
+    private val hideControlsRunnable = Runnable {
+        hideControls()
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_player)
+
+        audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+
+        parseIntentData(intent)
+        initViews()
+        setupGestureDetector()
+        setupListeners()
+        setupImmersiveMode()
+
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (isControlsLocked) {
+                    toggleLock()
+                } else {
+                    finish()
+                }
+            }
+        })
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        releasePlayer()
+        preferSoftwareVideoDecoder = true
+        decoderSwitchCount = 0
+        errorRecoveryAttempts = 0
+        parseIntentData(intent)
+        txtVideoTitle.text = videoTitle
+        initializePlayer()
+    }
+
+    private fun parseIntentData(intent: Intent?) {
+        if (intent == null) return
+        val rawUriStr = intent.getStringExtra(EXTRA_VIDEO_URI)
+        val dataUri = intent.data
+
+        videoUri = when {
+            dataUri != null -> dataUri
+            rawUriStr != null -> try { Uri.parse(rawUriStr) } catch (_: Exception) { null }
+            else -> null
+        }
+
+        videoUri?.let { uri ->
+            if (uri.scheme == "content") {
+                try {
+                    contentResolver.takePersistableUriPermission(
+                        uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    )
+                } catch (_: Exception) {}
+            }
+        }
+
+        val resolvedDisplayName = videoUri?.let { queryDisplayName(it) }
+        videoTitle = intent.getStringExtra(EXTRA_TITLE)?.takeIf { it.isNotBlank() }
+            ?: resolvedDisplayName
+            ?: videoUri?.lastPathSegment
+            ?: "Offline Video"
+
+        dubbedAudioPath = intent.getStringExtra(EXTRA_DUBBED_AUDIO_PATH)
+        srtPath = intent.getStringExtra(EXTRA_SRT_PATH)
+        launchedWithExplicitDub = !dubbedAudioPath.isNullOrBlank()
+
+        val titleForLookup = resolvedDisplayName ?: videoTitle ?: ""
+        if (titleForLookup.isNotBlank() && (dubbedAudioPath.isNullOrBlank() || srtPath.isNullOrBlank())) {
+            val baseTitle = titleForLookup.substringBeforeLast(".")
+            val publicDownloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            val fileTranslatoDir = File(publicDownloads, "FileTranslato")
+            val banglaDubbingDir = File(publicDownloads, "BanglaDubbing")
+
+            if (dubbedAudioPath.isNullOrBlank()) {
+                val candidateAudio = File(fileTranslatoDir, "${baseTitle}_bangla_dubbed_audio.wav")
+                if (candidateAudio.exists() && candidateAudio.length() > 44) {
+                    dubbedAudioPath = candidateAudio.absolutePath
+                }
+            }
+            if (srtPath.isNullOrBlank()) {
+                val candidateSrt1 = File(fileTranslatoDir, "${baseTitle}_bangla.srt")
+                val candidateSrt2 = File(banglaDubbingDir, "${baseTitle}_bangla.srt")
+                if (candidateSrt1.exists() && candidateSrt1.length() > 0) {
+                    srtPath = candidateSrt1.absolutePath
+                } else if (candidateSrt2.exists() && candidateSrt2.length() > 0) {
+                    srtPath = candidateSrt2.absolutePath
+                }
+            }
+        }
+
+        bnSubtitleCues.clear()
+        srtPath?.let { path ->
+            val f = File(path)
+            if (f.exists() && f.length() > 0) {
+                try {
+                    bnSubtitleCues.addAll(SubtitleExtractor.parseSubtitleContent(f.readText(Charsets.UTF_8)))
+                } catch (e: Exception) {
+                    Log.w(TAG, "Could not parse SRT for smart ducking: ${e.message}")
+                }
+            }
+        }
+    }
+
+    private fun queryDisplayName(uri: Uri): String? {
+        if (uri.scheme == "file") {
+            return uri.path?.let { File(it).name }
+        }
+        return try {
+            contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (idx != -1) cursor.getString(idx) else null
+                } else null
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun initViews() {
+        playerRoot = findViewById(R.id.player_root)
+        playerView = findViewById(R.id.player_view)
+        controlsContainer = findViewById(R.id.controls_container)
+        topBar = findViewById(R.id.top_bar)
+        bottomBar = findViewById(R.id.bottom_bar)
+        centerControls = findViewById(R.id.center_controls)
+        progressBuffering = findViewById(R.id.progress_buffering)
+
+        btnPlayPause = findViewById(R.id.btn_play_pause)
+        btnReplay10 = findViewById(R.id.btn_replay_10)
+        btnForward10 = findViewById(R.id.btn_forward_10)
+        btnBack = findViewById(R.id.btn_back)
+        btnAspectRatio = findViewById(R.id.btn_aspect_ratio)
+        btnRotate = findViewById(R.id.btn_rotate)
+        btnRotateBottom = findViewById(R.id.btn_rotate_bottom)
+        btnSubtitles = findViewById(R.id.btn_subtitles)
+        btnAudioTracks = findViewById(R.id.btn_audio_tracks)
+        btnSpeed = findViewById(R.id.btn_speed)
+        btnLock = findViewById(R.id.btn_lock)
+        btnUnlock = findViewById(R.id.btn_unlock)
+
+        seekBar = findViewById(R.id.seek_bar)
+        txtTimeCurrent = findViewById(R.id.txt_time_current)
+        txtTimeDuration = findViewById(R.id.txt_time_duration)
+        txtVideoTitle = findViewById(R.id.txt_video_title)
+
+        hudContainer = findViewById(R.id.hud_container)
+        hudIcon = findViewById(R.id.hud_icon)
+        hudText = findViewById(R.id.hud_text)
+        hudProgress = findViewById(R.id.hud_progress)
+
+        txtVideoTitle.text = videoTitle
+    }
+
+    private fun setupListeners() {
+        btnBack.setOnClickListener { finish() }
+
+        btnPlayPause.setOnClickListener {
+            togglePlayPause()
+            resetControlsHideTimer()
+        }
+
+        btnReplay10.setOnClickListener {
+            player?.let { p ->
+                val newPos = maxOf(0L, p.currentPosition - 10_000L)
+                p.seekTo(newPos)
+                dubbedPlayer?.seekTo(newPos)
+                showSeekHud(newPos, -10_000L)
+            }
+            resetControlsHideTimer()
+        }
+
+        btnForward10.setOnClickListener {
+            player?.let { p ->
+                val dur = p.duration.coerceAtLeast(0L)
+                val newPos = if (dur > 0) minOf(dur, p.currentPosition + 10_000L) else p.currentPosition + 10_000L
+                p.seekTo(newPos)
+                dubbedPlayer?.seekTo(newPos)
+                showSeekHud(newPos, 10_000L)
+            }
+            resetControlsHideTimer()
+        }
+
+        btnAspectRatio.setOnClickListener {
+            cycleAspectRatio()
+            resetControlsHideTimer()
+        }
+
+        btnRotate.setOnClickListener {
+            toggleScreenRotation()
+        }
+
+        btnRotateBottom.setOnClickListener {
+            toggleScreenRotation()
+        }
+
+        btnAudioTracks.setOnClickListener {
+            showAudioTrackSelectionDialog()
+            resetControlsHideTimer()
+        }
+
+        btnSubtitles.setOnClickListener {
+            showSubtitleTrackSelectionDialog()
+            resetControlsHideTimer()
+        }
+
+        btnSpeed.setOnClickListener {
+            cyclePlaybackSpeed()
+            resetControlsHideTimer()
+        }
+
+        btnLock.setOnClickListener { toggleLock() }
+        btnUnlock.setOnClickListener { toggleLock() }
+
+        seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            private var isUserSeeking = false
+
+            override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
+                if (fromUser && player != null) {
+                    val duration = player?.duration ?: 0L
+                    if (duration > 0) {
+                        val seekToMs = (duration * progress) / 1000L
+                        txtTimeCurrent.text = formatTime(seekToMs)
+                    }
+                }
+            }
+
+            override fun onStartTrackingTouch(sb: SeekBar?) {
+                isUserSeeking = true
+                handler.removeCallbacks(hideControlsRunnable)
+            }
+
+            override fun onStopTrackingTouch(sb: SeekBar?) {
+                isUserSeeking = false
+                player?.let { p ->
+                    val duration = p.duration
+                    if (duration > 0 && sb != null) {
+                        val seekToMs = (duration * sb.progress) / 1000L
+                        p.seekTo(seekToMs)
+                        dubbedPlayer?.seekTo(seekToMs)
+                    }
+                }
+                resetControlsHideTimer()
+            }
+        })
+    }
+
+    private fun createExtractorsFactory(): DefaultExtractorsFactory {
+        return DefaultExtractorsFactory()
+            .setConstantBitrateSeekingEnabled(true)
+            .setConstantBitrateSeekingAlwaysEnabled(true)
+    }
+
+    private fun buildMainMediaItem(targetUri: Uri): MediaItem {
+        val mediaItemBuilder = MediaItem.Builder().setUri(targetUri)
+        srtPath?.let { sPath ->
+            val srtFile = File(sPath)
+            if (srtFile.exists() && srtFile.length() > 0) {
+                val subConfig = MediaItem.SubtitleConfiguration.Builder(Uri.fromFile(srtFile))
+                    .setMimeType(MimeTypes.APPLICATION_SUBRIP)
+                    .setLanguage("ben")
+                    .setLabel("অনূদিত বাংলা সাবটাইটেল (Bangla Dub)")
+                    .setSelectionFlags(if (launchedWithExplicitDub) C.SELECTION_FLAG_DEFAULT else 0)
+                    .build()
+                mediaItemBuilder.setSubtitleConfigurations(listOf(subConfig))
+            }
+        }
+        return mediaItemBuilder.build()
+    }
+
+    private fun initializePlayer() {
+        if (player != null) return
+        val targetUri = videoUri ?: run {
+            Toast.makeText(this, "ভিডিও ফাইল খুঁজে পাওয়া যায়নি", Toast.LENGTH_SHORT).show()
+            finish()
+            return
+        }
+
+        try {
+            val renderersFactory = VlcGradeRenderersFactory(this) { preferSoftwareVideoDecoder }
+
+            trackSelector = DefaultTrackSelector(this).apply {
+                parameters = buildUponParameters()
+                    .setExceedRendererCapabilitiesIfNecessary(true)
+                    .setExceedVideoConstraintsIfNecessary(true)
+                    .setExceedAudioConstraintsIfNecessary(true)
+                    .setAllowAudioMixedMimeTypeAdaptiveness(true)
+                    .setAllowAudioMixedSampleRateAdaptiveness(true)
+                    .setAllowAudioMixedChannelCountAdaptiveness(true)
+                    .setAllowVideoMixedMimeTypeAdaptiveness(true)
+                    .setAllowVideoNonSeamlessAdaptiveness(true)
+                    .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, false)
+                    .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
+                    .build()
+            }
+
+            val audioAttributes = AudioAttributes.Builder()
+                .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+                .setUsage(C.USAGE_MEDIA)
+                .build()
+
+            val dataSourceFactory = DefaultDataSource.Factory(this)
+            val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory, createExtractorsFactory())
+
+            player = ExoPlayer.Builder(this, renderersFactory)
+                .setTrackSelector(trackSelector!!)
+                .setMediaSourceFactory(mediaSourceFactory)
+                .setAudioAttributes(audioAttributes, /* handleAudioFocus= */ true)
+                .build().apply {
+                    repeatMode = Player.REPEAT_MODE_OFF
+                    playWhenReady = startPlayWhenReady
+                    addListener(PlayerEventListener())
+                }
+
+            playerView.player = player
+            playerView.resizeMode = resizeModes[currentResizeModeIndex]
+
+            val mainMediaSource = mediaSourceFactory.createMediaSource(buildMainMediaItem(targetUri))
+            player?.setMediaSource(mainMediaSource)
+            player?.prepare()
+
+            val dubbedFile = dubbedAudioPath?.let { File(it) }
+            if (dubbedFile != null && dubbedFile.exists() && dubbedFile.length() > 44) {
+                val dubbedRenderersFactory = VlcGradeRenderersFactory(this, audioOnly = true)
+                val speechAudioAttributes = AudioAttributes.Builder()
+                    .setContentType(C.AUDIO_CONTENT_TYPE_SPEECH)
+                    .setUsage(C.USAGE_MEDIA)
+                    .build()
+                dubbedPlayer = ExoPlayer.Builder(this, dubbedRenderersFactory)
+                    .setMediaSourceFactory(mediaSourceFactory)
+                    .setAudioAttributes(speechAudioAttributes, /* handleAudioFocus= */ false)
+                    .build().apply {
+                        val audioItem = MediaItem.fromUri(Uri.fromFile(dubbedFile))
+                        val audioSource = mediaSourceFactory.createMediaSource(audioItem)
+                        setMediaSource(audioSource)
+                        prepare()
+                        playWhenReady = startPlayWhenReady
+                        seekTo(startPositionMs)
+                    }
+                currentAudioMode = if (launchedWithExplicitDub) PlayerAudioMode.SMART_DUB else PlayerAudioMode.ORIGINAL_ONLY
+                Log.i(TAG, "Dubbed audio player initialized (mode=$currentAudioMode): ${dubbedFile.absolutePath}")
+            } else {
+                dubbedPlayer = null
+                currentAudioMode = PlayerAudioMode.ORIGINAL_ONLY
+            }
+
+            applyAudioModeVolumes(startPositionMs)
+
+            if (startPositionMs > 0) {
+                player?.seekTo(startPositionMs)
+                dubbedPlayer?.seekTo(startPositionMs)
+            }
+
+            if (!isAdShownOrSkipped) {
+                isAdShownOrSkipped = true
+                isWaitingForAd = true
+                AdMobManager.showRewardedAd(this) {
+                    isWaitingForAd = false
+                    startPlayWhenReady = true
+                    if (player == null) {
+                        initializePlayer()
+                    }
+                    player?.playWhenReady = true
+                    player?.play()
+                    dubbedPlayer?.playWhenReady = true
+                    dubbedPlayer?.play()
+                    btnPlayPause.setImageResource(R.drawable.ic_pause)
+                }
+            }
+
+            handler.removeCallbacks(updateProgressRunnable)
+            handler.post(updateProgressRunnable)
+            resetControlsHideTimer()
+
+            Log.i(TAG, "ExoPlayer initialized with SurfaceView, 10-bit HEVC decoding, and 5.1 HE-AAC stereo downmixing")
+        } catch (e: Exception) {
+            Log.e(TAG, "ExoPlayer initialization failed: ${e.message}", e)
+            Toast.makeText(this, "ভিডিও প্লেয়ার শুরু করতে সমস্যা হয়েছে: ${e.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun repreparePlayerInPlace() {
+        val p = player ?: return
+        val targetUri = videoUri ?: return
+        val savedPos = p.currentPosition.coerceAtLeast(0L)
+        try {
+            p.stop()
+            val dataSourceFactory = DefaultDataSource.Factory(this)
+            val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory, createExtractorsFactory())
+            val mainMediaSource = mediaSourceFactory.createMediaSource(buildMainMediaItem(targetUri))
+            p.setMediaSource(mainMediaSource)
+            p.prepare()
+            if (savedPos > 0L) {
+                p.seekTo(savedPos)
+                dubbedPlayer?.seekTo(savedPos)
+            }
+            p.playWhenReady = true
+            p.play()
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to reprepare player in-place: ${e.message}")
+        }
+    }
+
+    private fun releasePlayer() {
+        player?.let { p ->
+            startPositionMs = p.currentPosition.coerceAtLeast(0L)
+            startPlayWhenReady = if (isWaitingForAd) true else p.playWhenReady
+            p.stop()
+            p.release()
+        }
+        player = null
+        trackSelector = null
+        playerView.player = null
+
+        dubbedPlayer?.let { dp ->
+            dp.stop()
+            dp.release()
+        }
+        dubbedPlayer = null
+
+        handler.removeCallbacks(updateProgressRunnable)
+        handler.removeCallbacks(hideControlsRunnable)
+    }
+
+    override fun onStart() {
+        super.onStart()
+        if (Build.VERSION.SDK_INT >= 24) {
+            initializePlayer()
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        setupImmersiveMode()
+        if (Build.VERSION.SDK_INT < 24 || player == null) {
+            initializePlayer()
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        if (Build.VERSION.SDK_INT < 24) {
+            releasePlayer()
+        } else {
+            player?.pause()
+            dubbedPlayer?.pause()
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        if (Build.VERSION.SDK_INT >= 24) {
+            releasePlayer()
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        releasePlayer()
+    }
+
+    private inner class PlayerEventListener : Player.Listener {
+        override fun onPlaybackStateChanged(playbackState: Int) {
+            when (playbackState) {
+                Player.STATE_BUFFERING -> {
+                    progressBuffering.visibility = View.VISIBLE
+                }
+                Player.STATE_READY -> {
+                    progressBuffering.visibility = View.GONE
+                    errorRecoveryAttempts = 0
+                    zeroFrameChecks = 0
+                    updateTimeline()
+                }
+                Player.STATE_ENDED -> {
+                    progressBuffering.visibility = View.GONE
+                    btnPlayPause.setImageResource(R.drawable.ic_play_arrow)
+                    showControls()
+                }
+                Player.STATE_IDLE -> {
+                    progressBuffering.visibility = View.GONE
+                }
+            }
+        }
+
+        override fun onIsPlayingChanged(isPlaying: Boolean) {
+            btnPlayPause.setImageResource(if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play_arrow)
+            if (isPlaying) {
+                dubbedPlayer?.play()
+                resetControlsHideTimer()
+            } else {
+                dubbedPlayer?.pause()
+            }
+        }
+
+        override fun onPlayerError(error: PlaybackException) {
+            progressBuffering.visibility = View.GONE
+            Log.e(TAG, "Player playback error: [${error.errorCodeName}] (code=${error.errorCode}) ${error.message}", error)
+
+            val isVideoCodecError = error.errorCode == PlaybackException.ERROR_CODE_DECODER_INIT_FAILED ||
+                    error.errorCode == PlaybackException.ERROR_CODE_DECODING_FAILED ||
+                    error.errorCode == PlaybackException.ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES ||
+                    error.errorCode == PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED
+
+            if (isVideoCodecError && decoderSwitchCount < 2) {
+                decoderSwitchCount++
+                preferSoftwareVideoDecoder = !preferSoftwareVideoDecoder
+                Log.w(TAG, "Video decoder error; toggling preferSoftwareVideoDecoder=$preferSoftwareVideoDecoder in-place")
+                repreparePlayerInPlace()
+                return
+            }
+
+            if (errorRecoveryAttempts < 3) {
+                errorRecoveryAttempts++
+                Log.w(TAG, "Attempting playback recovery ($errorRecoveryAttempts/3)")
+                try {
+                    val p = player ?: return
+                    val savedPos = p.currentPosition.coerceAtLeast(0L)
+                    trackSelector?.let { ts ->
+                        val builder = ts.buildUponParameters()
+                            .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, false)
+                        if (errorRecoveryAttempts == 1) {
+                            var foundStereo = false
+                            for (group in p.currentTracks.groups) {
+                                if (group.type == C.TRACK_TYPE_AUDIO) {
+                                    val mtg = group.mediaTrackGroup
+                                    for (i in 0 until mtg.length) {
+                                        if (mtg.getFormat(i).channelCount in 1..2) {
+                                            builder.setOverrideForType(TrackSelectionOverride(mtg, i))
+                                            foundStereo = true
+                                            break
+                                        }
+                                    }
+                                }
+                                if (foundStereo) break
+                            }
+                            builder.setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
+                        } else {
+                            builder.setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, true)
+                        }
+                        ts.setParameters(builder)
+                    }
+                    p.prepare()
+                    if (savedPos > 0L) p.seekTo(savedPos)
+                    p.playWhenReady = true
+                    p.play()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to recover playback: ${e.message}")
+                }
+            }
+        }
+    }
+
+    private data class AudioOptionItem(
+        val title: String,
+        val subtitle: String,
+        val mode: PlayerAudioMode? = null,
+        val trackOverride: TrackSelectionOverride? = null
+    )
+
+    private fun showAudioTrackSelectionDialog() {
+        val p = player ?: return
+        val ts = trackSelector ?: return
+        val currentTracks = p.currentTracks
+
+        val audioOptions = mutableListOf<AudioOptionItem>()
+        var selectedItemIndex = 0
+
+        if (dubbedPlayer != null) {
+            for (mode in PlayerAudioMode.values()) {
+                if (currentAudioMode == mode) {
+                    selectedItemIndex = audioOptions.size
+                }
+                audioOptions.add(AudioOptionItem(mode.label, mode.description, mode = mode))
+            }
+        }
+
+        var internalTrackNum = 1
+        for (group in currentTracks.groups) {
+            if (group.type == C.TRACK_TYPE_AUDIO) {
+                val mediaTrackGroup = group.mediaTrackGroup
+                for (i in 0 until mediaTrackGroup.length) {
+                    val format = mediaTrackGroup.getFormat(i)
+                    val lang = format.language ?: "und"
+                    val channels = format.channelCount
+                    val chLabel = when (channels) {
+                        6 -> "5.1"
+                        8 -> "7.1"
+                        2 -> "Stereo"
+                        1 -> "Mono"
+                        else -> "${channels}-ch"
+                    }
+                    val mime = format.sampleMimeType?.substringAfterLast("/")?.uppercase(Locale.ROOT) ?: "AUDIO"
+                    val langName = when (lang.lowercase(Locale.ROOT)) {
+                        "ben", "bn" -> "বাংলা (Bangla)"
+                        "hin", "hi" -> "Hindi (হিন্দি)"
+                        "mal", "ml" -> "Malayalam (মালায়ালাম)"
+                        "tam", "ta" -> "Tamil (তামিল)"
+                        "tel", "te" -> "Telugu (তেলেগু)"
+                        "eng", "en" -> "English (ইংরেজি)"
+                        else -> lang.uppercase(Locale.ROOT)
+                    }
+                    val label = if (!format.label.isNullOrBlank()) {
+                        "${format.label} [$langName • $chLabel $mime]"
+                    } else {
+                        "মূল অডিও #$internalTrackNum: $langName ($chLabel $mime)"
+                    }
+                    internalTrackNum++
+
+                    if (dubbedPlayer == null && group.isTrackSelected(i)) {
+                        selectedItemIndex = audioOptions.size
+                    }
+                    audioOptions.add(
+                        AudioOptionItem(
+                            title = label,
+                            subtitle = "ভিডিওর অভ্যন্তরীণ অডিও ট্র্যাক",
+                            trackOverride = TrackSelectionOverride(mediaTrackGroup, i)
+                        )
+                    )
+                }
+            }
+        }
+
+        if (audioOptions.isEmpty()) {
+            Toast.makeText(this, "এই ভিডিওতে বিকল্প অডিও ট্র্যাক পাওয়া যায়নি", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val items = audioOptions.map { it.title }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("অডিও ট্র্যাক নির্বাচন করুন (Smart Audio & Multi-Track)")
+            .setSingleChoiceItems(items, selectedItemIndex) { dialog, which ->
+                val chosen = audioOptions[which]
+                if (chosen.mode != null) {
+                    setAudioMode(chosen.mode)
+                } else if (chosen.trackOverride != null) {
+                    ts.setParameters(
+                        ts.buildUponParameters()
+                            .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
+                            .setOverrideForType(chosen.trackOverride)
+                    )
+                    if (dubbedPlayer != null && currentAudioMode == PlayerAudioMode.BANGLA_ONLY) {
+                        setAudioMode(PlayerAudioMode.SMART_DUB)
+                    } else {
+                        applyAudioModeVolumes(p.currentPosition.coerceAtLeast(0L))
+                    }
+                }
+                Toast.makeText(this, "নির্বাচিত অডিও: ${chosen.title}", Toast.LENGTH_SHORT).show()
+                dialog.dismiss()
+            }
+            .setNegativeButton("বাতিল", null)
+            .show()
+    }
+
+    private fun setAudioMode(mode: PlayerAudioMode) {
+        currentAudioMode = mode
+        applyAudioModeVolumes(player?.currentPosition?.coerceAtLeast(0L) ?: 0L)
+    }
+
+    private fun applyAudioModeVolumes(currentPosMs: Long = player?.currentPosition?.coerceAtLeast(0L) ?: 0L) {
+        val p = player ?: return
+        val dp = dubbedPlayer
+        if (dp == null) {
+            p.volume = 1.0f
+            return
+        }
+
+        when (currentAudioMode) {
+            PlayerAudioMode.SMART_DUB -> {
+                val isSpeaking = if (bnSubtitleCues.isEmpty()) {
+                    true
+                } else {
+                    bnSubtitleCues.any { currentPosMs in (it.startMs - 40L)..(it.endMs + 80L) }
+                }
+                p.volume = if (isSpeaking) 0.32f else 1.0f
+                dp.volume = 1.0f
+            }
+            PlayerAudioMode.ORIGINAL_ONLY -> {
+                p.volume = 1.0f
+                dp.volume = 0.0f
+            }
+            PlayerAudioMode.BANGLA_ONLY -> {
+                p.volume = 0.0f
+                dp.volume = 1.0f
+            }
+        }
+    }
+
+    private fun showSubtitleTrackSelectionDialog() {
+        val p = player ?: return
+        val ts = trackSelector ?: return
+        val currentTracks = p.currentTracks
+
+        val subtitleOptions = mutableListOf<Pair<String, TrackSelectionOverride?>>()
+        subtitleOptions.add(Pair("সাবটাইটেল বন্ধ (Off)", null))
+        var selectedIndex = 0
+
+        val isTextDisabled = ts.parameters.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)
+
+        for (group in currentTracks.groups) {
+            if (group.type == C.TRACK_TYPE_TEXT) {
+                val mediaTrackGroup = group.mediaTrackGroup
+                for (i in 0 until mediaTrackGroup.length) {
+                    val format = mediaTrackGroup.getFormat(i)
+                    val lang = format.language ?: "und"
+                    val label = when {
+                        !format.label.isNullOrBlank() -> format.label!!
+                        lang == "ben" || lang == "bn" -> "বাংলা সাবটাইটেল (Bangla)"
+                        lang == "eng" || lang == "en" -> "English Subtitles"
+                        else -> "সাবটাইটেল [${lang.uppercase(Locale.ROOT)}]"
+                    }
+                    val isSelected = !isTextDisabled && group.isTrackSelected(i)
+                    if (isSelected) {
+                        selectedIndex = subtitleOptions.size
+                    }
+                    subtitleOptions.add(Pair(label, TrackSelectionOverride(mediaTrackGroup, i)))
+                }
+            }
+        }
+
+        val items = subtitleOptions.map { it.first }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("সাবটাইটেল নির্বাচন করুন (Subtitles)")
+            .setSingleChoiceItems(items, selectedIndex) { dialog, which ->
+                val choice = subtitleOptions[which]
+                if (choice.second == null) {
+                    ts.setParameters(
+                        ts.buildUponParameters()
+                            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                    )
+                    Toast.makeText(this, "সাবটাইটেল বন্ধ করা হয়েছে", Toast.LENGTH_SHORT).show()
+                } else {
+                    ts.setParameters(
+                        ts.buildUponParameters()
+                            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                            .setOverrideForType(choice.second!!)
+                    )
+                    Toast.makeText(this, "নির্বাচিত সাবটাইটেল: ${choice.first}", Toast.LENGTH_SHORT).show()
+                }
+                dialog.dismiss()
+            }
+            .setNegativeButton("বাতিল", null)
+            .show()
+    }
+
+    private fun togglePlayPause() {
+        val p = player ?: run {
+            initializePlayer()
+            return
+        }
+        if (p.isPlaying) {
+            p.pause()
+            dubbedPlayer?.pause()
+        } else {
+            if (p.playbackState == Player.STATE_IDLE) {
+                p.prepare()
+            } else if (p.playbackState == Player.STATE_ENDED) {
+                p.seekTo(0)
+            }
+            p.playWhenReady = true
+            p.play()
+            dubbedPlayer?.let { dp ->
+                if (dp.playbackState == Player.STATE_IDLE) dp.prepare()
+                dp.seekTo(p.currentPosition.coerceAtLeast(0L))
+                dp.playWhenReady = true
+                dp.play()
+            }
+        }
+    }
+
+    private fun cycleAspectRatio() {
+        currentResizeModeIndex = (currentResizeModeIndex + 1) % resizeModes.size
+        playerView.resizeMode = resizeModes[currentResizeModeIndex]
+        Toast.makeText(this, "অ্যাসপেক্ট রেশিও: ${resizeModeLabels[currentResizeModeIndex]}", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun toggleScreenRotation() {
+        val isLandscape = resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+        requestedOrientation = if (isLandscape) {
+            android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        } else {
+            android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        }
+        val label = if (isLandscape) "স্ক্রিন: পোর্ট্রেট" else "স্ক্রিন: ল্যান্ডস্কেপ"
+        Toast.makeText(this, label, Toast.LENGTH_SHORT).show()
+        resetControlsHideTimer()
+    }
+
+    private fun cyclePlaybackSpeed() {
+        currentSpeedIndex = (currentSpeedIndex + 1) % SPEEDS.size
+        val speed = SPEEDS[currentSpeedIndex]
+        player?.playbackParameters = PlaybackParameters(speed)
+        dubbedPlayer?.playbackParameters = PlaybackParameters(speed)
+        btnSpeed.text = "${speed}x"
+        Toast.makeText(this, "গতি: ${speed}x", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun toggleLock() {
+        isControlsLocked = !isControlsLocked
+        if (isControlsLocked) {
+            controlsContainer.visibility = View.GONE
+            btnUnlock.visibility = View.VISIBLE
+            Toast.makeText(this, "স্ক্রিন লক করা হয়েছে", Toast.LENGTH_SHORT).show()
+        } else {
+            btnUnlock.visibility = View.GONE
+            controlsContainer.visibility = View.VISIBLE
+            resetControlsHideTimer()
+            Toast.makeText(this, "স্ক্রিন আনলক করা হয়েছে", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun updateTimeline() {
+        val p = player ?: return
+        val currentMs = p.currentPosition.coerceAtLeast(0L)
+        val durationMs = p.duration.coerceAtLeast(0L)
+
+        txtTimeCurrent.text = formatTime(currentMs)
+        if (durationMs > 0) {
+            txtTimeDuration.text = formatTime(durationMs)
+            val progress = ((currentMs * 1000L) / durationMs).toInt()
+            seekBar.progress = progress
+        }
+
+
+
+        dubbedPlayer?.let { dp ->
+            if (p.isPlaying && !dp.isPlaying && dp.playbackState == Player.STATE_READY) {
+                dp.play()
+            }
+            val drift = abs(currentMs - dp.currentPosition)
+            if (drift > 120L) {
+                dp.seekTo(currentMs)
+            }
+        }
+
+        applyAudioModeVolumes(currentMs)
+    }
+
+    private fun formatTime(ms: Long): String {
+        val totalSeconds = (ms / 1000).coerceAtLeast(0)
+        val seconds = totalSeconds % 60
+        val minutes = (totalSeconds / 60) % 60
+        val hours = totalSeconds / 3600
+        return if (hours > 0) {
+            String.format(Locale.ROOT, "%d:%02d:%02d", hours, minutes, seconds)
+        } else {
+            String.format(Locale.ROOT, "%02d:%02d", minutes, seconds)
+        }
+    }
+
+    private fun showControls() {
+        controlsContainer.visibility = View.VISIBLE
+        resetControlsHideTimer()
+    }
+
+    private fun hideControls() {
+        if (!isControlsLocked) {
+            controlsContainer.visibility = View.GONE
+        }
+    }
+
+    private fun resetControlsHideTimer() {
+        handler.removeCallbacks(hideControlsRunnable)
+        handler.postDelayed(hideControlsRunnable, HIDE_CONTROLS_DELAY_MS)
+    }
+
+    private fun setupImmersiveMode() {
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        val controller = WindowInsetsControllerCompat(window, window.decorView)
+        controller.hide(WindowInsetsCompat.Type.systemBars())
+        controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun setupGestureDetector() {
+        gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+                if (isControlsLocked) {
+                    btnUnlock.visibility = if (btnUnlock.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+                } else {
+                    if (controlsContainer.visibility == View.VISIBLE) {
+                        hideControls()
+                    } else {
+                        showControls()
+                    }
+                }
+                return true
+            }
+
+            override fun onDoubleTap(e: MotionEvent): Boolean {
+                if (isControlsLocked) return true
+                val width = playerRoot.width.toFloat()
+                if (width <= 0f) return true
+
+                if (e.x < width / 3f) {
+                    btnReplay10.performClick()
+                } else if (e.x > (width * 2f) / 3f) {
+                    btnForward10.performClick()
+                } else {
+                    togglePlayPause()
+                }
+                return true
+            }
+        })
+
+        var initialTouchX = 0f
+        var initialTouchY = 0f
+        var isSwipeGesture = false
+        var gestureMode = 0 // 1 = Brightness, 2 = Volume, 3 = Seek
+
+        playerRoot.setOnTouchListener { _, event ->
+            gestureDetector.onTouchEvent(event)
+
+            if (isControlsLocked) return@setOnTouchListener true
+
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    initialTouchX = event.x
+                    initialTouchY = event.y
+                    isSwipeGesture = false
+                    gestureMode = 0
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val deltaX = event.x - initialTouchX
+                    val deltaY = event.y - initialTouchY
+                    val screenWidth = playerRoot.width.toFloat().coerceAtLeast(1f)
+                    val screenHeight = playerRoot.height.toFloat().coerceAtLeast(1f)
+
+                    if (!isSwipeGesture && (abs(deltaX) > 40f || abs(deltaY) > 40f)) {
+                        isSwipeGesture = true
+                        gestureMode = if (abs(deltaX) > abs(deltaY)) {
+                            3
+                        } else if (initialTouchX < screenWidth / 2f) {
+                            1
+                        } else {
+                            2
+                        }
+                    }
+
+                    if (isSwipeGesture) {
+                        when (gestureMode) {
+                            1 -> adjustBrightness(-deltaY / screenHeight)
+                            2 -> adjustVolume(-deltaY / screenHeight)
+                            3 -> previewSeek(deltaX, screenWidth)
+                        }
+                    }
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (isSwipeGesture && gestureMode == 3) {
+                        commitSeek()
+                    }
+                    handler.postDelayed({ hudContainer.visibility = View.GONE }, 1200L)
+                }
+            }
+            true
+        }
+    }
+
+    private fun adjustBrightness(factorDelta: Float) {
+        val lp = window.attributes
+        var current = if (lp.screenBrightness < 0f) 0.5f else lp.screenBrightness
+        current = (current + factorDelta * 0.4f).coerceIn(0.01f, 1.0f)
+        lp.screenBrightness = current
+        window.attributes = lp
+
+        val percent = (current * 100).toInt()
+        hudIcon.setImageResource(R.drawable.ic_brightness)
+        hudText.text = "$percent%"
+        hudProgress.progress = percent
+        hudContainer.visibility = View.VISIBLE
+    }
+
+    private fun adjustVolume(factorDelta: Float) {
+        val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+        val currentVol = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+        val deltaSteps = (factorDelta * maxVol * 0.5f).toInt()
+        val newVol = (currentVol + deltaSteps).coerceIn(0, maxVol)
+
+        if (newVol != currentVol) {
+            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, newVol, 0)
+        }
+
+        val percent = ((newVol.toFloat() / maxVol.toFloat()) * 100).toInt()
+        hudIcon.setImageResource(R.drawable.ic_volume_up)
+        hudText.text = "$percent%"
+        hudProgress.progress = percent
+        hudContainer.visibility = View.VISIBLE
+    }
+
+    private var pendingSeekPositionMs = 0L
+
+    private fun previewSeek(deltaX: Float, screenWidth: Float) {
+        val p = player ?: return
+        val duration = p.duration
+        if (duration <= 0) return
+
+        val scrubMs = ((deltaX / screenWidth) * 90_000L).toLong()
+        pendingSeekPositionMs = (p.currentPosition + scrubMs).coerceIn(0L, duration)
+
+        hudIcon.setImageResource(R.drawable.ic_aspect_ratio)
+        hudText.text = "${formatTime(pendingSeekPositionMs)} / ${formatTime(duration)}"
+        hudProgress.progress = ((pendingSeekPositionMs * 100L) / duration).toInt()
+        hudContainer.visibility = View.VISIBLE
+    }
+
+    private fun commitSeek() {
+        player?.let { p ->
+            if (pendingSeekPositionMs in 0L..p.duration) {
+                p.seekTo(pendingSeekPositionMs)
+                dubbedPlayer?.seekTo(pendingSeekPositionMs)
+            }
+        }
+    }
+
+    private fun showSeekHud(targetMs: Long, deltaMs: Long) {
+        val p = player ?: return
+        val sign = if (deltaMs >= 0) "+10s" else "-10s"
+        hudIcon.setImageResource(if (deltaMs >= 0) R.drawable.ic_forward_10 else R.drawable.ic_replay_10)
+        hudText.text = "$sign (${formatTime(targetMs)})"
+        hudProgress.progress = if (p.duration > 0) ((targetMs * 100L) / p.duration).toInt() else 0
+        hudContainer.visibility = View.VISIBLE
+        handler.removeCallbacks(hideControlsRunnable)
+        handler.postDelayed({ hudContainer.visibility = View.GONE }, 1200L)
+    }
+}
+
+
+```

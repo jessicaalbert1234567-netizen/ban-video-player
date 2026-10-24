@@ -507,9 +507,14 @@ class PlayerActivity : ComponentActivity() {
 
             val dubbedFile = dubbedAudioPath?.let { File(it) }
             if (dubbedFile != null && dubbedFile.exists() && dubbedFile.length() > 44) {
-                val dubbedRenderersFactory = VlcGradeRenderersFactory(this)
+                val dubbedRenderersFactory = VlcGradeRenderersFactory(this, audioOnly = true)
+                val speechAudioAttributes = AudioAttributes.Builder()
+                    .setContentType(C.AUDIO_CONTENT_TYPE_SPEECH)
+                    .setUsage(C.USAGE_MEDIA)
+                    .build()
                 dubbedPlayer = ExoPlayer.Builder(this, dubbedRenderersFactory)
                     .setMediaSourceFactory(mediaSourceFactory)
+                    .setAudioAttributes(speechAudioAttributes, /* handleAudioFocus= */ false)
                     .build().apply {
                         val audioItem = MediaItem.fromUri(Uri.fromFile(dubbedFile))
                         val audioSource = mediaSourceFactory.createMediaSource(audioItem)
@@ -1001,26 +1006,7 @@ class PlayerActivity : ComponentActivity() {
             seekBar.progress = progress
         }
 
-        // Wall-clock stall watchdog: works even when ExoPlayer is stuck in STATE_BUFFERING at 00:00
-        val isAttemptingPlayback = p.playWhenReady &&
-                (p.playbackState == Player.STATE_BUFFERING || p.playbackState == Player.STATE_READY)
-        if (isAttemptingPlayback && decoderSwitchCount < 2) {
-            val hasVideo = p.currentTracks.groups.any { it.type == C.TRACK_TYPE_VIDEO && it.isSelected }
-            val renderedFrames = p.videoDecoderCounters?.renderedOutputBufferCount ?: 0
-            if (hasVideo && renderedFrames == 0) {
-                zeroFrameChecks++
-                if (zeroFrameChecks >= 4) {
-                    zeroFrameChecks = 0
-                    decoderSwitchCount++
-                    preferSoftwareVideoDecoder = !preferSoftwareVideoDecoder
-                    Log.w(TAG, "Watchdog: 0 video frames rendered; switching preferSoftwareVideoDecoder=$preferSoftwareVideoDecoder in-place")
-                    repreparePlayerInPlace()
-                    return
-                }
-            } else if (renderedFrames > 0) {
-                zeroFrameChecks = 0
-            }
-        }
+
 
         dubbedPlayer?.let { dp ->
             if (p.isPlaying && !dp.isPlaying && dp.playbackState == Player.STATE_READY) {
@@ -1223,4 +1209,3 @@ class PlayerActivity : ComponentActivity() {
         handler.postDelayed({ hudContainer.visibility = View.GONE }, 1200L)
     }
 }
-

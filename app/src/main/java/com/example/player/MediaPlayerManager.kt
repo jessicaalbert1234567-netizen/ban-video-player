@@ -337,10 +337,15 @@ class MediaPlayerManager(private val context: Context) {
 
     private fun initializeDubbedPlayer(): ExoPlayer {
         if (dubbedAudioPlayer == null) {
-            val renderersFactory = VlcGradeRenderersFactory(context)
+            val renderersFactory = VlcGradeRenderersFactory(context, audioOnly = true)
             val mediaSourceFactory = DefaultMediaSourceFactory(context, createExtractorsFactory())
+            val audioAttributes = AudioAttributes.Builder()
+                .setContentType(C.AUDIO_CONTENT_TYPE_SPEECH)
+                .setUsage(C.USAGE_MEDIA)
+                .build()
             dubbedAudioPlayer = ExoPlayer.Builder(context, renderersFactory)
                 .setMediaSourceFactory(mediaSourceFactory)
+                .setAudioAttributes(audioAttributes, /* handleAudioFocus= */ false)
                 .build().apply {
                 repeatMode = Player.REPEAT_MODE_OFF
                 playWhenReady = player?.isPlaying ?: true
@@ -653,27 +658,7 @@ class MediaPlayerManager(private val context: Context) {
             durationMs = dur
         )
 
-        // Wall-clock stall watchdog: works even when ExoPlayer is stuck in STATE_BUFFERING at pos == 0L
-        // waiting for the first video frame!
-        val isAttemptingPlayback = exo.playWhenReady &&
-                (exo.playbackState == Player.STATE_BUFFERING || exo.playbackState == Player.STATE_READY)
-        if (isAttemptingPlayback && decoderSwitchCount < 2 && !_playerState.value.isAudioOnlyFallback) {
-            val hasSelectedVideoTrack = exo.currentTracks.groups.any { it.type == C.TRACK_TYPE_VIDEO && it.isSelected }
-            val renderedFrames = exo.videoDecoderCounters?.renderedOutputBufferCount ?: 0
-            if (hasSelectedVideoTrack && renderedFrames == 0) {
-                zeroFramePlayingChecks++
-                if (zeroFramePlayingChecks >= 6) {
-                    zeroFramePlayingChecks = 0
-                    decoderSwitchCount++
-                    preferSoftwareVideoDecoder = !preferSoftwareVideoDecoder
-                    Log.w(TAG, "Watchdog: 0 video frames rendered; switching preferSoftwareVideoDecoder=$preferSoftwareVideoDecoder in-place")
-                    reprepareCurrentPlayerInPlace()
-                    return
-                }
-            } else if (renderedFrames > 0) {
-                zeroFramePlayingChecks = 0
-            }
-        }
+
 
         // Resync secondary player if clock drift exceeds threshold
         val dPlayer = dubbedAudioPlayer
@@ -757,4 +742,3 @@ class MediaPlayerManager(private val context: Context) {
         } catch (_: Exception) {}
     }
 }
-

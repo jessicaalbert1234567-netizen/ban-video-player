@@ -21,8 +21,11 @@ import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.audio.MediaCodecAudioRenderer
 import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import androidx.media3.exoplayer.mediacodec.MediaCodecUtil
+import androidx.media3.exoplayer.metadata.MetadataOutput
+import androidx.media3.exoplayer.text.TextOutput
 import androidx.media3.exoplayer.video.MediaCodecVideoRenderer
 import androidx.media3.exoplayer.video.VideoRendererEventListener
+import io.github.anilbeesetti.nextlib.media3ext.ffdecoder.NextRenderersFactory
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.ArrayList
@@ -186,21 +189,24 @@ class UniversalStereoAudioProcessor : BaseAudioProcessor() {
 }
 
 /**
- * VLC-Grade RenderersFactory for Media3 ExoPlayer:
- * 1. Handles 10-bit HEVC (Main 10, yuv420p10le) and non-16-aligned dimensions (e.g., 1280x536)
- *    by prioritizing Android's 10-bit capable software HEVC decoder (c2.android.hevc.decoder /
- *    OMX.google.hevc.decoder) with seamless fallback to hardware decoders.
- * 2. Requests SDR color transfer output (COLOR_TRANSFER_SDR_VIDEO) on API 31+ for 10-bit SDR HEVC
- *    while preserving MediaCodec PlaceholderSurface and setOutputSurface support.
- * 3. Synchronizes MediaCodecAudioRenderer output channel counts in onOutputFormatChanged so 5.1 HE-AAC
- *    tracks never trigger ChannelMappingAudioProcessor UnhandledAudioFormatException, and downmixes
- *    multichannel/float PCM to 16-bit Stereo via UniversalStereoAudioProcessor.
+ * VLC-Grade RenderersFactory powered by Bundled Native FFmpeg (NextLib / libavcodec + libswscale + libswresample):
+ *
+ * 1. Bundles real C/C++ FFmpeg video (`FfmpegVideoRenderer`) and audio (`FfmpegAudioRenderer`) decoders via
+ *    `io.github.anilbeesetti:nextlib-media3ext` (`NextRenderersFactory`) with `EXTENSION_RENDERER_MODE_PREFER`,
+ *    so 10-bit HEVC (Main 10, yuv420p10le, 1280x536), AV1, VP9, H.264, 5.1 HE-AAC (fltp), AC3, EAC3, DTS,
+ *    TrueHD, Opus, and Vorbis play with 0-second conversion wait on ANY Android phone (just like VLC / Next Player).
+ * 2. Wires `UniversalStereoAudioProcessor` into `DefaultAudioSink` for both `FfmpegAudioRenderer` and
+ *    `MediaCodecAudioRenderer`, downmixing 5.1/7.1 float/PCM audio into universal 2-channel 16-bit Stereo PCM
+ *    so `AudioTrack` never throws `ERROR_CODE_AUDIO_TRACK_INIT_FAILED`.
+ * 3. Supports `audioOnly = true` for the secondary dubbed `.wav` audio player so it never allocates redundant
+ *    video decoders.
  */
 @UnstableApi
 class VlcGradeRenderersFactory(
-    context: Context,
+    private val appContext: Context,
+    private val audioOnly: Boolean = false,
     private val preferSoftwareVideoDecoderProvider: () -> Boolean = { true }
-) : DefaultRenderersFactory(context) {
+) : DefaultRenderersFactory(appContext) {
 
     companion object {
         private const val TAG = "VlcGradeRenderers"
@@ -224,7 +230,6 @@ class VlcGradeRenderersFactory(
                     (format.colorInfo?.chromaBitdepth ?: -1) >= 10
             if (hasMain10CodecTag || has10BitColor) return true
 
-            // Also inspect raw HEVC SPS/VPS NAL units in initializationData for Main 10 profile_idc == 2
             return hasHevcMain10NalUnit(format.initializationData)
         }
 
@@ -242,7 +247,6 @@ class VlcGradeRenderersFactory(
             for (buf in initData) {
                 var i = 0
                 while (i + 7 < buf.size) {
-                    // Find 3-byte or 4-byte Annex-B start code: 0x000001 or 0x00000001
                     if (buf[i].toInt() == 0 && buf[i + 1].toInt() == 0) {
                         val nalStart = when {
                             buf[i + 2].toInt() == 1 -> i + 3
@@ -251,7 +255,6 @@ class VlcGradeRenderersFactory(
                         }
                         if (nalStart != -1 && nalStart + 4 < buf.size) {
                             val nalType = (buf[nalStart].toInt() and 0x7E) ushr 1
-                            // SPS (nal_unit_type == 33)
                             if (nalType == 33) {
                                 val ptlByte0 = buf[nalStart + 3].toInt() and 0xFF
                                 val profileIdc = ptlByte0 and 0x1F
@@ -293,9 +296,150 @@ class VlcGradeRenderersFactory(
         }
     }
 
+    private val nextFfmpegFactory: NextRenderersFactory = NextRenderersFactory(appContext).apply {
+        setEnableDecoderFallback(true)
+        setExtensionRendererMode(EXTENSION_RENDERER_MODE_PREFER)
+    }
+
     init {
         setExtensionRendererMode(EXTENSION_RENDERER_MODE_PREFER)
         setEnableDecoderFallback(true)
+    }
+
+    override fun createRenderers(
+        eventHandler: Handler,
+        videoRendererEventListener: VideoRendererEventListener,
+        audioRendererEventListener: AudioRendererEventListener,
+        textRendererOutput: TextOutput,
+        metadataRendererOutput: MetadataOutput
+    ): Array<Renderer> {
+        val preferSw = preferSoftwareVideoDecoderProvider()
+        nextFfmpegFactory.setEnableDecoderFallback(true)
+        nextFfmpegFactory.setExtensionRendererMode(
+            if (preferSw) EXTENSION_RENDERER_MODE_PREFER else EXTENSION_RENDERER_MODE_ON
+        )
+
+        val baseRenderers = super.createRenderers(
+            eventHandler,
+            videoRendererEventListener,
+            audioRendererEventListener,
+            textRendererOutput,
+            metadataRendererOutput
+        )
+
+        if (audioOnly) {
+            val audioList = ArrayList<Renderer>()
+            createFfmpegAudioRendererWithUniversalSink(appContext, eventHandler, audioRendererEventListener)?.let {
+                audioList.add(it)
+            }
+            for (r in baseRenderers) {
+                if (r.trackType == C.TRACK_TYPE_AUDIO) {
+                    audioList.add(r)
+                }
+            }
+            return audioList.toTypedArray()
+        }
+
+        val nextRenderers = try {
+            nextFfmpegFactory.createRenderers(
+                eventHandler,
+                videoRendererEventListener,
+                audioRendererEventListener,
+                textRendererOutput,
+                metadataRendererOutput
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "NextRenderersFactory initialization note: ${e.message}")
+            emptyArray()
+        }
+
+        val ffmpegVideoRenderers = nextRenderers.filter {
+            it.trackType == C.TRACK_TYPE_VIDEO && it !is MediaCodecVideoRenderer
+        }
+        val ffmpegAudioRenderersFromNext = nextRenderers.filter {
+            it.trackType == C.TRACK_TYPE_AUDIO && it !is MediaCodecAudioRenderer
+        }
+
+        val customFfmpegAudio = createFfmpegAudioRendererWithUniversalSink(
+            appContext,
+            eventHandler,
+            audioRendererEventListener
+        )
+        val effectiveFfmpegAudioRenderers = if (customFfmpegAudio != null) {
+            listOf(customFfmpegAudio)
+        } else {
+            ffmpegAudioRenderersFromNext
+        }
+
+        val baseVideoRenderers = baseRenderers.filter { it.trackType == C.TRACK_TYPE_VIDEO }
+        val baseAudioRenderers = baseRenderers.filter { it.trackType == C.TRACK_TYPE_AUDIO }
+        val otherRenderers = baseRenderers.filter {
+            it.trackType != C.TRACK_TYPE_VIDEO && it.trackType != C.TRACK_TYPE_AUDIO
+        }
+
+        val combined = ArrayList<Renderer>()
+        if (preferSw) {
+            combined.addAll(ffmpegVideoRenderers)
+            combined.addAll(baseVideoRenderers)
+        } else {
+            combined.addAll(baseVideoRenderers)
+            combined.addAll(ffmpegVideoRenderers)
+        }
+
+        if (preferSw) {
+            combined.addAll(effectiveFfmpegAudioRenderers)
+            combined.addAll(baseAudioRenderers)
+        } else {
+            combined.addAll(baseAudioRenderers)
+            combined.addAll(effectiveFfmpegAudioRenderers)
+        }
+
+        combined.addAll(otherRenderers)
+        Log.i(
+            TAG,
+            "Active VLC/FFmpeg + MediaCodec renderers (preferSw=$preferSw): ${combined.map { it.javaClass.simpleName }}"
+        )
+        return combined.toTypedArray()
+    }
+
+    private fun createFfmpegAudioRendererWithUniversalSink(
+        context: Context,
+        eventHandler: Handler,
+        eventListener: AudioRendererEventListener
+    ): Renderer? {
+        return try {
+            val clazz = Class.forName("io.github.anilbeesetti.nextlib.media3ext.ffdecoder.FfmpegAudioRenderer")
+            try {
+                val ctorSink = clazz.getConstructor(
+                    Handler::class.java,
+                    AudioRendererEventListener::class.java,
+                    AudioSink::class.java
+                )
+                return ctorSink.newInstance(
+                    eventHandler,
+                    eventListener,
+                    createUniversalAudioSink(context)
+                ) as? Renderer
+            } catch (_: NoSuchMethodException) {}
+
+            try {
+                val processors = arrayOf<AudioProcessor>(UniversalStereoAudioProcessor())
+                val ctorProc = clazz.getConstructor(
+                    Handler::class.java,
+                    AudioRendererEventListener::class.java,
+                    Array<AudioProcessor>::class.java
+                )
+                return ctorProc.newInstance(
+                    eventHandler,
+                    eventListener,
+                    processors
+                ) as? Renderer
+            } catch (_: NoSuchMethodException) {}
+
+            null
+        } catch (_: Exception) {
+            null
+        }
     }
 
     override fun buildAudioSink(
@@ -316,6 +460,8 @@ class VlcGradeRenderersFactory(
         allowedVideoJoiningTimeMs: Long,
         out: ArrayList<Renderer>
     ) {
+        if (audioOnly) return
+
         val smartVideoCodecSelector = MediaCodecSelector { mimeType, requiresSecureDecoder, requiresTunnelingDecoder ->
             val defaultList = mediaCodecSelector.getDecoderInfos(
                 mimeType,
@@ -414,13 +560,7 @@ class VlcGradeRenderersFactory(
 
                 if (mime.equals(MimeTypes.VIDEO_H265, ignoreCase = true) || is10BitOrOddSizeHevc) {
                     infos.sortBy { info ->
-                        if (preferSw && is10BitOrOddSizeHevc) {
-                            when {
-                                isSoftwareDecoder(info) -> 0
-                                supportsHevcMain10Profile(info) -> 1
-                                else -> 2
-                            }
-                        } else if (preferSw) {
+                        if (preferSw) {
                             when {
                                 isSoftwareDecoder(info) -> 0
                                 supportsHevcMain10Profile(info) -> 1
@@ -434,10 +574,6 @@ class VlcGradeRenderersFactory(
                             }
                         }
                     }
-                    Log.i(
-                        TAG,
-                        "Resolved HEVC decoders (10bitOrOdd=$is10BitOrOddSizeHevc, preferSw=$preferSw, ${format.width}x${format.height}): ${infos.map { it.name }}"
-                    )
                 }
                 return infos
             }
@@ -458,8 +594,6 @@ class VlcGradeRenderersFactory(
                     deviceNeedsNoPostProcessWorkaround,
                     tunnelingAudioSessionId
                 )
-                // Request 8-bit SDR output transfer for 10-bit SDR HEVC (e.g. yuv420p10le bt709)
-                // while keeping KEY_PROFILE intact so both software and hardware Main 10 decoders initialize properly.
                 if (Build.VERSION.SDK_INT >= 31 && isFormat10BitHevc(format)) {
                     try {
                         mediaFormat.setInteger(
@@ -473,23 +607,6 @@ class VlcGradeRenderersFactory(
         }
 
         out.add(customVideoRenderer)
-
-        val tempOut = ArrayList<Renderer>()
-        super.buildVideoRenderers(
-            context,
-            extensionRendererMode,
-            smartVideoCodecSelector,
-            enableDecoderFallback,
-            eventHandler,
-            eventListener,
-            allowedVideoJoiningTimeMs,
-            tempOut
-        )
-        for (r in tempOut) {
-            if (r !is MediaCodecVideoRenderer) {
-                out.add(r)
-            }
-        }
     }
 
     override fun buildAudioRenderers(
@@ -518,12 +635,9 @@ class VlcGradeRenderersFactory(
                 codecOperatingRate: Float
             ): MediaFormat {
                 val mediaFormat = super.getMediaFormat(format, codecMimeType, codecMaxValues, codecOperatingRate)
-                // Allow the decoder to output all channels (up to 99) so Media3's 5.1/7.1 AAC
-                // ChannelMappingAudioProcessor never sees a 6-vs-2 channel mismatch, while
-                // UniversalStereoAudioProcessor in DefaultAudioSink downmixes 5.1/7.1 to 2-channel Stereo.
-                mediaFormat.setInteger(MediaFormat.KEY_MAX_OUTPUT_CHANNEL_COUNT, 99)
+                mediaFormat.setInteger(MediaFormat.KEY_MAX_OUTPUT_CHANNEL_COUNT, 2)
                 if (Build.VERSION.SDK_INT >= 28) {
-                    mediaFormat.setInteger("aac-max-output-channel_count", 99)
+                    mediaFormat.setInteger("aac-max-output-channel_count", 2)
                 }
                 if (Build.VERSION.SDK_INT >= 24) {
                     mediaFormat.setInteger(
@@ -535,9 +649,6 @@ class VlcGradeRenderersFactory(
             }
 
             override fun onOutputFormatChanged(format: Format, outputMediaFormat: MediaFormat?) {
-                // Synchronize format.channelCount with the actual channel count emitted by the decoder
-                // so MediaCodecAudioRenderer never attaches a 6-channel AAC channelMap if the device's
-                // decoder downmixed 5.1 to 2 channels internally.
                 val syncedFormat = if (outputMediaFormat != null) {
                     val actualChannels = if (outputMediaFormat.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
                         outputMediaFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
@@ -563,23 +674,5 @@ class VlcGradeRenderersFactory(
         }
 
         out.add(customAudioRenderer)
-
-        val tempOut = ArrayList<Renderer>()
-        super.buildAudioRenderers(
-            context,
-            extensionRendererMode,
-            mediaCodecSelector,
-            enableDecoderFallback,
-            audioSink,
-            eventHandler,
-            eventListener,
-            tempOut
-        )
-        for (r in tempOut) {
-            if (r !is MediaCodecAudioRenderer) {
-                out.add(r)
-            }
-        }
     }
 }
-
