@@ -3,10 +3,14 @@ package com.example.update
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import android.util.Log
+import android.widget.Toast
 import androidx.core.content.FileProvider
 import com.example.BuildConfig
 import kotlinx.coroutines.Dispatchers
@@ -38,7 +42,7 @@ data class VersionInfo(
 sealed class UpdateUiState {
     object Idle : UpdateUiState()
     object Checking : UpdateUiState()
-    object UpToDate : UpdateUiState()
+    data class UpToDate(val versionInfo: VersionInfo? = null) : UpdateUiState()
     data class UpdateRequired(val versionInfo: VersionInfo) : UpdateUiState()
     data class Downloading(
         val versionInfo: VersionInfo,
@@ -51,7 +55,7 @@ sealed class UpdateUiState {
 }
 
 /**
- * Manages Mandatory App Update checks against GitHub Releases,
+ * Manages App Update checks against GitHub Releases,
  * streaming APK download with on-the-fly SHA-256 verification, and Android Package Installer launch.
  */
 class AppUpdateManager(private val context: Context) {
@@ -60,14 +64,20 @@ class AppUpdateManager(private val context: Context) {
         private const val TAG = "AppUpdateManager"
         const val UPDATE_METADATA_URL =
             "https://github.com/jessicaalbert1234567-netizen/ban-video-player/releases/latest/download/version.json"
-        private const val PREFS_NAME = "app_update_prefs"
-        private const val KEY_LAST_CHECK_TIMESTAMP = "last_check_timestamp"
-        const val CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000L // 24 hours
     }
 
+    // Standard client for APK downloads
     private val httpClient = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
+        .followRedirects(true)
+        .followSslRedirects(true)
+        .build()
+
+    // Fast client for lightweight version.json checks
+    private val fastCheckClient = OkHttpClient.Builder()
+        .connectTimeout(3, TimeUnit.SECONDS)
+        .readTimeout(4, TimeUnit.SECONDS)
         .followRedirects(true)
         .followSslRedirects(true)
         .build()
@@ -75,25 +85,40 @@ class AppUpdateManager(private val context: Context) {
     private val _updateState = MutableStateFlow<UpdateUiState>(UpdateUiState.Idle)
     val updateState: StateFlow<UpdateUiState> = _updateState.asStateFlow()
 
+    private val _latestServerVersion = MutableStateFlow<VersionInfo?>(null)
+    val latestServerVersion: StateFlow<VersionInfo?> = _latestServerVersion.asStateFlow()
+
     private var activeDownloadedApk: File? = null
 
     /**
-     * Checks for updates from GitHub Releases metadata URL at most once every 24 hours.
-     * If offline / no internet connection, allows immediate access to the app without blocking.
-     * If 24 hours have elapsed and internet is available, checks version.json:
-     * prompts mandatory update only if server versionCode > installed versionCode and mandatory is true.
+     * Checks if the device has an active internet connection.
+     */
+    fun isNetworkAvailable(): Boolean {
+        return try {
+            val connectivityManager =
+                context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+                    ?: return false
+            val activeNetwork = connectivityManager.activeNetwork ?: return false
+            val capabilities = connectivityManager.getNetworkCapabilities(activeNetwork) ?: return false
+            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /**
+     * Checks for updates from GitHub Releases metadata URL on every app launch.
+     * If device is offline or network fails/times out, immediately defaults to UpToDate
+     * allowing the user to enter and use the app without any block.
+     * When a new version is detected, sets UpdateRequired (strictly mandatory).
      */
     suspend fun checkForUpdates(forceCheck: Boolean = false) = withContext(Dispatchers.IO) {
         if (_updateState.value is UpdateUiState.Downloading && !forceCheck) return@withContext
 
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val lastCheckTimestamp = prefs.getLong(KEY_LAST_CHECK_TIMESTAMP, 0L)
-        val now = System.currentTimeMillis()
-
-        // If 24 hours have not elapsed and check is not forced, enter app immediately
-        if (!forceCheck && lastCheckTimestamp > 0L && (now - lastCheckTimestamp) < CHECK_INTERVAL_MS) {
-            Log.i(TAG, "Update check skipped (checked within last 24 hours). Allowing app access.")
-            _updateState.value = UpdateUiState.UpToDate
+        // 1. Instant check: If offline, bypass immediately so user can use the app without waiting
+        if (!isNetworkAvailable()) {
+            Log.i(TAG, "Device is offline. Bypassing update check and allowing immediate app access.")
+            _updateState.value = UpdateUiState.UpToDate(_latestServerVersion.value)
             return@withContext
         }
 
@@ -106,18 +131,18 @@ class AppUpdateManager(private val context: Context) {
                 .header("Cache-Control", "no-cache")
                 .build()
 
-            httpClient.newCall(request).execute().use { response ->
+            fastCheckClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
                     val code = response.code
                     Log.i(TAG, "Update check server returned HTTP $code. Allowing app access.")
-                    _updateState.value = UpdateUiState.UpToDate
+                    _updateState.value = UpdateUiState.UpToDate(_latestServerVersion.value)
                     return@withContext
                 }
 
                 val bodyString = response.body?.string() ?: ""
                 if (bodyString.isBlank()) {
                     Log.i(TAG, "Empty response body from update server. Allowing app access.")
-                    _updateState.value = UpdateUiState.UpToDate
+                    _updateState.value = UpdateUiState.UpToDate(_latestServerVersion.value)
                     return@withContext
                 }
 
@@ -129,7 +154,7 @@ class AppUpdateManager(private val context: Context) {
                 val expectedSha256 = json.optString("sha256", "").trim()
                 val serverMessage = json.optString(
                     "message",
-                    "অ্যাপ ব্যবহার চালিয়ে যেতে নতুন ভার্সন ইনস্টল করুন।"
+                    "অ্যাপ ব্যবহার চালিয়ে যেতে সর্বশেষ ভার্সন ইনস্টল করুন।"
                 )
 
                 val versionInfo = VersionInfo(
@@ -141,14 +166,13 @@ class AppUpdateManager(private val context: Context) {
                     message = serverMessage
                 )
 
+                _latestServerVersion.value = versionInfo
+
                 val installedVersionCode = BuildConfig.VERSION_CODE
-                Log.i(TAG, "Update check result: installed=$installedVersionCode, server=$serverVersionCode, mandatory=$isMandatory")
+                Log.i(TAG, "Update check result: installed=$installedVersionCode, server=$serverVersionCode")
 
-                // Update last successful check timestamp
-                prefs.edit().putLong(KEY_LAST_CHECK_TIMESTAMP, now).apply()
-
-                if (serverVersionCode > installedVersionCode && isMandatory) {
-                    // Check if already downloaded and valid
+                if (serverVersionCode > installedVersionCode) {
+                    // Update is strictly mandatory
                     val cachedApk = getCachedApkFile(versionInfo)
                     if (cachedApk.exists() && cachedApk.length() > 1024 && verifyFileSha256(cachedApk, expectedSha256)) {
                         activeDownloadedApk = cachedApk
@@ -157,19 +181,19 @@ class AppUpdateManager(private val context: Context) {
                         _updateState.value = UpdateUiState.UpdateRequired(versionInfo)
                     }
                 } else {
-                    _updateState.value = UpdateUiState.UpToDate
+                    _updateState.value = UpdateUiState.UpToDate(versionInfo)
                 }
             }
         } catch (e: Exception) {
-            // Offline / no internet: Allow app entry without blocking!
-            Log.i(TAG, "Update check offline or network error (${e.message}). Allowing app access.")
-            _updateState.value = UpdateUiState.UpToDate
+            // Offline / timeout / connection failure: Allow app entry immediately without blocking
+            Log.i(TAG, "Update check network issue (${e.message}). Allowing app access.")
+            _updateState.value = UpdateUiState.UpToDate(_latestServerVersion.value)
         }
     }
 
     /**
      * Downloads APK file directly to internal cache directory, calculates SHA-256 on the fly,
-     * and strictly rejects any corrupt or mismatched APK.
+     * and validates file integrity.
      */
     suspend fun downloadAndVerifyApk(versionInfo: VersionInfo) = withContext(Dispatchers.IO) {
         if (versionInfo.apkUrl.isBlank()) {
@@ -202,7 +226,7 @@ class AppUpdateManager(private val context: Context) {
 
                 body.byteStream().use { input: InputStream ->
                     FileOutputStream(tempFile).use { output ->
-                        val buffer = ByteArray(16 * 1024)
+                        val buffer = ByteArray(32 * 1024)
                         var read: Int
                         var lastReportedPercent = -1
 
@@ -236,13 +260,14 @@ class AppUpdateManager(private val context: Context) {
                 ) {
                     tempFile.delete()
                     _updateState.value = UpdateUiState.Error(
-                        "নিরাপত্তা সতর্কতা: ডাউনলোড করা APK-এর SHA-256 মেলেনি! ফাইলটি ক্ষতিগ্রস্ত বা বিকৃত হতে পারে। ইনস্টলেশন বাতিল করা হয়েছে।"
+                        "নিরাপত্তা সতর্কতা: ডাউনলোড করা APK-এর SHA-256 মেলেনি! ফাইলটি ক্ষতিগ্রস্ত বা বিকৃত হতে পারে।"
                     )
                     return@withContext
                 }
 
                 if (targetApk.exists()) targetApk.delete()
                 tempFile.renameTo(targetApk)
+                targetApk.setReadable(true, false)
                 activeDownloadedApk = targetApk
                 _updateState.value = UpdateUiState.ReadyToInstall(versionInfo, targetApk)
             }
@@ -250,6 +275,21 @@ class AppUpdateManager(private val context: Context) {
             Log.e(TAG, "Download error: ${e.message}", e)
             _updateState.value = UpdateUiState.Error("ডাউনলোডে ত্রুটি: ${e.localizedMessage ?: "অজানা সমস্যা"}। পুনরায় চেষ্টা করুন।")
         }
+    }
+
+    /**
+     * Allows testing or re-downloading the latest release directly from within the app.
+     */
+    suspend fun forceDownloadAndTestUpdate() {
+        val info = _latestServerVersion.value ?: VersionInfo(
+            versionCode = 3,
+            versionName = "1.2.0",
+            mandatory = false,
+            apkUrl = "https://github.com/jessicaalbert1234567-netizen/ban-video-player/releases/download/v1.2.0/app-release.apk",
+            sha256 = "a706257ac3d05fa23ad790bb24d4b83e9cb4e1105169121b40096555b04eb6f3",
+            message = "ইন-অ্যাপ আপডেট পরীক্ষা: সর্বশেষ রিলিজ APK ডাউনলোড ও ইনস্টলেশন।"
+        )
+        downloadAndVerifyApk(info)
     }
 
     /**
@@ -266,6 +306,11 @@ class AppUpdateManager(private val context: Context) {
             // Check unknown apps install permission on Android 8.0+ (Oreo, API 26+)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 if (!activity.packageManager.canRequestPackageInstalls()) {
+                    Toast.makeText(
+                        activity,
+                        "অ্যাপ আপডেট করতে অনুগ্রহ করে 'Allow from this source' চালু করুন",
+                        Toast.LENGTH_LONG
+                    ).show()
                     val settingsIntent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
                         data = Uri.parse("package:${activity.packageName}")
                     }
@@ -273,6 +318,8 @@ class AppUpdateManager(private val context: Context) {
                     return
                 }
             }
+
+            apkFile.setReadable(true, false)
 
             val apkUri: Uri = FileProvider.getUriForFile(
                 activity,
@@ -284,6 +331,12 @@ class AppUpdateManager(private val context: Context) {
                 setDataAndType(apkUri, "application/vnd.android.package-archive")
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+
+            val resInfoList = activity.packageManager.queryIntentActivities(installIntent, PackageManager.MATCH_DEFAULT_ONLY)
+            for (resolveInfo in resInfoList) {
+                val pkgName = resolveInfo.activityInfo.packageName
+                activity.grantUriPermission(pkgName, apkUri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
 
             activity.startActivity(installIntent)

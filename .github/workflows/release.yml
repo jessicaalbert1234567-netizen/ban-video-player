@@ -67,8 +67,20 @@ jobs:
         if [ -n "$KEYSTORE_BASE64" ]; then
           echo "Decoding release keystore from GitHub Secret KEYSTORE_BASE64..."
           echo "$KEYSTORE_BASE64" | base64 -d > "${GITHUB_WORKSPACE}/my-upload-key.jks"
+        elif [ -f "${GITHUB_WORKSPACE}/debug.keystore.base64" ]; then
+          echo "Using consistent repository debug.keystore to match signatures and prevent package conflict..."
+          base64 -d "${GITHUB_WORKSPACE}/debug.keystore.base64" > "${GITHUB_WORKSPACE}/debug_temp.keystore"
+          keytool -importkeystore -srckeystore "${GITHUB_WORKSPACE}/debug_temp.keystore" -srcstorepass android \
+            -srcalias androiddebugkey -destkeystore "${GITHUB_WORKSPACE}/my-upload-key.jks" \
+            -deststorepass android -destalias upload -destkeypass android -noprompt
+          rm -f "${GITHUB_WORKSPACE}/debug_temp.keystore"
+        elif [ -f "${GITHUB_WORKSPACE}/debug.keystore" ]; then
+          echo "Using consistent repository debug.keystore to match signatures and prevent package conflict..."
+          keytool -importkeystore -srckeystore "${GITHUB_WORKSPACE}/debug.keystore" -srcstorepass android \
+            -srcalias androiddebugkey -destkeystore "${GITHUB_WORKSPACE}/my-upload-key.jks" \
+            -deststorepass android -destalias upload -destkeypass android -noprompt
         else
-          echo "No KEYSTORE_BASE64 secret found. Generating persistent release keystore for build..."
+          echo "Generating persistent release keystore for build..."
           keytool -genkeypair -v -keystore "${GITHUB_WORKSPACE}/my-upload-key.jks" \
             -storepass "${STORE_PASSWORD:-android}" \
             -alias "upload" \

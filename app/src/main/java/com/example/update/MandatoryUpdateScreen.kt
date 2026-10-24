@@ -31,15 +31,16 @@ import kotlinx.coroutines.launch
 @Composable
 fun MandatoryUpdateScreen(
     updateManager: AppUpdateManager,
-    uiState: UpdateUiState
+    uiState: UpdateUiState,
+    onDismissOrSkip: () -> Unit
 ) {
     val context = LocalContext.current
     val activity = context as? Activity
     val scope = rememberCoroutineScope()
 
-    // Strictly intercept and block hardware Back button during mandatory update
+    // Handle hardware Back button by allowing user to dismiss/skip to app
     BackHandler(enabled = true) {
-        // Back press deliberately intercepted and blocked
+        onDismissOrSkip()
     }
 
     Box(
@@ -130,7 +131,8 @@ fun MandatoryUpdateScreen(
                                 scope.launch {
                                     updateManager.downloadAndVerifyApk(uiState.versionInfo)
                                 }
-                            }
+                            },
+                            onDismissOrSkip = onDismissOrSkip
                         )
                     }
 
@@ -150,7 +152,8 @@ fun MandatoryUpdateScreen(
                                 if (activity != null) {
                                     updateManager.installApk(activity, uiState.apkFile)
                                 }
-                            }
+                            },
+                            onDismissOrSkip = onDismissOrSkip
                         )
                     }
 
@@ -162,7 +165,8 @@ fun MandatoryUpdateScreen(
                                 scope.launch {
                                     updateManager.checkForUpdates(forceCheck = true)
                                 }
-                            }
+                            },
+                            onDismissOrSkip = onDismissOrSkip
                         )
                     }
 
@@ -179,7 +183,8 @@ fun MandatoryUpdateScreen(
 @Composable
 private fun UpdateRequiredContent(
     versionInfo: VersionInfo,
-    onUpdateClick: () -> Unit
+    onUpdateClick: () -> Unit,
+    onDismissOrSkip: () -> Unit
 ) {
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -281,7 +286,7 @@ private fun UpdateRequiredContent(
             )
         }
 
-        Spacer(modifier = Modifier.height(4.dp))
+        Spacer(modifier = Modifier.height(2.dp))
 
         // Update Now Button
         Button(
@@ -289,7 +294,7 @@ private fun UpdateRequiredContent(
             shape = RoundedCornerShape(14.dp),
             modifier = Modifier
                 .fillMaxWidth()
-                .height(52.dp)
+                .height(50.dp)
                 .testTag("update_now_button"),
             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
         ) {
@@ -298,6 +303,23 @@ private fun UpdateRequiredContent(
             Text(
                 text = "এখনই আপডেট করুন (Update Now)",
                 style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+            )
+        }
+
+        // Skip / Later Button
+        OutlinedButton(
+            onClick = onDismissOrSkip,
+            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp)
+                .testTag("skip_update_button")
+        ) {
+            Icon(Icons.Default.ArrowForward, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = "পরে করব / অ্যাপে প্রবেশ করুন (Later)",
+                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
             )
         }
     }
@@ -366,7 +388,8 @@ private fun DownloadingContent(
 @Composable
 private fun ReadyToInstallContent(
     versionInfo: VersionInfo,
-    onInstallClick: () -> Unit
+    onInstallClick: () -> Unit,
+    onDismissOrSkip: () -> Unit
 ) {
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -406,7 +429,7 @@ private fun ReadyToInstallContent(
             shape = RoundedCornerShape(14.dp),
             modifier = Modifier
                 .fillMaxWidth()
-                .height(52.dp)
+                .height(50.dp)
                 .testTag("install_now_button"),
             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))
         ) {
@@ -415,6 +438,22 @@ private fun ReadyToInstallContent(
             Text(
                 text = "ইনস্টল সম্পন্ন করুন (Install APK)",
                 style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+            )
+        }
+
+        OutlinedButton(
+            onClick = onDismissOrSkip,
+            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp)
+                .testTag("skip_install_button")
+        ) {
+            Icon(Icons.Default.ArrowForward, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = "অ্যাপে প্রবেশ করুন (Continue to App)",
+                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
             )
         }
 
@@ -438,7 +477,7 @@ private fun ReadyToInstallContent(
                     )
                 }
                 Text(
-                    text = "পূর্বে টেস্ট/ডিবাগ ভার্সন ইনস্টল থাকলে অ্যান্ড্রয়েডের নিরাপত্তা নিয়মে সরাসরি আপডেট নেয় না। ফোনের হোম থেকে পুরোনো অ্যাপটি একবার আনইনস্টল করে এই নতুন অফিসিয়াল রিলিজটি ইনস্টল করুন।",
+                    text = "ইনস্টল থাকা অ্যাপ এবং ডাউনলোডকৃত APK-এর সাইনিং কি (Certificate) ভিন্ন হলে এই সমস্যা হয়। আপনি ওপরের 'অ্যাপে প্রবেশ করুন' বোতাম চেপে অ্যাপটি স্বাভাবিকভাবে ব্যবহার করতে পারেন, অথবা ফোন থেকে পুরোনো অ্যাপটি আনইনস্টল করে এই নতুন রিলিজটি ইনস্টল করতে পারেন।",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -451,7 +490,8 @@ private fun ReadyToInstallContent(
 private fun ErrorContent(
     errorMessage: String,
     canRetry: Boolean,
-    onRetryClick: () -> Unit
+    onRetryClick: () -> Unit,
+    onDismissOrSkip: () -> Unit
 ) {
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -499,6 +539,17 @@ private fun ErrorContent(
                 Spacer(modifier = Modifier.width(8.dp))
                 Text("পুনরায় চেষ্টা করুন (Retry)")
             }
+        }
+
+        OutlinedButton(
+            onClick = onDismissOrSkip,
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp)
+                .testTag("skip_error_button")
+        ) {
+            Text("অ্যাপে প্রবেশ করুন (Continue to App)")
         }
     }
 }

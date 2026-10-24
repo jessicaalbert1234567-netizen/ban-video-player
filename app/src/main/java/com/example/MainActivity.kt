@@ -29,6 +29,9 @@ import com.example.ui.screens.PlayerScreen
 import com.example.ui.screens.SettingsScreen
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import com.example.update.AppUpdateManager
 import com.example.update.MandatoryUpdateScreen
 import com.example.update.UpdateUiState
@@ -48,25 +51,36 @@ class MainActivity : ComponentActivity() {
         setContent {
             MyApplicationTheme {
                 val updateState by updateManager.updateState.collectAsState()
+                var userDismissedUpdate by rememberSaveable { mutableStateOf(false) }
 
                 LaunchedEffect(Unit) {
-                    updateManager.checkForUpdates()
+                    updateManager.checkForUpdates(forceCheck = true)
                 }
 
-                when (val state = updateState) {
-                    is UpdateUiState.UpToDate -> {
-                        LaunchedEffect(Unit) {
-                            com.example.ads.AdMobManager.initialize(this@MainActivity)
+                val isMandatoryActive = !userDismissedUpdate && when (updateState) {
+                    is UpdateUiState.UpdateRequired,
+                    is UpdateUiState.Downloading,
+                    is UpdateUiState.ReadyToInstall -> true
+                    else -> false
+                }
+
+                if (isMandatoryActive) {
+                    MandatoryUpdateScreen(
+                        updateManager = updateManager,
+                        uiState = updateState,
+                        onDismissOrSkip = {
+                            userDismissedUpdate = true
                         }
-                        RequestAppPermissions()
-                        AppNavigation(viewModel = viewModel)
+                    )
+                } else {
+                    LaunchedEffect(Unit) {
+                        com.example.ads.AdMobManager.initialize(this@MainActivity)
                     }
-                    else -> {
-                        MandatoryUpdateScreen(
-                            updateManager = updateManager,
-                            uiState = state
-                        )
-                    }
+                    RequestAppPermissions()
+                    AppNavigation(
+                        viewModel = viewModel,
+                        updateManager = updateManager
+                    )
                 }
             }
         }
@@ -106,7 +120,10 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun AppNavigation(viewModel: DubbingViewModel) {
+fun AppNavigation(
+    viewModel: DubbingViewModel,
+    updateManager: AppUpdateManager
+) {
     val navController = rememberNavController()
 
     NavHost(
@@ -117,6 +134,7 @@ fun AppNavigation(viewModel: DubbingViewModel) {
         composable("home") {
             HomeScreen(
                 viewModel = viewModel,
+                updateManager = updateManager,
                 onNavigateToModelManager = { navController.navigate("models") },
                 onNavigateToProgress = { projectId -> navController.navigate("progress/$projectId") },
                 onNavigateToPlayer = { navController.navigate("player") },
@@ -166,6 +184,7 @@ fun AppNavigation(viewModel: DubbingViewModel) {
         composable("settings") {
             SettingsScreen(
                 viewModel = viewModel,
+                updateManager = updateManager,
                 onNavigateBack = { navController.popBackStack() }
             )
         }

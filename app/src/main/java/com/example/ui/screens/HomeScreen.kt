@@ -41,6 +41,7 @@ import com.example.ui.theme.SuccessGreen
 @Composable
 fun HomeScreen(
     viewModel: DubbingViewModel,
+    updateManager: com.example.update.AppUpdateManager? = null,
     onNavigateToModelManager: () -> Unit,
     onNavigateToProgress: (String) -> Unit,
     onNavigateToPlayer: () -> Unit,
@@ -48,6 +49,7 @@ fun HomeScreen(
     onNavigateToTest: () -> Unit
 ) {
     val context = LocalContext.current
+    val updateState = updateManager?.updateState?.collectAsState()?.value
     val projects by viewModel.allProjects.collectAsState()
     val noSubtitleError by viewModel.noSubtitleError.collectAsState()
     val isAnalyzingMkv by viewModel.isAnalyzingMkv.collectAsState()
