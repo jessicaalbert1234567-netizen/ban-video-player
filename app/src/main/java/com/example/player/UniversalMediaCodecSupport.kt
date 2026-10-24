@@ -14,11 +14,13 @@ import androidx.media3.common.audio.BaseAudioProcessor
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.Renderer
+import androidx.media3.exoplayer.RendererCapabilities
 import androidx.media3.exoplayer.audio.AudioRendererEventListener
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.audio.MediaCodecAudioRenderer
 import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
+import androidx.media3.exoplayer.mediacodec.MediaCodecUtil
 import androidx.media3.exoplayer.video.MediaCodecVideoRenderer
 import androidx.media3.exoplayer.video.VideoRendererEventListener
 import java.nio.ByteBuffer
@@ -32,9 +34,6 @@ import androidx.media3.exoplayer.mediacodec.MediaCodecInfo as ExoMediaCodecInfo
  * Safely converts ANY channel configuration (Mono 1.0, Stereo 2.0, 2.1, 3.0, Quad 4.0, 5.0,
  * 5.1 Surround, 6.1, 7.1 Surround) and ANY PCM sample encoding (16-bit, Float/fltp, 24-bit,
  * 32-bit, 8-bit) into universal 16-bit Stereo PCM (C.ENCODING_PCM_16BIT, 2 channels).
- *
- * Avoids Media3 ChannelMixingMatrix.create(8, 2) UnsupportedOperationException and
- * prevents UnhandledAudioFormatException on 2-channel stereo or float PCM streams.
  */
 @UnstableApi
 class UniversalStereoAudioProcessor : BaseAudioProcessor() {
@@ -161,7 +160,6 @@ class UniversalStereoAudioProcessor : BaseAudioProcessor() {
             outBuffer.putShort(rightShort)
         }
 
-        // Advance input buffer to limit if any trailing partial bytes remain
         inputBuffer.position(inputBuffer.limit())
         outBuffer.flip()
     }
@@ -189,18 +187,19 @@ class UniversalStereoAudioProcessor : BaseAudioProcessor() {
 
 /**
  * VLC-Grade RenderersFactory for Media3 ExoPlayer:
- * 1. Handles 10-bit HEVC (Main 10, yuv420p10le) on devices whose hardware HEVC decoder only supports
- *    8-bit Main Profile by automatically prioritizing Android's 10-bit capable software decoder
- *    (c2.android.hevc.decoder / OMX.google.hevc.decoder) when hardware lacks Main 10 support or fails.
- * 2. Configures MediaCodecAudioRenderer with AAC Stereo Downmix hints (KEY_AAC_MAX_OUTPUT_CHANNEL_COUNT = 2
- *    and KEY_MAX_OUTPUT_CHANNEL_COUNT = 2) so 5.1 HE-AAC tracks decode cleanly without buffer overflow.
- * 3. Wraps DefaultAudioSink with UniversalStereoAudioProcessor so 5.1/7.1/float audio never causes
- *    ERROR_CODE_AUDIO_TRACK_INIT_FAILED.
+ * 1. Handles 10-bit HEVC (Main 10, yuv420p10le) and non-16-aligned dimensions (e.g., 1280x536)
+ *    by prioritizing Android's 10-bit capable software HEVC decoder (c2.android.hevc.decoder /
+ *    OMX.google.hevc.decoder) with seamless fallback to hardware decoders.
+ * 2. Requests SDR color transfer output (COLOR_TRANSFER_SDR_VIDEO) on API 31+ for 10-bit SDR HEVC
+ *    while preserving MediaCodec PlaceholderSurface and setOutputSurface support.
+ * 3. Synchronizes MediaCodecAudioRenderer output channel counts in onOutputFormatChanged so 5.1 HE-AAC
+ *    tracks never trigger ChannelMappingAudioProcessor UnhandledAudioFormatException, and downmixes
+ *    multichannel/float PCM to 16-bit Stereo via UniversalStereoAudioProcessor.
  */
 @UnstableApi
 class VlcGradeRenderersFactory(
     context: Context,
-    private val forceSoftwareVideoDecoderProvider: () -> Boolean = { false }
+    private val preferSoftwareVideoDecoderProvider: () -> Boolean = { true }
 ) : DefaultRenderersFactory(context) {
 
     companion object {
@@ -219,10 +218,55 @@ class VlcGradeRenderersFactory(
             val codecs = format.codecs?.lowercase() ?: ""
             val hasMain10CodecTag = codecs.startsWith("hev1.2") ||
                     codecs.startsWith("hvc1.2") ||
-                    codecs.contains(".2.")
+                    codecs.contains(".2.") ||
+                    codecs.contains("main10")
             val has10BitColor = (format.colorInfo?.lumaBitdepth ?: -1) >= 10 ||
                     (format.colorInfo?.chromaBitdepth ?: -1) >= 10
-            return hasMain10CodecTag || has10BitColor
+            if (hasMain10CodecTag || has10BitColor) return true
+
+            // Also inspect raw HEVC SPS/VPS NAL units in initializationData for Main 10 profile_idc == 2
+            return hasHevcMain10NalUnit(format.initializationData)
+        }
+
+        fun hasNonMacroblockAlignedDimensions(format: Format): Boolean {
+            if (format.sampleMimeType != MimeTypes.VIDEO_H265) return false
+            val w = format.width
+            val h = format.height
+            if (w <= 0 || h <= 0) return false
+            if (w == 1920 && h == 1080) return false
+            return (w % 16 != 0) || (h % 16 != 0)
+        }
+
+        private fun hasHevcMain10NalUnit(initData: List<ByteArray>?): Boolean {
+            if (initData.isNullOrEmpty()) return false
+            for (buf in initData) {
+                var i = 0
+                while (i + 7 < buf.size) {
+                    // Find 3-byte or 4-byte Annex-B start code: 0x000001 or 0x00000001
+                    if (buf[i].toInt() == 0 && buf[i + 1].toInt() == 0) {
+                        val nalStart = when {
+                            buf[i + 2].toInt() == 1 -> i + 3
+                            i + 3 < buf.size && buf[i + 2].toInt() == 0 && buf[i + 3].toInt() == 1 -> i + 4
+                            else -> -1
+                        }
+                        if (nalStart != -1 && nalStart + 4 < buf.size) {
+                            val nalType = (buf[nalStart].toInt() and 0x7E) ushr 1
+                            // SPS (nal_unit_type == 33)
+                            if (nalType == 33) {
+                                val ptlByte0 = buf[nalStart + 3].toInt() and 0xFF
+                                val profileIdc = ptlByte0 and 0x1F
+                                val compatByte0 = buf[nalStart + 4].toInt() and 0xFF
+                                val main10Compat = (compatByte0 and 0x20) != 0
+                                if (profileIdc == 2 || main10Compat) return true
+                            }
+                            i = nalStart + 2
+                            continue
+                        }
+                    }
+                    i++
+                }
+            }
+            return false
         }
 
         fun isSoftwareDecoder(info: ExoMediaCodecInfo): Boolean {
@@ -277,22 +321,38 @@ class VlcGradeRenderersFactory(
                 mimeType,
                 requiresSecureDecoder,
                 requiresTunnelingDecoder
-            )
+            ).toMutableList()
+
+            try {
+                val rawSystemDecoders = MediaCodecUtil.getDecoderInfos(
+                    mimeType,
+                    requiresSecureDecoder,
+                    requiresTunnelingDecoder
+                )
+                for (d in rawSystemDecoders) {
+                    if (defaultList.none { it.name == d.name }) {
+                        defaultList.add(d)
+                    }
+                }
+            } catch (_: Exception) {}
+
             if (defaultList.size <= 1) return@MediaCodecSelector defaultList
 
-            val forceSw = forceSoftwareVideoDecoderProvider()
-            if (forceSw) {
-                val swFirst = defaultList.sortedBy { if (isSoftwareDecoder(it)) 0 else 1 }
-                Log.i(TAG, "Software video decoding forced for $mimeType: ${swFirst.map { it.name }}")
-                return@MediaCodecSelector swFirst
-            }
-
+            val preferSw = preferSoftwareVideoDecoderProvider()
             if (mimeType.equals(MimeTypes.VIDEO_H265, ignoreCase = true)) {
                 defaultList.sortedBy { info ->
-                    when {
-                        !isSoftwareDecoder(info) && supportsHevcMain10Profile(info) -> 0
-                        isSoftwareDecoder(info) -> 1
-                        else -> 2
+                    if (preferSw) {
+                        when {
+                            isSoftwareDecoder(info) -> 0
+                            supportsHevcMain10Profile(info) -> 1
+                            else -> 2
+                        }
+                    } else {
+                        when {
+                            !isSoftwareDecoder(info) && supportsHevcMain10Profile(info) -> 0
+                            !isSoftwareDecoder(info) -> 1
+                            else -> 2
+                        }
                     }
                 }
             } else {
@@ -310,41 +370,74 @@ class VlcGradeRenderersFactory(
             eventListener,
             MAX_DROPPED_VIDEO_FRAME_COUNT_TO_NOTIFY
         ) {
+            override fun supportsFormat(
+                mediaCodecSelector: MediaCodecSelector,
+                format: Format
+            ): Int {
+                val baseSupport = super.supportsFormat(mediaCodecSelector, format)
+                val formatSupport = RendererCapabilities.getFormatSupport(baseSupport)
+                if (format.sampleMimeType == MimeTypes.VIDEO_H265 && formatSupport != C.FORMAT_HANDLED) {
+                    return RendererCapabilities.create(
+                        C.FORMAT_HANDLED,
+                        RendererCapabilities.ADAPTIVE_SEAMLESS,
+                        RendererCapabilities.TUNNELING_NOT_SUPPORTED
+                    )
+                }
+                return baseSupport
+            }
+
             override fun getDecoderInfos(
                 selector: MediaCodecSelector,
                 format: Format,
                 requiresSecureDecoder: Boolean
             ): MutableList<ExoMediaCodecInfo> {
                 val infos = super.getDecoderInfos(selector, format, requiresSecureDecoder).toMutableList()
-                val forceSw = forceSoftwareVideoDecoderProvider()
-                val is10BitHevc = isFormat10BitHevc(format)
+                val mime = format.sampleMimeType ?: MimeTypes.VIDEO_H265
 
-                if (forceSw || is10BitHevc) {
-                    try {
-                        val allForMime = selector.getDecoderInfos(
-                            format.sampleMimeType ?: MimeTypes.VIDEO_H265,
-                            requiresSecureDecoder,
-                            false
-                        )
-                        for (candidate in allForMime) {
-                            if (infos.none { it.name == candidate.name }) {
-                                infos.add(candidate)
-                            }
+                try {
+                    val allFromSelector = selector.getDecoderInfos(mime, requiresSecureDecoder, false)
+                    for (candidate in allFromSelector) {
+                        if (infos.none { it.name == candidate.name }) {
+                            infos.add(candidate)
                         }
-                    } catch (_: Exception) {}
+                    }
+                    val allRaw = MediaCodecUtil.getDecoderInfos(mime, requiresSecureDecoder, false)
+                    for (candidate in allRaw) {
+                        if (infos.none { it.name == candidate.name }) {
+                            infos.add(candidate)
+                        }
+                    }
+                } catch (_: Exception) {}
 
+                val is10BitOrOddSizeHevc = isFormat10BitHevc(format) || hasNonMacroblockAlignedDimensions(format)
+                val preferSw = preferSoftwareVideoDecoderProvider()
+
+                if (mime.equals(MimeTypes.VIDEO_H265, ignoreCase = true) || is10BitOrOddSizeHevc) {
                     infos.sortBy { info ->
-                        if (forceSw) {
-                            if (isSoftwareDecoder(info)) 0 else 1
+                        if (preferSw && is10BitOrOddSizeHevc) {
+                            when {
+                                isSoftwareDecoder(info) -> 0
+                                supportsHevcMain10Profile(info) -> 1
+                                else -> 2
+                            }
+                        } else if (preferSw) {
+                            when {
+                                isSoftwareDecoder(info) -> 0
+                                supportsHevcMain10Profile(info) -> 1
+                                else -> 2
+                            }
                         } else {
                             when {
                                 !isSoftwareDecoder(info) && supportsHevcMain10Profile(info) -> 0
-                                isSoftwareDecoder(info) -> 1
+                                !isSoftwareDecoder(info) -> 1
                                 else -> 2
                             }
                         }
                     }
-                    Log.i(TAG, "Resolved HEVC/Video decoders (10bit=$is10BitHevc, forceSw=$forceSw): ${infos.map { it.name }}")
+                    Log.i(
+                        TAG,
+                        "Resolved HEVC decoders (10bitOrOdd=$is10BitOrOddSizeHevc, preferSw=$preferSw, ${format.width}x${format.height}): ${infos.map { it.name }}"
+                    )
                 }
                 return infos
             }
@@ -365,19 +458,17 @@ class VlcGradeRenderersFactory(
                     deviceNeedsNoPostProcessWorkaround,
                     tunnelingAudioSessionId
                 )
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
-                    (isFormat10BitHevc(format) || forceSoftwareVideoDecoderProvider())
-                ) {
+                // Request 8-bit SDR output transfer for 10-bit SDR HEVC (e.g. yuv420p10le bt709)
+                // while keeping KEY_PROFILE intact so both software and hardware Main 10 decoders initialize properly.
+                if (Build.VERSION.SDK_INT >= 31 && isFormat10BitHevc(format)) {
                     try {
-                        mediaFormat.removeKey(MediaFormat.KEY_PROFILE)
-                        mediaFormat.removeKey(MediaFormat.KEY_LEVEL)
+                        mediaFormat.setInteger(
+                            MediaFormat.KEY_COLOR_TRANSFER_REQUEST,
+                            MediaFormat.COLOR_TRANSFER_SDR_VIDEO
+                        )
                     } catch (_: Exception) {}
                 }
                 return mediaFormat
-            }
-
-            override fun codecNeedsSetOutputSurfaceWorkaround(name: String): Boolean {
-                return true
             }
         }
 
@@ -427,9 +518,12 @@ class VlcGradeRenderersFactory(
                 codecOperatingRate: Float
             ): MediaFormat {
                 val mediaFormat = super.getMediaFormat(format, codecMimeType, codecMaxValues, codecOperatingRate)
-                mediaFormat.setInteger(MediaFormat.KEY_MAX_OUTPUT_CHANNEL_COUNT, 2)
+                // Allow the decoder to output all channels (up to 99) so Media3's 5.1/7.1 AAC
+                // ChannelMappingAudioProcessor never sees a 6-vs-2 channel mismatch, while
+                // UniversalStereoAudioProcessor in DefaultAudioSink downmixes 5.1/7.1 to 2-channel Stereo.
+                mediaFormat.setInteger(MediaFormat.KEY_MAX_OUTPUT_CHANNEL_COUNT, 99)
                 if (Build.VERSION.SDK_INT >= 28) {
-                    mediaFormat.setInteger("aac-max-output-channel_count", 2)
+                    mediaFormat.setInteger("aac-max-output-channel_count", 99)
                 }
                 if (Build.VERSION.SDK_INT >= 24) {
                     mediaFormat.setInteger(
@@ -438,6 +532,33 @@ class VlcGradeRenderersFactory(
                     )
                 }
                 return mediaFormat
+            }
+
+            override fun onOutputFormatChanged(format: Format, outputMediaFormat: MediaFormat?) {
+                // Synchronize format.channelCount with the actual channel count emitted by the decoder
+                // so MediaCodecAudioRenderer never attaches a 6-channel AAC channelMap if the device's
+                // decoder downmixed 5.1 to 2 channels internally.
+                val syncedFormat = if (outputMediaFormat != null) {
+                    val actualChannels = if (outputMediaFormat.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
+                        outputMediaFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                    } else {
+                        format.channelCount
+                    }
+                    val actualSampleRate = if (outputMediaFormat.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
+                        outputMediaFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                    } else {
+                        format.sampleRate
+                    }
+                    format.buildUpon()
+                        .setChannelCount(actualChannels)
+                        .setSampleRate(actualSampleRate)
+                        .setEncoderDelay(0)
+                        .setEncoderPadding(0)
+                        .build()
+                } else {
+                    format
+                }
+                super.onOutputFormatChanged(syncedFormat, outputMediaFormat)
             }
         }
 
@@ -461,3 +582,4 @@ class VlcGradeRenderersFactory(
         }
     }
 }
+

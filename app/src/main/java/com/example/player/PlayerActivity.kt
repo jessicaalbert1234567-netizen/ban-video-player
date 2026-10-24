@@ -63,18 +63,6 @@ enum class PlayerAudioMode(val label: String, val description: String) {
 
 /**
  * Production-ready VLC-grade Offline Video Player Activity using AndroidX Media3 ExoPlayer.
- *
- * Features & Architecture:
- * 1. Robust Software/Hardware Decoding: VlcGradeRenderersFactory with EXTENSION_RENDERER_MODE_PREFER
- *    and automatic software decoder fallback for 10-bit HEVC (Main 10, yuv420p10le), Hi10P, and legacy codecs.
- * 2. Multichannel Audio Downmixing: Automatic 5.1/7.1 HE-AAC/AAC/AC3 & float PCM to 16-bit Stereo via
- *    UniversalStereoAudioProcessor and decoder channel hints.
- * 3. Dual-Player Smart Audio Ducking: Simultaneous playback of video ambient soundtrack and Bangla speech,
- *    ducking original background audio to 32% during speech so ambient cars, music, footsteps, and explosions
- *    remain audible behind clear Bangla dubbing.
- * 4. Multi-track Audio & Embedded/External Subtitle Management: DefaultTrackSelector + DefaultMediaSourceFactory.
- * 5. Local Storage / SAF: Handles content:// and file:// local URIs seamlessly with persistable permissions.
- * 6. VLC Gestures: Brightness (left swipe), Volume (right swipe), Scrub (horizontal swipe), Double tap seek.
  */
 @UnstableApi
 class PlayerActivity : ComponentActivity() {
@@ -132,7 +120,8 @@ class PlayerActivity : ComponentActivity() {
     private var isWaitingForAd: Boolean = false
 
     // Decoder recovery state
-    private var forceSoftwareVideoDecoder: Boolean = false
+    private var preferSoftwareVideoDecoder: Boolean = true
+    private var decoderSwitchCount: Int = 0
     private var errorRecoveryAttempts: Int = 0
     private var zeroFrameChecks: Int = 0
 
@@ -221,7 +210,8 @@ class PlayerActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         releasePlayer()
-        forceSoftwareVideoDecoder = false
+        preferSoftwareVideoDecoder = true
+        decoderSwitchCount = 0
         errorRecoveryAttempts = 0
         parseIntentData(intent)
         txtVideoTitle.text = videoTitle
@@ -447,6 +437,23 @@ class PlayerActivity : ComponentActivity() {
             .setConstantBitrateSeekingAlwaysEnabled(true)
     }
 
+    private fun buildMainMediaItem(targetUri: Uri): MediaItem {
+        val mediaItemBuilder = MediaItem.Builder().setUri(targetUri)
+        srtPath?.let { sPath ->
+            val srtFile = File(sPath)
+            if (srtFile.exists() && srtFile.length() > 0) {
+                val subConfig = MediaItem.SubtitleConfiguration.Builder(Uri.fromFile(srtFile))
+                    .setMimeType(MimeTypes.APPLICATION_SUBRIP)
+                    .setLanguage("ben")
+                    .setLabel("অনূদিত বাংলা সাবটাইটেল (Bangla Dub)")
+                    .setSelectionFlags(if (launchedWithExplicitDub) C.SELECTION_FLAG_DEFAULT else 0)
+                    .build()
+                mediaItemBuilder.setSubtitleConfigurations(listOf(subConfig))
+            }
+        }
+        return mediaItemBuilder.build()
+    }
+
     private fun initializePlayer() {
         if (player != null) return
         val targetUri = videoUri ?: run {
@@ -456,7 +463,7 @@ class PlayerActivity : ComponentActivity() {
         }
 
         try {
-            val renderersFactory = VlcGradeRenderersFactory(this) { forceSoftwareVideoDecoder }
+            val renderersFactory = VlcGradeRenderersFactory(this) { preferSoftwareVideoDecoder }
 
             trackSelector = DefaultTrackSelector(this).apply {
                 parameters = buildUponParameters()
@@ -494,22 +501,7 @@ class PlayerActivity : ComponentActivity() {
             playerView.player = player
             playerView.resizeMode = resizeModes[currentResizeModeIndex]
 
-            val mediaItemBuilder = MediaItem.Builder().setUri(targetUri)
-
-            srtPath?.let { sPath ->
-                val srtFile = File(sPath)
-                if (srtFile.exists() && srtFile.length() > 0) {
-                    val subConfig = MediaItem.SubtitleConfiguration.Builder(Uri.fromFile(srtFile))
-                        .setMimeType(MimeTypes.APPLICATION_SUBRIP)
-                        .setLanguage("ben")
-                        .setLabel("অনূদিত বাংলা সাবটাইটেল (Bangla Dub)")
-                        .setSelectionFlags(if (launchedWithExplicitDub) C.SELECTION_FLAG_DEFAULT else 0)
-                        .build()
-                    mediaItemBuilder.setSubtitleConfigurations(listOf(subConfig))
-                }
-            }
-
-            val mainMediaSource = mediaSourceFactory.createMediaSource(mediaItemBuilder.build())
+            val mainMediaSource = mediaSourceFactory.createMediaSource(buildMainMediaItem(targetUri))
             player?.setMediaSource(mainMediaSource)
             player?.prepare()
 
@@ -543,9 +535,6 @@ class PlayerActivity : ComponentActivity() {
             if (!isAdShownOrSkipped) {
                 isAdShownOrSkipped = true
                 isWaitingForAd = true
-                player?.pause()
-                dubbedPlayer?.pause()
-                btnPlayPause.setImageResource(R.drawable.ic_play_arrow)
                 AdMobManager.showRewardedAd(this) {
                     isWaitingForAd = false
                     startPlayWhenReady = true
@@ -564,19 +553,33 @@ class PlayerActivity : ComponentActivity() {
             handler.post(updateProgressRunnable)
             resetControlsHideTimer()
 
-            Log.i(TAG, "ExoPlayer initialized with VLC-grade 10-bit HEVC decoding, stereo downmixing, and Smart Dubbing")
+            Log.i(TAG, "ExoPlayer initialized with SurfaceView, 10-bit HEVC decoding, and 5.1 HE-AAC stereo downmixing")
         } catch (e: Exception) {
             Log.e(TAG, "ExoPlayer initialization failed: ${e.message}", e)
             Toast.makeText(this, "ভিডিও প্লেয়ার শুরু করতে সমস্যা হয়েছে: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
 
-    private fun rebuildPlayerWithSoftwareVideoFallback() {
-        val currentPos = player?.currentPosition?.coerceAtLeast(0L) ?: startPositionMs
-        startPositionMs = currentPos
-        startPlayWhenReady = true
-        releasePlayer()
-        initializePlayer()
+    private fun repreparePlayerInPlace() {
+        val p = player ?: return
+        val targetUri = videoUri ?: return
+        val savedPos = p.currentPosition.coerceAtLeast(0L)
+        try {
+            p.stop()
+            val dataSourceFactory = DefaultDataSource.Factory(this)
+            val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory, createExtractorsFactory())
+            val mainMediaSource = mediaSourceFactory.createMediaSource(buildMainMediaItem(targetUri))
+            p.setMediaSource(mainMediaSource)
+            p.prepare()
+            if (savedPos > 0L) {
+                p.seekTo(savedPos)
+                dubbedPlayer?.seekTo(savedPos)
+            }
+            p.playWhenReady = true
+            p.play()
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to reprepare player in-place: ${e.message}")
+        }
     }
 
     private fun releasePlayer() {
@@ -646,6 +649,7 @@ class PlayerActivity : ComponentActivity() {
                 Player.STATE_READY -> {
                     progressBuffering.visibility = View.GONE
                     errorRecoveryAttempts = 0
+                    zeroFrameChecks = 0
                     updateTimeline()
                 }
                 Player.STATE_ENDED -> {
@@ -678,30 +682,48 @@ class PlayerActivity : ComponentActivity() {
                     error.errorCode == PlaybackException.ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES ||
                     error.errorCode == PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED
 
-            if (isVideoCodecError && !forceSoftwareVideoDecoder) {
-                Log.w(TAG, "Video decoder error; switching to software video decoder for 10-bit HEVC compatibility")
-                forceSoftwareVideoDecoder = true
-                rebuildPlayerWithSoftwareVideoFallback()
+            if (isVideoCodecError && decoderSwitchCount < 2) {
+                decoderSwitchCount++
+                preferSoftwareVideoDecoder = !preferSoftwareVideoDecoder
+                Log.w(TAG, "Video decoder error; toggling preferSoftwareVideoDecoder=$preferSoftwareVideoDecoder in-place")
+                repreparePlayerInPlace()
                 return
             }
 
             if (errorRecoveryAttempts < 3) {
                 errorRecoveryAttempts++
-                Log.w(TAG, "Attempting playback recovery ($errorRecoveryAttempts/3) with 2-channel stereo audio constraint")
+                Log.w(TAG, "Attempting playback recovery ($errorRecoveryAttempts/3)")
                 try {
-                    val savedPos = player?.currentPosition?.coerceAtLeast(0L) ?: startPositionMs
+                    val p = player ?: return
+                    val savedPos = p.currentPosition.coerceAtLeast(0L)
                     trackSelector?.let { ts ->
-                        ts.setParameters(
-                            ts.buildUponParameters()
-                                .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, false)
-                                .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
-                                .setMaxAudioChannelCount(2)
-                        )
+                        val builder = ts.buildUponParameters()
+                            .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, false)
+                        if (errorRecoveryAttempts == 1) {
+                            var foundStereo = false
+                            for (group in p.currentTracks.groups) {
+                                if (group.type == C.TRACK_TYPE_AUDIO) {
+                                    val mtg = group.mediaTrackGroup
+                                    for (i in 0 until mtg.length) {
+                                        if (mtg.getFormat(i).channelCount in 1..2) {
+                                            builder.setOverrideForType(TrackSelectionOverride(mtg, i))
+                                            foundStereo = true
+                                            break
+                                        }
+                                    }
+                                }
+                                if (foundStereo) break
+                            }
+                            builder.setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
+                        } else {
+                            builder.setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, true)
+                        }
+                        ts.setParameters(builder)
                     }
-                    player?.prepare()
-                    if (savedPos > 0L) player?.seekTo(savedPos)
-                    player?.playWhenReady = true
-                    player?.play()
+                    p.prepare()
+                    if (savedPos > 0L) p.seekTo(savedPos)
+                    p.playWhenReady = true
+                    p.play()
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to recover playback: ${e.message}")
                 }
@@ -979,16 +1001,20 @@ class PlayerActivity : ComponentActivity() {
             seekBar.progress = progress
         }
 
-        if (p.isPlaying && !forceSoftwareVideoDecoder && currentMs > 1500L) {
+        // Wall-clock stall watchdog: works even when ExoPlayer is stuck in STATE_BUFFERING at 00:00
+        val isAttemptingPlayback = p.playWhenReady &&
+                (p.playbackState == Player.STATE_BUFFERING || p.playbackState == Player.STATE_READY)
+        if (isAttemptingPlayback && decoderSwitchCount < 2) {
             val hasVideo = p.currentTracks.groups.any { it.type == C.TRACK_TYPE_VIDEO && it.isSelected }
-            val renderedFrames = p.videoDecoderCounters?.renderedOutputBufferCount ?: -1
+            val renderedFrames = p.videoDecoderCounters?.renderedOutputBufferCount ?: 0
             if (hasVideo && renderedFrames == 0) {
                 zeroFrameChecks++
-                if (zeroFrameChecks >= 3) {
-                    Log.w(TAG, "0 video frames rendered on hardware decoder; switching to software decoder for 10-bit HEVC")
+                if (zeroFrameChecks >= 4) {
                     zeroFrameChecks = 0
-                    forceSoftwareVideoDecoder = true
-                    rebuildPlayerWithSoftwareVideoFallback()
+                    decoderSwitchCount++
+                    preferSoftwareVideoDecoder = !preferSoftwareVideoDecoder
+                    Log.w(TAG, "Watchdog: 0 video frames rendered; switching preferSoftwareVideoDecoder=$preferSoftwareVideoDecoder in-place")
+                    repreparePlayerInPlace()
                     return
                 }
             } else if (renderedFrames > 0) {
@@ -1197,3 +1223,4 @@ class PlayerActivity : ComponentActivity() {
         handler.postDelayed({ hudContainer.visibility = View.GONE }, 1200L)
     }
 }
+

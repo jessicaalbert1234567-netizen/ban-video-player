@@ -10,6 +10,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
+import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.text.CueGroup
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
@@ -94,7 +95,8 @@ class MediaPlayerManager(private val context: Context) {
     private var lastSpokenCueStartMs: Long = -1L
 
     private var errorRecoveryAttempts = 0
-    private var forceSoftwareVideoDecoder = false
+    private var preferSoftwareVideoDecoder = true
+    private var decoderSwitchCount = 0
     private var zeroFramePlayingChecks = 0
 
     private fun initLiveTts() {
@@ -120,7 +122,7 @@ class MediaPlayerManager(private val context: Context) {
 
     fun initializePlayer(): ExoPlayer {
         if (player == null) {
-            val renderersFactory = VlcGradeRenderersFactory(context) { forceSoftwareVideoDecoder }
+            val renderersFactory = VlcGradeRenderersFactory(context) { preferSoftwareVideoDecoder }
 
             val trackSelector = DefaultTrackSelector(context).apply {
                 parameters = buildUponParameters()
@@ -165,6 +167,7 @@ class MediaPlayerManager(private val context: Context) {
                     override fun onPlaybackStateChanged(playbackState: Int) {
                         if (playbackState == Player.STATE_READY) {
                             errorRecoveryAttempts = 0
+                            zeroFramePlayingChecks = 0
                         }
                         val isPlaying = player?.isPlaying ?: false
                         val playWhenReady = player?.playWhenReady ?: false
@@ -215,31 +218,53 @@ class MediaPlayerManager(private val context: Context) {
                                 error.errorCode == PlaybackException.ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES ||
                                 error.errorCode == PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED
 
-                        // 1. If hardware video decoder failed (e.g., 10-bit HEVC Main 10 on 8-bit hardware),
-                        // immediately switch to Android software video decoder (c2.android.hevc.decoder)
-                        if (!isAudioOnlyFile && isVideoCodecError && !forceSoftwareVideoDecoder) {
-                            Log.w(TAG, "Video decoder error detected; switching to software video decoder (10-bit HEVC fallback)")
-                            forceSoftwareVideoDecoder = true
-                            rebuildPrimaryPlayerWithSoftwareFallback()
+                        // 1. Toggle between software and hardware video decoder in-place (preserving PlayerView attachment!)
+                        if (!isAudioOnlyFile && isVideoCodecError && decoderSwitchCount < 2) {
+                            decoderSwitchCount++
+                            preferSoftwareVideoDecoder = !preferSoftwareVideoDecoder
+                            Log.w(TAG, "Video codec error; switching preferSoftwareVideoDecoder=$preferSoftwareVideoDecoder in-place")
+                            reprepareCurrentPlayerInPlace()
                             return
                         }
 
-                        // 2. If media is a video (MKV/MP4), retry with stereo channel cap if audio failed
+                        // 2. If media is a video (MKV/MP4) and audio track failed, try stereo track override or disable internal audio so video still plays
                         if (!isAudioOnlyFile && player != null && errorRecoveryAttempts < 3) {
                             errorRecoveryAttempts++
-                            Log.i(TAG, "Playback retry attempt ($errorRecoveryAttempts/3) with stereo downmix parameters.")
+                            Log.i(TAG, "Playback retry attempt ($errorRecoveryAttempts/3) for video container.")
                             try {
-                                val savedPos = player?.currentPosition?.coerceAtLeast(0L) ?: 0L
-                                player?.trackSelectionParameters = player?.trackSelectionParameters
-                                    ?.buildUpon()
-                                    ?.setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, false)
-                                    ?.setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
-                                    ?.setMaxAudioChannelCount(2)
-                                    ?.build() ?: androidx.media3.common.TrackSelectionParameters.DEFAULT_WITHOUT_CONTEXT
-                                player?.prepare()
-                                if (savedPos > 0L) player?.seekTo(savedPos)
-                                player?.playWhenReady = true
-                                player?.play()
+                                val exo = player!!
+                                val savedPos = exo.currentPosition.coerceAtLeast(0L)
+                                val paramsBuilder = exo.trackSelectionParameters
+                                    .buildUpon()
+                                    .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, false)
+
+                                if (errorRecoveryAttempts == 1) {
+                                    // Prefer 2-channel stereo track if available in MKV (e.g., Stream #0:2 stereo)
+                                    var foundStereoOverride = false
+                                    for (group in exo.currentTracks.groups) {
+                                        if (group.type == C.TRACK_TYPE_AUDIO) {
+                                            val mtg = group.mediaTrackGroup
+                                            for (i in 0 until mtg.length) {
+                                                if (mtg.getFormat(i).channelCount in 1..2) {
+                                                    paramsBuilder.setOverrideForType(TrackSelectionOverride(mtg, i))
+                                                    foundStereoOverride = true
+                                                    break
+                                                }
+                                            }
+                                        }
+                                        if (foundStereoOverride) break
+                                    }
+                                    paramsBuilder.setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
+                                } else {
+                                    // Keep video playing even if internal container audio track is corrupt
+                                    paramsBuilder.setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, true)
+                                }
+
+                                exo.trackSelectionParameters = paramsBuilder.build()
+                                exo.prepare()
+                                if (savedPos > 0L) exo.seekTo(savedPos)
+                                exo.playWhenReady = true
+                                exo.play()
                                 return
                             } catch (e: Exception) {
                                 Log.w(TAG, "Could not recover video playback: ${e.message}")
@@ -280,31 +305,34 @@ class MediaPlayerManager(private val context: Context) {
         return player!!
     }
 
-    private fun rebuildPrimaryPlayerWithSoftwareFallback() {
+    /**
+     * Re-prepares the EXISTING ExoPlayer instance in-place without releasing it,
+     * so PlayerScreen's AndroidView (PlayerView) never loses its attached player or SurfaceView.
+     */
+    private fun reprepareCurrentPlayerInPlace() {
+        val exo = player ?: return
         val targetUri = currentVideoUri ?: return
-        val savedPos = player?.currentPosition?.coerceAtLeast(0L) ?: _playerState.value.currentPositionMs
+        val savedPos = exo.currentPosition.coerceAtLeast(0L)
         val savedSpeed = _playerState.value.playbackSpeed
 
         try {
-            player?.stop()
-            player?.release()
-        } catch (_: Exception) {}
-        player = null
-
-        val exo = initializePlayer()
-        val mediaSourceFactory = DefaultMediaSourceFactory(context, createExtractorsFactory())
-        val videoItem = MediaItem.fromUri(targetUri)
-        val videoSource = mediaSourceFactory.createMediaSource(videoItem)
-        exo.setMediaSource(videoSource)
-        exo.setPlaybackSpeed(savedSpeed)
-        exo.prepare()
-        if (savedPos > 0L) {
-            exo.seekTo(savedPos)
-            dubbedAudioPlayer?.seekTo(savedPos)
+            exo.stop()
+            val mediaSourceFactory = DefaultMediaSourceFactory(context, createExtractorsFactory())
+            val videoItem = MediaItem.fromUri(targetUri)
+            val videoSource = mediaSourceFactory.createMediaSource(videoItem)
+            exo.setMediaSource(videoSource)
+            exo.setPlaybackSpeed(savedSpeed)
+            exo.prepare()
+            if (savedPos > 0L) {
+                exo.seekTo(savedPos)
+                dubbedAudioPlayer?.seekTo(savedPos)
+            }
+            exo.playWhenReady = true
+            exo.play()
+            updateAudioVolumes(savedPos)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to reprepare player in-place: ${e.message}")
         }
-        exo.playWhenReady = true
-        exo.play()
-        updateAudioVolumes(savedPos)
     }
 
     private fun initializeDubbedPlayer(): ExoPlayer {
@@ -358,6 +386,7 @@ class MediaPlayerManager(private val context: Context) {
             )
             player?.let { exo ->
                 if (exo.playbackState == Player.STATE_IDLE) {
+                    errorRecoveryAttempts = 0
                     exo.prepare()
                 } else if (exo.playbackState == Player.STATE_ENDED) {
                     exo.seekTo(0)
@@ -366,11 +395,11 @@ class MediaPlayerManager(private val context: Context) {
                 exo.play()
                 dubbedAudioPlayer?.let { dp ->
                     if (dp.playbackState == Player.STATE_IDLE) dp.prepare()
-                    dp.seekTo(exo.currentPosition)
+                    dp.seekTo(exo.currentPosition.coerceAtLeast(0L))
                     dp.playWhenReady = true
                     dp.play()
                 }
-                updateAudioVolumes(exo.currentPosition)
+                updateAudioVolumes(exo.currentPosition.coerceAtLeast(0L))
             }
             return
         }
@@ -380,6 +409,8 @@ class MediaPlayerManager(private val context: Context) {
         currentSrtFile = srtFile
         currentSourceSrtFile = sourceSrtFile
         errorRecoveryAttempts = 0
+        decoderSwitchCount = 0
+        preferSoftwareVideoDecoder = true
         zeroFramePlayingChecks = 0
 
         val exo = initializePlayer()
@@ -421,6 +452,7 @@ class MediaPlayerManager(private val context: Context) {
             .buildUpon()
             .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, false)
             .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
+            .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
             .build()
         val videoItem = MediaItem.fromUri(videoUri)
         val videoSource = mediaSourceFactory.createMediaSource(videoItem)
@@ -490,8 +522,6 @@ class MediaPlayerManager(private val context: Context) {
         when (choice) {
             AudioTrackChoice.BANGLA_DUB -> {
                 if (isSpeaking) {
-                    // Smart Ducking: Original ambient audio at 0.32f keeps cars, storms, music,
-                    // footsteps, and explosions clearly audible behind the crisp 1.0f Bangla speech!
                     exo.volume = 0.32f
                     if (isLive) {
                         val activeCue = bnSubtitleEntries.firstOrNull { currentPosMs in it.startMs..it.endMs }
@@ -507,7 +537,6 @@ class MediaPlayerManager(private val context: Context) {
                         dPlayer?.volume = 1.0f
                     }
                 } else {
-                    // Ambient / music scene between dialogues: original video sound at full 100% volume!
                     exo.volume = if (bnSubtitleEntries.isEmpty()) 0.35f else 1.0f
                     if (!isLive) {
                         dPlayer?.volume = 1.0f
@@ -540,7 +569,6 @@ class MediaPlayerManager(private val context: Context) {
 
     private fun isDialogueActive(posMs: Long): Boolean {
         if (bnSubtitleEntries.isEmpty()) return true
-        // Include small 40ms lead-in/lead-out for natural speech pacing
         return bnSubtitleEntries.any { posMs in (it.startMs - 40L)..(it.endMs + 80L) }
     }
 
@@ -625,18 +653,21 @@ class MediaPlayerManager(private val context: Context) {
             durationMs = dur
         )
 
-        // Detect silent hardware black-screen on 10-bit HEVC (Main 10) where audio/clock advances
-        // but 8-bit hardware decoder renders 0 video frames
-        if (exo.isPlaying && !forceSoftwareVideoDecoder && !_playerState.value.isAudioOnlyFallback) {
+        // Wall-clock stall watchdog: works even when ExoPlayer is stuck in STATE_BUFFERING at pos == 0L
+        // waiting for the first video frame!
+        val isAttemptingPlayback = exo.playWhenReady &&
+                (exo.playbackState == Player.STATE_BUFFERING || exo.playbackState == Player.STATE_READY)
+        if (isAttemptingPlayback && decoderSwitchCount < 2 && !_playerState.value.isAudioOnlyFallback) {
             val hasSelectedVideoTrack = exo.currentTracks.groups.any { it.type == C.TRACK_TYPE_VIDEO && it.isSelected }
-            val renderedFrames = exo.videoDecoderCounters?.renderedOutputBufferCount ?: -1
-            if (hasSelectedVideoTrack && renderedFrames == 0 && pos > 1500L) {
+            val renderedFrames = exo.videoDecoderCounters?.renderedOutputBufferCount ?: 0
+            if (hasSelectedVideoTrack && renderedFrames == 0) {
                 zeroFramePlayingChecks++
-                if (zeroFramePlayingChecks >= 10) {
-                    Log.w(TAG, "Detected 0 rendered video frames after ${pos}ms; switching to software video decoder for 10-bit HEVC")
+                if (zeroFramePlayingChecks >= 6) {
                     zeroFramePlayingChecks = 0
-                    forceSoftwareVideoDecoder = true
-                    rebuildPrimaryPlayerWithSoftwareFallback()
+                    decoderSwitchCount++
+                    preferSoftwareVideoDecoder = !preferSoftwareVideoDecoder
+                    Log.w(TAG, "Watchdog: 0 video frames rendered; switching preferSoftwareVideoDecoder=$preferSoftwareVideoDecoder in-place")
+                    reprepareCurrentPlayerInPlace()
                     return
                 }
             } else if (renderedFrames > 0) {
@@ -676,7 +707,6 @@ class MediaPlayerManager(private val context: Context) {
         }
 
         if (entries.isEmpty()) {
-            // Fall back to embedded MKV subtitle cues if external SRT list is empty
             val fallbackText = embeddedCueText
             if (_playerState.value.activeSubtitleText != fallbackText) {
                 _playerState.value = _playerState.value.copy(activeSubtitleText = fallbackText)
@@ -727,3 +757,4 @@ class MediaPlayerManager(private val context: Context) {
         } catch (_: Exception) {}
     }
 }
+

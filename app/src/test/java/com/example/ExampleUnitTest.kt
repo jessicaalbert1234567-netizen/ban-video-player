@@ -140,23 +140,33 @@ class ExampleUnitTest {
     }
 
     @Test
-    fun testHevc10BitDetection() {
+    fun testHevc10BitAndNonAlignedDetection() {
         val hevcMain10Format = Format.Builder()
             .setSampleMimeType(MimeTypes.VIDEO_H265)
             .setCodecs("hvc1.2.4.L93.B0")
+            .setWidth(1280)
+            .setHeight(536)
             .build()
         assertTrue(VlcGradeRenderersFactory.isFormat10BitHevc(hevcMain10Format))
+        assertTrue(VlcGradeRenderersFactory.hasNonMacroblockAlignedDimensions(hevcMain10Format))
 
         val hevcColor10Format = Format.Builder()
             .setSampleMimeType(MimeTypes.VIDEO_H265)
             .setColorInfo(ColorInfo.Builder().setLumaBitdepth(10).setChromaBitdepth(10).build())
+            .setWidth(1920)
+            .setHeight(1080)
             .build()
         assertTrue(VlcGradeRenderersFactory.isFormat10BitHevc(hevcColor10Format))
+        assertFalse(VlcGradeRenderersFactory.hasNonMacroblockAlignedDimensions(hevcColor10Format))
 
         val hevc8BitFormat = Format.Builder()
             .setSampleMimeType(MimeTypes.VIDEO_H265)
             .setCodecs("hvc1.1.6.L93.B0")
+            .setWidth(1280)
+            .setHeight(720)
             .build()
         assertFalse(VlcGradeRenderersFactory.isFormat10BitHevc(hevc8BitFormat))
+        assertFalse(VlcGradeRenderersFactory.hasNonMacroblockAlignedDimensions(hevc8BitFormat))
     }
 }
+
